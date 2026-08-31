@@ -1,0 +1,16 @@
+# 本地开发票据与临时探针
+.scratch/
+
+# 项目设计、研究、验证和开发规划文档不上传到公开仓库
+Docs/
+
+# 本地参考项目不上传到公开仓库
+参考项目/
+
+# IDE 与操作系统本地状态
+.vs/
+.vscode/*.log
+*.user
+*.suo
+Thumbs.db
+Desktop.ini
