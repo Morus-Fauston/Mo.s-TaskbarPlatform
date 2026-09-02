@@ -21,6 +21,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Mtp.Platform.Core\Mtp.Platform.Core.csproj" />
     <ProjectReference Include="..\..\src\Mtp.Contracts\Mtp.Contracts.csproj" />
+    <ProjectReference Include="..\..\src\Mtp.Host\Mtp.Host.csproj" />
   </ItemGroup>
 
 </Project>
