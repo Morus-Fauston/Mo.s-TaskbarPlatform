@@ -14,3 +14,7 @@ Docs/
 *.suo
 Thumbs.db
 Desktop.ini
+
+# .NET build artifacts
+**/bin/
+**/obj/
