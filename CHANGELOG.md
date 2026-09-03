@@ -1,5 +1,41 @@
 # Changelog
 
+## v0.1.0-alpha.4 (2026-09-03 20:24)
+
+### 组件显示偏好
+
+- **独立偏好模块**：新增 `ComponentDisplayPreferences` 与 `LocalComponentDisplayPreferenceStore`，把组件显示偏好保存为与声明文件独立的本地 JSON（`display-preferences.json`），只记录完整分层稳定 ID 与可见性，不写回声明文件，也不能脱离当前有效声明生成组件。
+- **控制器合并**：新增 `HostDisplayController`，Host 启动时先加载并校验有效声明，再把已保存偏好合并到当前组件显示状态；新组件默认隐藏，当前声明中同一稳定 ID 保留既有偏好。
+- **状态恢复**：暂时从声明消失的组件在偏好文件中保留，重新声明后按原偏好恢复；偏好文件中的过期 ID 不进入当前显示列表。
+- **窗口开关**：Host 主窗口新增“显示组件”开关，切换即时保存偏好并更新组件卡片可见性；保存失败时开关回弹到原状态并显示结构化错误。
+
+### 故障与边界
+
+- **偏好文件故障**：偏好文件缺失或损坏时 Host 以隐藏默认状态启动，并返回 `preference_not_found` 或 `preference_invalid` 结构化错误，不产生幽灵组件；读取或写入失败分别返回 `preference_read_failed`、`preference_write_failed`。
+- **幽灵组件防护**：只允许切换当前有效声明中声明的组件；切换未声明组件返回 `component_not_declared`，不写入偏好文件。
+
+### 验证
+
+- **自动化测试**：Release 配置下 `dotnet test Mtp.sln --configuration Release --no-restore` 通过，共 35 个测试成功，0 个失败，0 个跳过。
+- **构建结果**：Release 配置下构建成功，0 个警告，0 个错误。
+- **人工验收**：真实 Windows 上已由用户确认显示开关切换、隐藏与显示状态的重启恢复、声明文件未被偏好写入污染、移除组件不生成幽灵组件，以及偏好文件损坏后的启动与错误提示（依据 03 票据验收记录）。
+
+### 文件变更表
+
+| 文件 | 变更 |
+|:-----|:------|
+| `src/Mtp.Host/ComponentDisplayPreferences.cs` | **新增** — 按稳定 ID 保存可见性偏好的独立模块与本地存储 |
+| `src/Mtp.Host/HostDisplayController.cs` | **新增** — 声明加载与偏好合并控制器 |
+| `src/Mtp.Host/HostComponentDisplayModel.cs` | **修改** — 显示模型增加可见性，支持按偏好投影 |
+| `src/Mtp.Host/MainWindow.xaml` | **修改** — 新增“显示组件”开关并绑定组件卡片可见性 |
+| `src/Mtp.Host/MainWindow.xaml.cs` | **修改** — 开关切换调用控制器保存偏好并回退失败 |
+| `src/Mtp.Host/App.xaml.cs` | **修改** — 启动时接入偏好存储与显示控制器 |
+| `tests/Mtp.Platform.Core.Tests/DisplayPreferenceTests.cs` | **新增** — 覆盖切换保存、重启恢复、声明分离、损坏默认、幽灵防护与写盘回退 |
+| `CHANGELOG.md` | **修改** — 记录本次开发版本 |
+| `CHANGELOG.txt` | **修改** — 记录本次开发版本 |
+
+---
+
 ## v0.1.0-alpha.3 (2026-09-03 19:36)
 
 ### Host 显示基线

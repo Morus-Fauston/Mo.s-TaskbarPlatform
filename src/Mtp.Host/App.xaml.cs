@@ -18,8 +18,11 @@ public partial class App : Application
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
         var declarationPath = Path.Combine(AppContext.BaseDirectory, "declaration.json");
-        var loader = new HostDeclarationLoader(new LocalJsonDeclarationSource(declarationPath));
-        window = new MainWindow(loader.Load());
+        var preferencePath = Path.Combine(AppContext.BaseDirectory, "display-preferences.json");
+        var controller = new HostDisplayController(
+            new LocalJsonDeclarationSource(declarationPath),
+            new LocalComponentDisplayPreferenceStore(preferencePath));
+        window = new MainWindow(controller, controller.Load());
         window.Activate();
     }
 }

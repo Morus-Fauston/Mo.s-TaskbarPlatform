@@ -8,13 +8,21 @@
         <MicaBackdrop />
     </Window.SystemBackdrop>
 
-    <Grid Padding="24" MinWidth="480" MinHeight="220">
+    <Grid Padding="24" MinWidth="480" MinHeight="280">
         <StackPanel Spacing="16" MaxWidth="640">
             <TextBlock
                 Text="MTP Host"
                 Style="{StaticResource TitleTextBlockStyle}" />
 
+            <ToggleSwitch
+                x:Name="VisibilityToggle"
+                Header="显示组件"
+                IsOn="False"
+                IsEnabled="False"
+                Toggled="VisibilityToggle_Toggled" />
+
             <Border
+                x:Name="ComponentCard"
                 Padding="16"
                 Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                 BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"

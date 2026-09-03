@@ -11,9 +11,13 @@ public sealed record HostComponentDisplayModel(
     StableIdentity Identity,
     string Text,
     CapabilityStatus Status,
-    string StatusLabel)
+    string StatusLabel,
+    bool IsVisible)
 {
     public static HostComponentDisplayModel From(Component component)
+        => From(component, true);
+
+    public static HostComponentDisplayModel From(Component component, bool isVisible)
     {
         ArgumentNullException.ThrowIfNull(component);
 
@@ -21,7 +25,8 @@ public sealed record HostComponentDisplayModel(
             component.Identity,
             "MTP Host 组件",
             component.Capability.Status,
-            GetStatusLabel(component.Capability.Status));
+            GetStatusLabel(component.Capability.Status),
+            isVisible);
     }
 
     public static HostComponentDisplayModel From(ValidatedApplicationDeclaration declaration)

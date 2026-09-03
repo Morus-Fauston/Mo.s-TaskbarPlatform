@@ -9,29 +9,40 @@ namespace Mtp.Host;
 /// </summary>
 public sealed partial class MainWindow : Window
 {
-    public MainWindow(DeclarationLoadResult declarationLoad)
+    private readonly HostDisplayController displayController;
+    private HostComponentDisplayModel? selectedComponent;
+    private bool applyingVisibility;
+
+    public MainWindow(HostDisplayController displayController, HostDisplayLoadResult displayLoad)
     {
-        ArgumentNullException.ThrowIfNull(declarationLoad);
+        this.displayController = displayController ?? throw new ArgumentNullException(nameof(displayController));
+        ArgumentNullException.ThrowIfNull(displayLoad);
         InitializeComponent();
 
-        AppWindow.Resize(new Windows.Graphics.SizeInt32(560, 240));
+        AppWindow.Resize(new Windows.Graphics.SizeInt32(560, 300));
 
-        if (declarationLoad.Current is not null)
+        selectedComponent = displayLoad.Components.FirstOrDefault();
+        if (selectedComponent is not null)
         {
-            ApplyDisplay(HostComponentDisplayModel.From(declarationLoad.Current));
+            ApplyDisplay(selectedComponent);
+            VisibilityToggle.IsEnabled = true;
+            applyingVisibility = true;
+            VisibilityToggle.IsOn = selectedComponent.IsVisible;
+            applyingVisibility = false;
         }
         else
         {
             var fallback = new Component(
                 new StableIdentity(new StableId("mtp"))
                     .CreateChild(new StableId("declaration-error")),
-                CapabilityState.Failed(declarationLoad.Error?.Message ?? "声明未加载。"));
+                CapabilityState.Failed(displayLoad.DeclarationError?.Message ?? "声明未加载。"));
             ApplyDisplay(HostComponentDisplayModel.From(fallback));
         }
 
-        if (declarationLoad.Error is not null)
+        var error = displayLoad.DeclarationError ?? displayLoad.PreferenceError;
+        if (error is not null)
         {
-            ErrorText.Text = FormatError(declarationLoad.Error);
+            ErrorText.Text = FormatError(error);
             ErrorText.Visibility = Visibility.Visible;
         }
     }
@@ -41,6 +52,29 @@ public sealed partial class MainWindow : Window
         ComponentText.Text = display.Text;
         IdentityText.Text = $"声明组件：{string.Join(" / ", display.Identity.Segments.Select(segment => segment.Value))}";
         StatusText.Text = display.StatusLabel;
+        ComponentCard.Visibility = display.IsVisible ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void VisibilityToggle_Toggled(object sender, RoutedEventArgs args)
+    {
+        if (applyingVisibility || selectedComponent is null)
+        {
+            return;
+        }
+
+        var result = displayController.SetVisibility(selectedComponent.Identity, VisibilityToggle.IsOn);
+        if (result.IsSuccess)
+        {
+            selectedComponent = result.Value!;
+            ApplyDisplay(selectedComponent);
+            return;
+        }
+
+        applyingVisibility = true;
+        VisibilityToggle.IsOn = selectedComponent.IsVisible;
+        applyingVisibility = false;
+        ErrorText.Text = FormatError(result.Error!);
+        ErrorText.Visibility = Visibility.Visible;
     }
 
     private static string FormatError(StructuredError error) =>
