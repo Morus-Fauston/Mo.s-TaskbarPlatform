@@ -1,5 +1,47 @@
 # Changelog
 
+## v0.1.0-alpha.5 (2026-09-03 21:36)
+
+### 独立贴靠窗口
+
+- **Host 窗口承载**：新增 Host 拥有的独立顶级 WinUI 贴靠窗口，使用已校验且当前可见的组件模型显示内容；窗口不创建 Explorer 子窗口，也不使用 Explorer 句柄或 `SetParent`。
+- **生命周期管理**：新增 `IndependentDockWindowController` 与 `IIndependentDockWindowAdapter`，统一管理窗口显示、关闭、用户关闭通知和结构化错误状态；承载失败或关闭失败时保留 Host 声明、组件模型和显示偏好。
+- **受控边界**：隐藏组件、未声明组件和没有可见组件时拒绝创建窗口，返回可解释的结构化错误；窗口适配器与 WinUI 代码仅位于 Host，平台核心、公共契约和 SDK 模型不引入窗口对象或 Win32 依赖。
+
+### 多屏定位修复
+
+- **坐标语义**：新增 `IndependentDockWindowPlacement`，兼容 Windows App SDK 返回的相对工作区和已是屏幕坐标的工作区表示，确保副屏虚拟桌面偏移只应用一次。
+- **边界保护**：窗口定位使用屏幕坐标 `MoveAndResize`，每次显示根据 Host 当前所属显示区域重新计算；工作区无效、窗口过大或计算结果越界时返回结构化错误，不静默把窗口放到屏幕外。
+
+### 验证
+
+- **自动化测试**：Release 配置下 `dotnet test Mtp.sln --configuration Release` 通过，共 46 个测试成功，0 个失败，0 个跳过；覆盖承载生命周期、失败状态保留、隐藏/未声明组件拒绝，以及主屏、副屏非零虚拟坐标、相对/绝对工作区和越界防护。
+- **构建结果**：Release 配置下 `dotnet build Mtp.sln --configuration Release` 成功，0 个警告，0 个错误。
+- **回归护栏**：旧的副屏坐标算法可被定位测试捕获，恢复修复后完整测试通过；`src` 与 `tests` 中仅保留一处 `MoveAndResize` 调用，使用屏幕坐标重载。
+- **人工验收**：维护者已在真实 Windows 上确认主屏与副屏非零虚拟坐标显示、任务栏附近位置、窗口关闭与 Host 重启恢复、关闭显示开关，以及承载失败时 Host、声明快照和偏好状态保持正常。
+
+### 范围边界
+
+- **后续议程**：本版本交付 MTP 自有独立贴靠窗口承载，不等同于 Explorer 任务栏嵌入正式支持；Explorer 嵌入仍属于后续实验性探针，正式兼容性必须经过独立的真实 Windows 验证。
+
+### 文件变更表
+
+| 文件 | 变更 |
+|:-----|:------|
+| `src/Mtp.Host/App.xaml.cs` | **修改** — 将独立贴靠窗口控制器接入 Host 启动和显示开关生命周期 |
+| `src/Mtp.Host/MainWindow.xaml.cs` | **修改** — 根据组件可见性显示或关闭独立贴靠窗口，并处理承载错误 |
+| `src/Mtp.Host/IndependentDockWindow.xaml` | **新增** — 独立贴靠窗口的最小组件布局 |
+| `src/Mtp.Host/IndependentDockWindow.xaml.cs` | **新增** — MTP 自有顶级 WinUI 窗口、任务栏附近定位和无激活显示 |
+| `src/Mtp.Host/IndependentDockWindowController.cs` | **新增** — 独立窗口生命周期、组件边界和状态错误管理 |
+| `src/Mtp.Host/IndependentDockWindowPlacement.cs` | **新增** — 多屏工作区坐标计算与越界保护 |
+| `src/Mtp.Host/WinUiIndependentDockWindowAdapter.cs` | **新增** — WinUI 独立贴靠窗口适配器 |
+| `tests/Mtp.Platform.Core.Tests/IndependentDockWindowPlacementTests.cs` | **新增** — 覆盖主屏、副屏坐标、工作区模式、窗口尺寸和边界错误 |
+| `tests/Mtp.Platform.Core.Tests/IndependentDockWindowTests.cs` | **新增** — 覆盖窗口承载、关闭、失败状态保留和组件拒绝 |
+| `CHANGELOG.md` | **修改** — 记录本次开发版本 |
+| `CHANGELOG.txt` | **修改** — 记录本次开发版本 |
+
+---
+
 ## v0.1.0-alpha.4 (2026-09-03 20:24)
 
 ### 组件显示偏好

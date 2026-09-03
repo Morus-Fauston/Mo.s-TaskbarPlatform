@@ -1,5 +1,7 @@
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Windowing;
 using System.IO;
+using System.Linq;
 
 namespace Mtp.Host;
 
@@ -8,7 +10,7 @@ namespace Mtp.Host;
 /// </summary>
 public partial class App : Application
 {
-    private Window? window;
+    private MainWindow? window;
 
     public App()
     {
@@ -22,7 +24,24 @@ public partial class App : Application
         var controller = new HostDisplayController(
             new LocalJsonDeclarationSource(declarationPath),
             new LocalComponentDisplayPreferenceStore(preferencePath));
-        window = new MainWindow(controller, controller.Load());
+        var displayLoad = controller.Load();
+        MainWindow? ownerWindow = null;
+        var dockWindowController = new IndependentDockWindowController(
+            controller,
+            new WinUiIndependentDockWindowAdapter(() => ownerWindow is null
+                ? null
+                : DisplayArea.GetFromWindowId(ownerWindow.AppWindow.Id, DisplayAreaFallback.Primary)));
+        ownerWindow = new MainWindow(controller, displayLoad, dockWindowController);
+        window = ownerWindow;
         window.Activate();
+
+        if (displayLoad.Components.Any(component => component.IsVisible))
+        {
+            var dockResult = dockWindowController.ShowCurrent();
+            if (!dockResult.IsSuccess)
+            {
+                window.ShowHostError(dockResult.Error!);
+            }
+        }
     }
 }

@@ -10,14 +10,20 @@ namespace Mtp.Host;
 public sealed partial class MainWindow : Window
 {
     private readonly HostDisplayController displayController;
+    private readonly IndependentDockWindowController dockWindowController;
     private HostComponentDisplayModel? selectedComponent;
     private bool applyingVisibility;
 
-    public MainWindow(HostDisplayController displayController, HostDisplayLoadResult displayLoad)
+    public MainWindow(
+        HostDisplayController displayController,
+        HostDisplayLoadResult displayLoad,
+        IndependentDockWindowController dockWindowController)
     {
         this.displayController = displayController ?? throw new ArgumentNullException(nameof(displayController));
         ArgumentNullException.ThrowIfNull(displayLoad);
+        this.dockWindowController = dockWindowController ?? throw new ArgumentNullException(nameof(dockWindowController));
         InitializeComponent();
+        Closed += MainWindow_Closed;
 
         AppWindow.Resize(new Windows.Graphics.SizeInt32(560, 300));
 
@@ -67,6 +73,22 @@ public sealed partial class MainWindow : Window
         {
             selectedComponent = result.Value!;
             ApplyDisplay(selectedComponent);
+            if (selectedComponent.IsVisible)
+            {
+                var showResult = dockWindowController.Show(selectedComponent);
+                if (!showResult.IsSuccess)
+                {
+                    ShowHostError(showResult.Error!);
+                }
+            }
+            else
+            {
+                var closeResult = dockWindowController.Close();
+                if (!closeResult.IsSuccess)
+                {
+                    ShowHostError(closeResult.Error!);
+                }
+            }
             return;
         }
 
@@ -75,6 +97,19 @@ public sealed partial class MainWindow : Window
         applyingVisibility = false;
         ErrorText.Text = FormatError(result.Error!);
         ErrorText.Visibility = Visibility.Visible;
+    }
+
+    public void ShowHostError(StructuredError error)
+    {
+        ArgumentNullException.ThrowIfNull(error);
+        ErrorText.Text = FormatError(error);
+        ErrorText.Visibility = Visibility.Visible;
+    }
+
+    private void MainWindow_Closed(object sender, WindowEventArgs args)
+    {
+        _ = dockWindowController.Close();
+        dockWindowController.Dispose();
     }
 
     private static string FormatError(StructuredError error) =>
