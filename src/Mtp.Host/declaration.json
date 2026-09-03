@@ -1,0 +1,24 @@
+{
+  "applicationId": "local-demo",
+  "featureGroups": [
+    {
+      "featureGroupId": "host-display",
+      "components": [
+        {
+          "componentId": "local-component",
+          "actionSlots": [
+            { "actionSlotId": "open" }
+          ]
+        }
+      ],
+      "taskbarFlyouts": [
+        {
+          "taskbarFlyoutId": "local-panel",
+          "actionSlots": [
+            { "actionSlotId": "open" }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -21,11 +21,24 @@ public sealed class DeclarationSnapshotStore
     public CoreResult<ValidatedApplicationDeclaration> Submit(ApplicationDeclaration? declaration)
     {
         var result = validator.Validate(declaration);
+        CommitIfAccepted(result);
+
+        return result;
+    }
+
+    public CoreResult<ValidatedApplicationDeclaration> SubmitJson(string json)
+    {
+        var result = validator.ValidateJson(json);
+        CommitIfAccepted(result);
+
+        return result;
+    }
+
+    private void CommitIfAccepted(CoreResult<ValidatedApplicationDeclaration> result)
+    {
         if (result.IsSuccess)
         {
             current = result.Value;
         }
-
-        return result;
     }
 }
