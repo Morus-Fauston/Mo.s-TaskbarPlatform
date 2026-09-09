@@ -31,7 +31,11 @@ public partial class App : Application
             new WinUiIndependentDockWindowAdapter(() => ownerWindow is null
                 ? null
                 : DisplayArea.GetFromWindowId(ownerWindow.AppWindow.Id, DisplayAreaFallback.Primary)));
-        ownerWindow = new MainWindow(controller, displayLoad, dockWindowController);
+        var probeController = new ExplorerTaskbarProbeController(
+            controller,
+            new Win32ExplorerTaskbarEmbedAdapter(() => DisplayArea.FindAll().Count),
+            dockWindowController);
+        ownerWindow = new MainWindow(controller, displayLoad, dockWindowController, probeController);
         window = ownerWindow;
         window.Activate();
 

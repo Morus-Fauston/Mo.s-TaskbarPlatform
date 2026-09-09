@@ -43,6 +43,27 @@ public sealed class PlatformSkeletonTests
     }
 
     [Fact]
+    public void CoreAndContractsDeclareNoPlatformInvokeMethods()
+    {
+        var assemblies = new[] { typeof(PlatformCoreMarker).Assembly, typeof(ContractAssemblyMarker).Assembly };
+        const System.Reflection.BindingFlags allDeclared =
+            System.Reflection.BindingFlags.DeclaredOnly |
+            System.Reflection.BindingFlags.Static |
+            System.Reflection.BindingFlags.Instance |
+            System.Reflection.BindingFlags.Public |
+            System.Reflection.BindingFlags.NonPublic;
+
+        var platformInvokeMethods = assemblies
+            .SelectMany(assembly => assembly.GetTypes())
+            .SelectMany(type => type.GetMethods(allDeclared))
+            .Where(method => (method.Attributes & System.Reflection.MethodAttributes.PinvokeImpl) != 0)
+            .Select(method => $"{method.DeclaringType!.FullName}.{method.Name}")
+            .ToArray();
+
+        Assert.Empty(platformInvokeMethods);
+    }
+
+    [Fact]
     public void StableIdentityKeepsParentChainAndDistinguishesSiblingContexts()
     {
         var application = new StableIdentity(new StableId("music"));

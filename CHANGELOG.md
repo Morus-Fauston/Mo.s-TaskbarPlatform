@@ -1,5 +1,63 @@
 # Changelog
 
+## v0.1.0-alpha.6 (2026-09-09 20:11)
+
+### Explorer 任务栏嵌入探针
+
+- **探针边界**：新增 `ExplorerTaskbarProbeController` 与 `IExplorerTaskbarEmbedAdapter`，探针逻辑与 Windows 适配器分层；Explorer 窗口类名、窗口树与 `SetParent` 只存在于 `Win32ExplorerTaskbarEmbedAdapter` 私有实现，不进入平台核心、公共契约、声明模型或 SDK/Broker 协议。
+- **几何计算**：新增 `ExplorerTaskbarProbePlacement`，按任务栏客户区坐标、通知区域左边缘锚点与 DIP 换算计算嵌入矩形，拒绝竖向任务栏、空矩形、零 DPI、空间不足与越界结果。
+- **实验记录**：新增 `ExplorerTaskbarProbeReport` 与格式化器，逐步骤记录查找任务栏、测量、DPI、锚点、定位、子窗口化、定位校验与透明应用结果，固定标注“实验性，不代表正式支持”和五项未验证范围。
+- **Host 入口**：Host 主窗口新增运行/停止探针、失败注入与透明实验模式选择；探针只接受当前已校验且可见的组件，隐藏或未声明组件在触碰适配器前被拒绝。
+- **降级与恢复**：探针失败时清理子窗口、回退独立贴靠窗口并返回「任务栏嵌入当前不可用，已切换独立贴靠」；嵌入窗口被外部销毁时重置状态并恢复独立窗口，不自动重试；探针结果不持久化，不读写显示偏好。
+
+### 透明机制结论与诊断工具
+
+- **子窗口材质结论**：真实 Windows 证据显示 `WS_CHILD` 窗口被 DWM 全面拒绝——`DwmExtendFrameIntoClientArea` 返回 `E_INVALIDARG`、`DwmSetWindowAttribute` 返回 `E_HANDLE`、`DesktopAcrylicController.AddSystemBackdropTarget` 抛空引用；在顶级阶段附加材质后再 `SetParent` 会导致 Host 崩溃。嵌入窗口只能是不透明底，无法融入任务栏。
+- **可用透明配方**：MTP 自有顶级窗口经多轮两屏验证，采用默认 presenter 去边框、剥除 `WS_CAPTION/WS_BORDER/WS_DLGFRAME/WS_THICKFRAME`、`DwmExtendFrameIntoClientArea(-1)`、`DesktopAcrylicController` 或 `MicaController`、`DWMSBT_NONE` 后透明稳定。
+- **诊断工具**：新增 `tools/TransparencyLab/`（独立解决方案，不在 `Mtp.sln`、不参与主构建与测试），用于隔离变量对照四种材质与显示器信息，配套 `probe-windows.ps1` 与两张诊断截图；新增 `tools/.gitignore` 忽略其构建产物与本地临时输出。
+
+### 文档
+
+- **规划入口**：`AGENTS.md` 的开发规划链接更新为现行的 `Docs/当前决策/分期开发规划.md`。
+- **术语语义**：`CONTEXT.md` 更新右侧避让锚点与实际避让锚点在“单屏右贴靠首片”下的含义：首片只接受通知区域左边缘作为嵌入锚点，锚点不可用时回退独立贴靠窗口，不强行贴到任务栏右端。
+
+### 验证
+
+- **自动化测试**：Release 配置下 `dotnet test Mtp.sln --configuration Release` 通过，共 73 个测试成功，0 个失败，0 个跳过。
+- **构建结果**：Release 配置下 `dotnet build Mtp.sln --configuration Release` 成功，0 个警告，0 个错误。
+- **边界断言**：新增反射测试断言平台核心与公共契约不含任何 P/Invoke 方法；`src` 中 `SetParent`/`DllImport` 仅出现在 Win32 适配器。
+- **人工验收**：维护者在真实 Windows 确认探针成功嵌入任务栏、停止探针恢复独立贴靠、失败注入降级、Host 重启恢复；探针结构路径可行，但嵌入窗口无法透明，不能融入任务栏。
+
+### 范围边界
+
+- **实验性能力**：Explorer 任务栏嵌入仍为实验适配器，不构成正式兼容承诺。多屏、DPI 变化、任务栏自动隐藏、Explorer 重启和第三方任务栏工具均未验证。
+- **后续决策**：进入 05A 前需由维护者在当前决策文档确认承载路线（不透明嵌入或 MTP 自有透明顶级窗口），05A 当前为 blocked。透明色刷在主屏不透明的根因未定位，亚克力/云母为采信路径。
+
+### 文件变更表
+
+| 文件 | 变更 |
+|:-----|:------|
+| `src/Mtp.Host/ExplorerTaskbarProbeController.cs` | **新增** — 探针控制器、适配器接口、状态与结果模型 |
+| `src/Mtp.Host/ExplorerTaskbarProbePlacement.cs` | **新增** — 任务栏客户区嵌入矩形与锚点计算 |
+| `src/Mtp.Host/ExplorerTaskbarProbeReport.cs` | **新增** — 实验记录模型与状态文本格式化 |
+| `src/Mtp.Host/ExplorerTaskbarProbeWindow.xaml` | **新增** — 紧凑单行探针窗口布局 |
+| `src/Mtp.Host/ExplorerTaskbarProbeWindow.xaml.cs` | **新增** — 探针窗口创建、透明材质与顶级对照模式 |
+| `src/Mtp.Host/Win32ExplorerTaskbarEmbedAdapter.cs` | **新增** — Win32 查找、子窗口化、定位与 DWM 诊断适配器 |
+| `src/Mtp.Host/App.xaml.cs` | **修改** — 启动时构造探针控制器并注入主窗口 |
+| `src/Mtp.Host/MainWindow.xaml` | **修改** — 新增探针运行、停止、失败注入与透明模式控件 |
+| `src/Mtp.Host/MainWindow.xaml.cs` | **修改** — 探针交互、状态文本与独立窗口协作 |
+| `tests/Mtp.Platform.Core.Tests/ExplorerTaskbarProbeTests.cs` | **新增** — 覆盖成功、失败降级、拒绝、分离、丢失与报告格式化 |
+| `tests/Mtp.Platform.Core.Tests/ExplorerTaskbarProbePlacementTests.cs` | **新增** — 覆盖锚点、DPI、方向、边界与越界拒绝 |
+| `tests/Mtp.Platform.Core.Tests/PlatformSkeletonTests.cs` | **修改** — 新增核心与契约不含 P/Invoke 的反射断言 |
+| `tools/TransparencyLab/` | **新增** — 独立透明诊断程序（不在 `Mtp.sln`），含源码、脚本与两张诊断截图 |
+| `tools/.gitignore` | **新增** — 忽略 tools 下的构建产物与本地临时输出 |
+| `AGENTS.md` | **修改** — 开发规划链接更新为现行分期开发规划 |
+| `CONTEXT.md` | **修改** — 更新右侧避让锚点在单屏右贴靠首片下的语义 |
+| `CHANGELOG.md` | **修改** — 记录本次开发版本 |
+| `CHANGELOG.txt` | **修改** — 记录本次开发版本 |
+
+---
+
 ## v0.1.0-alpha.5 (2026-09-03 21:36)
 
 ### 独立贴靠窗口

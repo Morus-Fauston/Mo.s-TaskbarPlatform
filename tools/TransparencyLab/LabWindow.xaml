@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Window
+    x:Class="TransparencyLab.LabWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Title="TransparencyLab">
+    <Grid x:Name="RootGrid" Background="Transparent" Padding="12" RowSpacing="8">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+        <StackPanel Orientation="Horizontal" Spacing="8" Grid.Row="0">
+            <Button Content="透明色刷" Click="Brush_Click" />
+            <Button Content="亚克力" Click="Acrylic_Click" />
+            <Button Content="云母" Click="Mica_Click" />
+            <Button Content="无材质" Click="None_Click" />
+            <Button Content="移到下一屏" Click="NextDisplay_Click" />
+            <Button Content="钉到桌面层" Click="DesktopLayer_Click" />
+            <Button Content="刷新信息" Click="Refresh_Click" />
+            <Button Content="关闭" Click="Close_Click" />
+        </StackPanel>
+        <TextBlock
+            x:Name="InfoText"
+            Grid.Row="1"
+            IsTextSelectionEnabled="True"
+            TextWrapping="Wrap"
+            VerticalAlignment="Top" />
+    </Grid>
+</Window>

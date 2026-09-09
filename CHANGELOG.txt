@@ -1,3 +1,16 @@
+v0.1.0-alpha.6 (2026-09-09 20:11)
+  Explorer探针: 完成二期05，新增控制器/适配器分层探针、纯几何定位与实验报告，Explorer类名只留在Win32适配器
+  降级与恢复: 探针失败清理子窗口并回退独立贴靠；嵌入窗口丢失时重置状态并恢复独立窗口；不持久化、不改偏好
+  透明结论: WS_CHILD被DWM拒绝(E_INVALIDARG/E_HANDLE/NRE)，子窗口无法携带材质或透明；材质附加后再SetParent会导致Host崩溃
+  可用配方: MTP自有顶级窗口经剥边框+DwmExtendFrameIntoClientArea+DesktopAcrylicController/MicaController+DWMSBT_NONE，两屏透明稳定
+  诊断工具: 新增tools/TransparencyLab独立诊断程序(不在Mtp.sln)，含源码、脚本与两张诊断截图；新增tools/.gitignore忽略构建产物
+  文档: AGENTS.md规划链接更新为现行分期开发规划；CONTEXT.md更新单屏右贴靠首片的锚点语义
+  验证: Release构建成功，0警告/0错误；73个测试通过，0失败/0跳过；新增核心与契约无P/Invoke反射断言
+  人工验收: 维护者在真实Windows确认嵌入成功、停止恢复、失败注入降级和Host重启恢复
+  范围边界: Explorer嵌入仍为实验适配器，多屏/DPI/自动隐藏/Explorer重启/第三方任务栏工具未验证；05A待承载路线决策
+
+====
+
 v0.1.0-alpha.5 (2026-09-03 21:36)
   独立贴靠窗口: 新增MTP自有顶级WinUI窗口，显示已校验且当前可见的组件，不创建Explorer子窗口
   生命周期: Host统一管理窗口显示/关闭/用户关闭通知和结构化错误；承载失败保留声明、组件模型和显示偏好

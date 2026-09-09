@@ -21,6 +21,46 @@
                 IsEnabled="False"
                 Toggled="VisibilityToggle_Toggled" />
 
+            <StackPanel Spacing="8">
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <Button
+                        x:Name="RunProbeButton"
+                        Content="运行 Explorer 嵌入探针"
+                        IsEnabled="False"
+                        Click="RunProbeButton_Click" />
+                    <Button
+                        x:Name="StopProbeButton"
+                        Content="停止探针，恢复独立贴靠"
+                        IsEnabled="False"
+                        Click="StopProbeButton_Click" />
+                </StackPanel>
+                <CheckBox
+                    x:Name="SimulateFailureCheck"
+                    Content="模拟任务栏不可用（失败注入）" />
+                <ComboBox
+                    x:Name="TransparencyModeCombo"
+                    Header="透明实验模式（探针与对照窗口共用）"
+                    SelectedIndex="2"
+                    MinWidth="360">
+                    <ComboBoxItem Content="Backdrop：透明 backdrop + DWM 玻璃扩展" />
+                    <ComboBoxItem Content="TintDiagnostic：半透明红 backdrop + DWM 玻璃扩展（截图可见）" />
+                    <ComboBoxItem Content="AcrylicController：薄亚克力控制器 + DWM 玻璃扩展（DeskBox 同路径）" />
+                    <ComboBoxItem Content="NearTransparentBackdrop：alpha=1 近透明 backdrop + DWM 玻璃扩展" />
+                </ComboBox>
+                <Button
+                    x:Name="TopLevelControlButton"
+                    Content="显示透明顶级对照窗口"
+                    Click="TopLevelControlButton_Click" />
+                <TextBlock
+                    Text="探针结果为实验记录，不代表正式兼容"
+                    Opacity="0.7" />
+                <TextBlock
+                    x:Name="ProbeStatusText"
+                    IsTextSelectionEnabled="True"
+                    TextWrapping="Wrap"
+                    Visibility="Collapsed" />
+            </StackPanel>
+
             <Border
                 x:Name="ComponentCard"
                 Padding="16"
