@@ -46,7 +46,9 @@ public sealed record ExplorerTaskbarProbeReport(
 /// </summary>
 public sealed record ExplorerTaskbarProbeRequest(
     bool SimulateTaskbarUnavailable = false,
-    ProbeTransparencyMode TransparencyMode = ProbeTransparencyMode.AcrylicController);
+    ProbeTransparencyMode TransparencyMode = ProbeTransparencyMode.AcrylicController,
+    Mtp.Platform.Core.MaterialKind Material = Mtp.Platform.Core.MaterialKind.Acrylic,
+    double MaterialOpacity = 0.8);
 
 /// <summary>
 /// Experimental transparency mechanisms compared by the probe. The acrylic controller is the maintainer-accepted
@@ -66,6 +68,12 @@ public enum ProbeTransparencyMode
 
     /// <summary>DesktopAcrylicController (thin, zero tint) plus DWM frame extension; the controller path DeskBox uses.</summary>
     AcrylicController,
+
+    /// <summary>
+    /// Solid brush (ARGB 0x60202020) plus one GDI paint on the window DC. The GDI paint is what keeps
+    /// alpha honoured on every output, because it takes the window out of DirectFlip/MPO promotion.
+    /// </summary>
+    SolidPaint,
 }
 
 public static class ExplorerTaskbarProbeReportFormatter

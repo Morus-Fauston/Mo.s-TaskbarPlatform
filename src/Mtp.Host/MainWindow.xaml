@@ -38,6 +38,24 @@
                     x:Name="SimulateFailureCheck"
                     Content="模拟任务栏不可用（失败注入）" />
                 <ComboBox
+                    x:Name="MaterialCombo"
+                    Header="材质（探针与对照窗口共用；选择即应用，含能力降级）"
+                    SelectionChanged="MaterialCombo_SelectionChanged"
+                    MinWidth="360" />
+                <Slider
+                    x:Name="MaterialOpacitySlider"
+                    Header="不透明度"
+                    Minimum="0"
+                    Maximum="1"
+                    StepFrequency="0.05"
+                    Value="0.8"
+                    ValueChanged="MaterialOpacitySlider_ValueChanged"
+                    MinWidth="360" />
+                <TextBlock
+                    x:Name="MaterialStatusText"
+                    Opacity="0.7"
+                    TextWrapping="Wrap" />
+                <ComboBox
                     x:Name="TransparencyModeCombo"
                     Header="透明实验模式（探针与对照窗口共用）"
                     SelectedIndex="2"
@@ -46,6 +64,7 @@
                     <ComboBoxItem Content="TintDiagnostic：半透明红 backdrop + DWM 玻璃扩展（截图可见）" />
                     <ComboBoxItem Content="AcrylicController：薄亚克力控制器 + DWM 玻璃扩展（DeskBox 同路径）" />
                     <ComboBoxItem Content="NearTransparentBackdrop：alpha=1 近透明 backdrop + DWM 玻璃扩展" />
+                    <ComboBoxItem Content="SolidPaint：纯色色刷 + DWM 玻璃扩展 + 一次 GDI 绘制（修复 alpha 丢失）" />
                 </ComboBox>
                 <Button
                     x:Name="TopLevelControlButton"

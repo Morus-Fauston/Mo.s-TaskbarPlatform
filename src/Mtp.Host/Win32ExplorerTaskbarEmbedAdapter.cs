@@ -83,6 +83,76 @@ public sealed class Win32ExplorerTaskbarEmbedAdapter : IExplorerTaskbarEmbedAdap
     }
 
     /// <summary>
+    /// Prepares a top-level window's surface for a composition backdrop without attaching any material:
+    /// strips frame styles and extends the DWM glass over the whole client area. The caller then chooses
+    /// the material (and, for solid, the GDI paint) separately, so the material dropdown is the single
+    /// source of truth and two mechanisms cannot fight over the same surface.
+    /// </summary>
+    public static string PrepareControlWindowSurface(nint hwnd)
+    {
+        if (hwnd == 0 || !NativeMethods.IsWindow(hwnd))
+        {
+            return "window handle unavailable";
+        }
+
+        var parts = new List<string> { SuppressFrameDecorations(hwnd, out var frameResult) };
+        var exStyle = (uint)(long)NativeMethods.GetWindowLongPtrW(hwnd, NativeMethods.GWL_EXSTYLE);
+        parts.Add(string.Create(
+            CultureInfo.InvariantCulture,
+            $"exstyle=0x{exStyle:X8} noredirectionbitmap={((exStyle & NativeMethods.WS_EX_NOREDIRECTIONBITMAP) != 0 ? "yes" : "no")}"));
+        parts.Add(string.Create(CultureInfo.InvariantCulture, $"dwm frame=0x{frameResult:X8}"));
+        return string.Join(" ", parts);
+    }
+
+    /// <summary>
+    /// Paints the window's own DC once with a black solid brush. This is the step WinUIEx's
+    /// <c>TransparentTintBackdrop</c> performs and the reason a solid brush keeps its alpha on every
+    /// output: writing to the window's redirection bitmap takes the window out of DirectFlip /
+    /// Multiplane-Overlay promotion, so DWM composites it normally instead of discarding alpha.
+    /// Verified on the maintainer's machine: without this call the solid brush renders opaque
+    /// #202020 on the NVIDIA-driven output; with it the same brush is transparent.
+    /// This is a workaround for undocumented promotion behaviour, not a documented contract.
+    /// </summary>
+    public static bool PaintWindowSurfaceOnce(nint hwnd, out string detail)
+    {
+        if (hwnd == 0 || !NativeMethods.IsWindow(hwnd))
+        {
+            detail = "window handle unavailable";
+            return false;
+        }
+
+        var hdc = NativeMethods.GetDC(hwnd);
+        if (hdc == 0)
+        {
+            detail = FormatWin32Error(Marshal.GetLastWin32Error());
+            return false;
+        }
+
+        var brush = NativeMethods.CreateSolidBrush(0);
+        try
+        {
+            if (!NativeMethods.GetClientRect(hwnd, out var rect))
+            {
+                detail = FormatWin32Error(Marshal.GetLastWin32Error());
+                return false;
+            }
+
+            NativeMethods.FillRect(hdc, ref rect, brush);
+            detail = string.Create(CultureInfo.InvariantCulture, $"painted {rect.Width}x{rect.Height}");
+            return true;
+        }
+        finally
+        {
+            if (brush != 0)
+            {
+                NativeMethods.DeleteObject(brush);
+            }
+
+            _ = NativeMethods.ReleaseDC(hwnd, hdc);
+        }
+    }
+
+    /// <summary>
     /// Applies the experimental transparency stack to a probe window: a transparent (or tinted) system
     /// backdrop brush plus DWM frame extension over the whole client area, which turns the window's own
     /// surface into DWM glass. Public so the top-level control window in MainWindow uses the identical
@@ -122,6 +192,7 @@ public sealed class Win32ExplorerTaskbarEmbedAdapter : IExplorerTaskbarEmbedAdap
                 {
                     ProbeTransparencyMode.TintDiagnostic => Windows.UI.Color.FromArgb(128, 255, 0, 0),
                     ProbeTransparencyMode.NearTransparentBackdrop => Windows.UI.Color.FromArgb(1, 0, 0, 0),
+                    ProbeTransparencyMode.SolidPaint => Windows.UI.Color.FromArgb(0x60, 0x20, 0x20, 0x20),
                     _ => Windows.UI.Color.FromArgb(0, 0, 0, 0),
                 };
                 if (!window.TryApplyTransparentBackdrop(tint, out var backdropFailure))
@@ -131,6 +202,12 @@ public sealed class Win32ExplorerTaskbarEmbedAdapter : IExplorerTaskbarEmbedAdap
                 }
 
                 parts.Add(string.Create(CultureInfo.InvariantCulture, $"backdrop=argb({tint.A},{tint.R},{tint.G},{tint.B})"));
+
+                // Solid mode additionally needs one GDI paint on the window DC to keep alpha honoured.
+                if (mode == ProbeTransparencyMode.SolidPaint)
+                {
+                    parts.Add(PaintWindowSurfaceOnce(hwnd, out var paintDetail) ? paintDetail : $"paint failed: {paintDetail}");
+                }
             }
 
             var exStyle = (uint)(long)NativeMethods.GetWindowLongPtrW(hwnd, NativeMethods.GWL_EXSTYLE);
@@ -238,7 +315,6 @@ public sealed class Win32ExplorerTaskbarEmbedAdapter : IExplorerTaskbarEmbedAdap
             "apply_transparency",
             false,
             $"{request.TransparencyMode}: skipped, DWM materials are not available to WS_CHILD windows"));
-
         originalStyle = NativeMethods.GetWindowLongPtrW(windowHandle, NativeMethods.GWL_STYLE);
         var childStyle = ((uint)(long)originalStyle & ~NativeMethods.TopLevelStyleMask) | NativeMethods.WS_CHILD;
         NativeMethods.SetLastError(0);
@@ -658,6 +734,22 @@ public sealed class Win32ExplorerTaskbarEmbedAdapter : IExplorerTaskbarEmbedAdap
         [DllImport("user32.dll", ExactSpelling = true, SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
         public static extern bool GetClientRect(nint hWnd, out RECT lpRect);
+
+        [DllImport("user32.dll", ExactSpelling = true, SetLastError = true)]
+        public static extern nint GetDC(nint hWnd);
+
+        [DllImport("user32.dll", ExactSpelling = true, SetLastError = true)]
+        public static extern int ReleaseDC(nint hWnd, nint hDC);
+
+        [DllImport("user32.dll", ExactSpelling = true, SetLastError = true)]
+        public static extern int FillRect(nint hDC, ref RECT lprc, nint hbr);
+
+        [DllImport("gdi32.dll", ExactSpelling = true, SetLastError = true)]
+        public static extern nint CreateSolidBrush(uint color);
+
+        [DllImport("gdi32.dll", ExactSpelling = true, SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool DeleteObject(nint ho);
 
         [DllImport("user32.dll", ExactSpelling = true, SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]

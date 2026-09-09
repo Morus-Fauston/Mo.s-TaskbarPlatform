@@ -18,8 +18,13 @@ namespace Mtp.Host;
 /// </summary>
 public sealed partial class ExplorerTaskbarProbeWindow : Window
 {
+    // One shared Compositor for every brush this process creates. Creating a new one per brush
+    // instance and dropping it on each material switch leaked compositors and crashed the process.
+    private static readonly Windows.UI.Composition.Compositor SharedCompositor = new();
+
     private TransparentBackdrop? transparentBackdrop;
     private DesktopAcrylicController? acrylicController;
+    private MicaController? micaController;
     private SystemBackdropConfiguration? acrylicConfiguration;
 
     public ExplorerTaskbarProbeWindow(HostComponentDisplayModel display)
@@ -31,10 +36,93 @@ public sealed partial class ExplorerTaskbarProbeWindow : Window
     }
 
     /// <summary>
+    /// Reports which materials the current Windows build can actually render. Mica needs Windows 11;
+    /// the solid brush needs no system support because it is drawn by this process.
+    /// </summary>
+    public static MaterialCapabilities ProbeCapabilities() => new(
+        SupportsSolid: true,
+        SupportsAcrylic: SafeIsSupported(static () => DesktopAcrylicController.IsSupported()),
+        SupportsMica: SafeIsSupported(static () => MicaController.IsSupported()));
+
+    private static bool SafeIsSupported(Func<bool> probe)
+    {
+        try
+        {
+            return probe();
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Applies a resolved material. <paramref name="spec"/> must already be the effective value
+    /// returned by <see cref="MaterialResolver"/>; this method does not resolve or downgrade again.
+    /// </summary>
+    public bool TryApplyMaterial(MaterialSpec spec, out string? detail)
+    {
+        // The controller path and the backdrop-brush path are mutually exclusive: attaching both
+        // leaves whichever was applied first still driving the surface, which is why switching
+        // materials used to look like the previous material with only a tint change.
+        ClearMaterial();
+
+        switch (spec.Kind)
+        {
+            case MaterialKind.Acrylic:
+                return TryApplyAcrylicController(spec.Opacity, out detail);
+
+            case MaterialKind.Mica:
+                return TryApplyMicaController(spec.Opacity, out detail);
+
+            case MaterialKind.Solid:
+                // DeskBox solid mode: alpha = opacity * 255. The brush alone is NOT enough: on an
+                // output that promotes the window to a hardware plane the alpha is discarded, so the
+                // caller must also paint the window DC once (PaintWindowSurfaceOnce) to keep alpha
+                // honoured. RequiresSurfacePaint tells the caller that this step is still owed.
+                var alpha = (byte)Math.Clamp(Math.Round(spec.Opacity * 255), 0, 255);
+                if (!TryApplyTransparentBackdrop(Windows.UI.Color.FromArgb(alpha, 0x20, 0x20, 0x20), out var solidFailure))
+                {
+                    detail = solidFailure;
+                    return false;
+                }
+
+                RequiresSurfacePaint = true;
+                detail = $"solid argb({alpha},32,32,32)";
+                return true;
+
+            default:
+                detail = "none (opaque surface)";
+                return true;
+        }
+    }
+
+    /// <summary>
+    /// True when the current material needs one GDI paint on the window DC before its alpha is
+    /// honoured. The window itself holds no Win32 calls, so the caller (which owns the adapter
+    /// boundary) performs the paint and clears this flag.
+    /// </summary>
+    public bool RequiresSurfacePaint { get; private set; }
+
+    /// <summary>Called by the adapter boundary after it has painted the window surface once.</summary>
+    public void MarkSurfacePainted() => RequiresSurfacePaint = false;
+
+    /// <summary>Removes any attached material so the window falls back to an opaque surface.</summary>
+    public void ClearMaterial()
+    {
+        SystemBackdrop = null;
+        transparentBackdrop = null;
+        RequiresSurfacePaint = false;
+        ReleaseAcrylicController();
+    }
+
+    /// <summary>
     /// The controller path proven by DeskBox on this machine: a thin acrylic with zero tint, so only
     /// the blur remains. Unlike the transparent brush it always shows some material.
     /// </summary>
-    public bool TryApplyAcrylicController(out string? detail)
+    public bool TryApplyAcrylicController(out string? detail) => TryApplyAcrylicController(0.8, out detail);
+
+    private bool TryApplyAcrylicController(double opacity, out string? detail)
     {
         try
         {
@@ -54,11 +142,45 @@ public sealed partial class ExplorerTaskbarProbeWindow : Window
             {
                 Kind = DesktopAcrylicKind.Thin,
                 TintOpacity = 0f,
-                LuminosityOpacity = 0.1f,
+                LuminosityOpacity = (float)MaterialSpec.ClampOpacity(opacity),
             };
             acrylicController.AddSystemBackdropTarget(this.As<ICompositionSupportsSystemBackdrop>());
             acrylicController.SetSystemBackdropConfiguration(acrylicConfiguration);
-            detail = "acrylic thin tint=0 luminosity=0.1";
+            detail = string.Create(System.Globalization.CultureInfo.InvariantCulture, $"acrylic thin tint=0 luminosity={opacity:F2}");
+            return true;
+        }
+        catch (Exception exception)
+        {
+            ReleaseAcrylicController();
+            detail = FormatException(exception);
+            return false;
+        }
+    }
+
+    private bool TryApplyMicaController(double opacity, out string? detail)
+    {
+        try
+        {
+            if (!MicaController.IsSupported())
+            {
+                detail = "MicaController not supported";
+                return false;
+            }
+
+            ReleaseAcrylicController();
+            acrylicConfiguration = new SystemBackdropConfiguration
+            {
+                IsInputActive = true,
+                Theme = RootGrid.ActualTheme == ElementTheme.Dark ? SystemBackdropTheme.Dark : SystemBackdropTheme.Light,
+            };
+            micaController = new MicaController
+            {
+                Kind = MicaKind.BaseAlt,
+                LuminosityOpacity = (float)MaterialSpec.ClampOpacity(opacity),
+            };
+            micaController.AddSystemBackdropTarget(this.As<ICompositionSupportsSystemBackdrop>());
+            micaController.SetSystemBackdropConfiguration(acrylicConfiguration);
+            detail = string.Create(System.Globalization.CultureInfo.InvariantCulture, $"mica baseAlt luminosity={opacity:F2}");
             return true;
         }
         catch (Exception exception)
@@ -80,7 +202,17 @@ public sealed partial class ExplorerTaskbarProbeWindow : Window
             // The composition target may already be gone.
         }
 
+        try
+        {
+            micaController?.Dispose();
+        }
+        catch (Exception)
+        {
+            // The composition target may already be gone.
+        }
+
         acrylicController = null;
+        micaController = null;
         acrylicConfiguration = null;
     }
 
@@ -190,20 +322,16 @@ public sealed partial class ExplorerTaskbarProbeWindow : Window
     /// <summary>
     /// The backdrop target accepts a system-compositor brush (Windows.UI.Composition), so the
     /// brush is created eagerly here where the caller can still record a failure as a probe step.
-    /// The brush alone is not enough: the window surface must also be made DWM glass by the adapter.
+    /// The brush alone is not enough: the window surface must also be made DWM glass by the adapter,
+    /// and for <see cref="MaterialKind.Solid"/> the adapter must additionally paint the window DC once
+    /// (see <c>Win32ExplorerTaskbarEmbedAdapter.PaintWindowSurfaceOnce</c>) to keep alpha honoured.
+    /// No Win32 call lives here; that boundary is enforced by the platform-skeleton tests.
     /// </summary>
-    private sealed partial class TransparentBackdrop : SystemBackdrop
+    private sealed partial class TransparentBackdrop(Windows.UI.Color tint) : SystemBackdrop
     {
-        private readonly Windows.UI.Composition.Compositor compositor;
-        private readonly Windows.UI.Color tint;
+        private readonly Windows.UI.Composition.Compositor compositor = SharedCompositor;
+        private readonly Windows.UI.Color tint = tint;
         private Windows.UI.Composition.CompositionColorBrush? brush;
-
-        public TransparentBackdrop(Windows.UI.Color tint)
-        {
-            this.tint = tint;
-            compositor = new Windows.UI.Composition.Compositor();
-            brush = compositor.CreateColorBrush(tint);
-        }
 
         public bool IsConnected { get; private set; }
 

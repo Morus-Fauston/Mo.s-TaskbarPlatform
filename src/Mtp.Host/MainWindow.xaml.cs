@@ -1,4 +1,6 @@
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
 using System.Linq;
 using System.Text;
 using Mtp.Platform.Core;
@@ -52,6 +54,9 @@ public sealed partial class MainWindow : Window
         }
 
         UpdateProbeButtons();
+
+        materialCapabilities = ExplorerTaskbarProbeWindow.ProbeCapabilities();
+        PopulateMaterialCombo();
 
         var error = displayLoad.DeclarationError ?? displayLoad.PreferenceError;
         if (error is not null)
@@ -165,19 +170,18 @@ public sealed partial class MainWindow : Window
         var controlWindow = new ExplorerTaskbarProbeWindow(display);
         controlWindow.PrepareHidden(new Windows.Graphics.SizeInt32(360, 60), useToolWindowPresenter: false);
         controlWindow.PrepareAsTopLevelControl();
-        var applied = Win32ExplorerTaskbarEmbedAdapter.TryApplyWindowTransparency(controlWindow, SelectedTransparencyMode, out var transparencyDetail);
         controlWindow.Closed += TopLevelControlWindow_Closed;
         var position = AppWindow.Position;
         controlWindow.ShowAt(new Windows.Graphics.PointInt32(position.X + 24, position.Y + AppWindow.Size.Height - 90));
-        // TransparencyLab only re-extends the DWM frame after load; it does not re-strip styles after showing.
-        var reapplied = $"style=0x{(uint)(long)0:X8} (no post-show restrip; Lab parity)";
         topLevelControlWindow = controlWindow;
         TopLevelControlButton.Content = "关闭透明顶级对照窗口";
 
-        controlStatusBase = applied
-            ? $"顶级对照窗口已显示（未嵌入任务栏）。apply_transparency：{transparencyDetail}；after_show：{reapplied}；backdrop_state：{controlWindow.DescribeBackdropState()}。请观察其背景是否透明并与嵌入探针对比。"
-            : $"顶级对照窗口已显示，但透明模式应用失败：{transparencyDetail}";
+        // The material dropdown is the single source of truth for this window. The transparency mode
+        // dropdown only feeds the embed probe request, so the two controls cannot fight over the surface.
+        var frameDetail = Win32ExplorerTaskbarEmbedAdapter.PrepareControlWindowSurface(controlWindow.WindowHandle);
+        controlStatusBase = $"顶级对照窗口已显示（未嵌入任务栏）。窗口表面：{frameDetail}；backdrop_state：{controlWindow.DescribeBackdropState()}。材质由「材质」下拉框控制，可实时切换对比。";
         controlWindow.AppWindow.Changed += TopLevelControlWindow_Changed;
+        ApplyMaterialToControlWindow();
         UpdateControlDisplayEnvironment(controlWindow);
     }
 
@@ -206,8 +210,105 @@ public sealed partial class MainWindow : Window
         1 => ProbeTransparencyMode.TintDiagnostic,
         2 => ProbeTransparencyMode.AcrylicController,
         3 => ProbeTransparencyMode.NearTransparentBackdrop,
+        4 => ProbeTransparencyMode.SolidPaint,
         _ => ProbeTransparencyMode.Backdrop,
     };
+
+    /// <summary>Material dropdown entries, filled from the core selection order so the UI cannot drift from it.</summary>
+    private void PopulateMaterialCombo()
+    {
+        MaterialCombo.Items.Clear();
+        foreach (var kind in MaterialResolver.SelectionOrder)
+        {
+            // The translucency hint is part of the label because Mica is opaque by design; without it
+            // the maintainer reasonably expects the opacity slider to make the window see-through.
+            MaterialCombo.Items.Add($"{MaterialResolver.Describe(kind)}（{(MaterialResolver.IsTranslucent(kind) ? "可透" : "不透")}）");
+        }
+
+        MaterialCombo.SelectedIndex = MaterialResolver.SelectionOrder.ToList().IndexOf(MaterialKind.Acrylic);
+        UpdateMaterialStatus();
+    }
+
+    private MaterialSpec SelectedMaterialSpec => new(
+        MaterialCombo.SelectedIndex >= 0 && MaterialCombo.SelectedIndex < MaterialResolver.SelectionOrder.Count
+            ? MaterialResolver.SelectionOrder[MaterialCombo.SelectedIndex]
+            : MaterialKind.Acrylic,
+        MaterialOpacitySlider.Value);
+
+    /// <summary>
+    /// Shows the requested material, the material that is actually available on this build and the
+    /// downgrade reason, so a fallback is never silent.
+    /// </summary>
+    private void UpdateMaterialStatus()
+    {
+        if (MaterialCombo.SelectedIndex < 0)
+        {
+            MaterialStatusText.Text = string.Empty;
+            return;
+        }
+
+        var resolution = MaterialResolver.Resolve(SelectedMaterialSpec, materialCapabilities);
+        var translucency = MaterialResolver.IsTranslucent(resolution.Effective.Kind)
+            ? "可透出后面内容"
+            : "不透出后面内容";
+        MaterialStatusText.Text = resolution.WasDowngraded
+            ? $"当前材质：{MaterialResolver.Describe(resolution.Effective.Kind)}（不透明度 {resolution.Effective.Opacity:F2}）｜{translucency}｜{MaterialResolver.DescribeOpacityMeaning(resolution.Effective.Kind)}｜{resolution.DowngradeReason}"
+            : $"当前材质：{MaterialResolver.Describe(resolution.Effective.Kind)}（不透明度 {resolution.Effective.Opacity:F2}）｜{translucency}｜{MaterialResolver.DescribeOpacityMeaning(resolution.Effective.Kind)}";
+    }
+
+    private MaterialCapabilities materialCapabilities = MaterialCapabilities.SolidOnly;
+
+    private void MaterialCombo_SelectionChanged(object sender, SelectionChangedEventArgs args)
+    {
+        UpdateMaterialStatus();
+        ApplyMaterialToControlWindow();
+    }
+
+    private void MaterialOpacitySlider_ValueChanged(object sender, RangeBaseValueChangedEventArgs args)
+    {
+        if (MaterialStatusText is not null)
+        {
+            UpdateMaterialStatus();
+            ApplyMaterialToControlWindow();
+        }
+    }
+
+    /// <summary>
+    /// Applies the selected material to the open top-level control window so the maintainer can compare
+    /// materials on one window without reopening it. Resolution and downgrade happen here, in Host code;
+    /// the window only renders the effective value it is handed. Solid additionally needs one GDI paint
+    /// on the window DC, which is performed through the adapter boundary.
+    /// </summary>
+    private void ApplyMaterialToControlWindow()
+    {
+        if (topLevelControlWindow is null || MaterialCombo.SelectedIndex < 0)
+        {
+            return;
+        }
+
+        var resolution = MaterialResolver.Resolve(SelectedMaterialSpec, materialCapabilities);
+        var applied = topLevelControlWindow.TryApplyMaterial(resolution.Effective, out var detail);
+        var downgrade = resolution.WasDowngraded ? $"{resolution.DowngradeReason} " : string.Empty;
+        var meaning = MaterialResolver.DescribeOpacityMeaning(resolution.Effective.Kind);
+        ProbeStatusText.Text = $"{controlStatusBase}\n材质：{MaterialResolver.Describe(resolution.Effective.Kind)}（不透明度 {resolution.Effective.Opacity:F2}）｜{meaning}｜{downgrade}{(applied ? detail : $"应用失败：{detail}")}";
+        ProbeStatusText.Visibility = Visibility.Visible;
+
+        // Solid mode owes one GDI paint on the window DC. Defer it to a low-priority queue item so the
+        // XAML framework has already connected the brush; painting before that still works on this machine
+        // but the ordering matches WinUIEx, which paints inside OnTargetConnected.
+        if (applied && topLevelControlWindow.RequiresSurfacePaint)
+        {
+            var target = topLevelControlWindow;
+            var baseText = ProbeStatusText.Text;
+            target.DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+            {
+                var painted = Win32ExplorerTaskbarEmbedAdapter.PaintWindowSurfaceOnce(target.WindowHandle, out var paintResult);
+                target.MarkSurfacePainted();
+                ProbeStatusText.Text = $"{baseText}\n表面绘制（断开硬件平面提升）：{(painted ? paintResult : $"失败：{paintResult}")}";
+                ProbeStatusText.Visibility = Visibility.Visible;
+            });
+        }
+    }
 
     private void TopLevelControlWindow_Closed(object sender, WindowEventArgs args)
     {

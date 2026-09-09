@@ -10,7 +10,11 @@
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
         <StackPanel Orientation="Horizontal" Spacing="8" Grid.Row="0">
-            <Button Content="透明色刷" Click="Brush_Click" />
+            <Button Content="透明色刷+DWM" Click="Brush_Click" />
+            <Button Content="透明色刷(旧)" Click="LegacyBrush_Click" />
+            <Button Content="色刷+消息子类" Click="SubclassBrush_Click" />
+            <Button Content="色刷+GDI填黑" Click="GdiBrush_Click" />
+            <Button Content="WinUIEx色刷" Click="WinUIExBrush_Click" />
             <Button Content="亚克力" Click="Acrylic_Click" />
             <Button Content="云母" Click="Mica_Click" />
             <Button Content="无材质" Click="None_Click" />

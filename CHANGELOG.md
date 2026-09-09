@@ -1,5 +1,47 @@
 # Changelog
 
+## v0.1.0-alpha.7 (2026-09-09 21:46)
+
+### 透明窗口修复
+
+- **根因定位**：通过 `TransparencyLab` 真机对照确认，透明窗口在 DirectFlip/MPO 硬件平面路径下会丢失 alpha；对窗口 DC 执行一次 GDI 绘制后回落到普通 DWM 合成路径，alpha 恢复，透明窗口不再显示为灰色或不透明底。
+- **透明承载**：`Win32ExplorerTaskbarEmbedAdapter` 新增一次性窗口表面绘制路径，并将默认探针透明模式调整为 `SolidPaint`；该路径只作用于 MTP 自己的窗口，不修改 Explorer 窗口属性。
+- **材质模型**：平台核心新增无 Windows 依赖的 `MaterialSpec`、`MaterialCapabilities`、`MaterialResolution` 和 `MaterialResolver`，统一表达材质能力、请求材质、实际材质与运行时降级原因。
+- **材质降级**：材质请求不被静默改写；当前环境不支持请求材质时按亚克力、云母、纯色、无材质顺序选择实际材质，保留原始请求和不透明度，并返回可读的降级原因。
+- **语义校正**：明确区分纯色透明度、亚克力浓淡、云母亮度和无材质表面；云母是不透明材质，不会因为不透明度数值变小而透出后方窗口。
+- **Host 控制**：主窗口新增材质选择和不透明度控制，显示实际生效材质及降级原因；透明顶级对照窗口和 Explorer 探针共享材质能力探测与应用路径。
+- **稳定性**：材质合成器改为进程内共享，避免反复切换材质时重复创建 `Compositor` 导致崩溃；新增窗口句柄、显示器环境、像素结果和跨窗口对照诊断脚本，支持复核透明效果。
+
+### 验证
+
+- **自动化测试**：Release 配置下 `dotnet test Mtp.sln --configuration Release` 通过，共 94 个测试成功，0 个失败，0 个跳过；新增材质解析、能力降级、不透明度约束和材质语义测试。
+- **构建结果**：Release 配置下 `dotnet build Mtp.sln --configuration Release` 成功，0 个警告，0 个错误。
+- **真实 Windows 验证**：在当前验证机器上确认一次 GDI 窗口表面绘制可恢复透明合成，解决透明窗口灰底/不透明问题；该结论属于实验证据，尚未覆盖不同 GPU 厂商、Windows 版本、HDR、独占全屏和其他显示环境。
+- **Explorer 边界**：`WS_CHILD` 仍不支持 DWM 材质和窗口级透明；本修复解决的是 MTP 自有顶级窗口透明问题，不把 Explorer 子窗口嵌入标记为正式兼容能力。
+
+### 文件变更表
+
+| 文件 | 变更 |
+|:-----|:------|
+| `src/Mtp.Platform.Core/MaterialSpec.cs` | **新增** — 无 Windows 依赖的材质声明、能力、降级和语义模型 |
+| `tests/Mtp.Platform.Core.Tests/MaterialResolverTests.cs` | **新增** — 覆盖材质保留、降级、不透明度约束和语义 |
+| `src/Mtp.Host/ExplorerTaskbarProbeWindow.xaml.cs` | **修改** — 共享合成器并支持统一材质应用、清理与能力探测 |
+| `src/Mtp.Host/Win32ExplorerTaskbarEmbedAdapter.cs` | **修改** — 增加一次性 GDI 表面绘制，恢复透明合成路径并记录诊断步骤 |
+| `src/Mtp.Host/ExplorerTaskbarProbeReport.cs` | **修改** — 扩展透明修复与实际材质结果报告 |
+| `src/Mtp.Host/MainWindow.xaml` | **修改** — 增加材质选择和不透明度控制 |
+| `src/Mtp.Host/MainWindow.xaml.cs` | **修改** — 接入材质解析、应用结果和降级状态显示 |
+| `tools/TransparencyLab/LabWindow.xaml` | **修改** — 更新材质诊断界面 |
+| `tools/TransparencyLab/LabWindow.xaml.cs` | **修改** — 增加窗口表面绘制、材质对照和像素/句柄诊断 |
+| `tools/TransparencyLab/TransparencyLab.csproj` | **修改** — 配置新增诊断依赖 |
+| `tools/TransparencyLab/probe-compare-windows.ps1` | **新增** — 对照窗口诊断脚本 |
+| `tools/TransparencyLab/probe-hwnd-identity.ps1` | **新增** — 窗口句柄与身份诊断脚本 |
+| `tools/TransparencyLab/probe-lab-pixels.ps1` | **新增** — 透明像素结果诊断脚本 |
+| `tools/TransparencyLab/probe-lab-window.ps1` | **新增** — 诊断窗口状态脚本 |
+| `CHANGELOG.md` | **修改** — 记录本次开发版本 |
+| `CHANGELOG.txt` | **修改** — 记录本次开发版本 |
+
+---
+
 ## v0.1.0-alpha.6 (2026-09-09 20:11)
 
 ### Explorer 任务栏嵌入探针

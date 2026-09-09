@@ -17,6 +17,8 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.4.0" />
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.2270" />
+    <!-- A/B control only: compare WinUIEx's TransparentTintBackdrop with the lab's own brush. -->
+    <PackageReference Include="WinUIEx" Version="2.9.3" />
   </ItemGroup>
 
 </Project>
