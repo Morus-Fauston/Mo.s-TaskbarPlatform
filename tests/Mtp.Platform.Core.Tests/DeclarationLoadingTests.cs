@@ -57,6 +57,55 @@ public sealed class DeclarationLoadingTests
     }
 
     [Fact]
+    public void AcceptedSnapshotCollectionsCannotBeModifiedByCallers()
+    {
+        var store = new DeclarationSnapshotStore();
+        var accepted = store.SubmitJson(ValidJson("music", "controls", "widget"));
+
+        Assert.True(accepted.IsSuccess);
+        var snapshot = accepted.Value!;
+        var feature = Assert.Single(snapshot.FeatureGroups);
+        var component = Assert.Single(feature.Components);
+        var flyout = Assert.Single(feature.TaskbarFlyouts);
+
+        AssertReadOnly(snapshot.FeatureGroups);
+        AssertReadOnly(feature.Components);
+        AssertReadOnly(component.ActionSlots);
+        AssertReadOnly(feature.TaskbarFlyouts);
+        AssertReadOnly(flyout.ActionSlots);
+        Assert.Same(snapshot, store.Current);
+    }
+
+    [Fact]
+    public void MutatingTheSubmittedDtoAfterAcceptanceCannotChangeTheSnapshot()
+    {
+        var slots = new List<ActionSlotDeclaration> { new("go") };
+        var components = new List<ComponentDeclaration> { new("widget", slots) };
+        var flyoutSlots = new List<ActionSlotDeclaration> { new("open") };
+        var flyouts = new List<TaskbarFlyoutDeclaration> { new("panel", flyoutSlots) };
+        var featureGroups = new List<FeatureGroupDeclaration>
+        {
+            new("controls", components, flyouts),
+        };
+        var declaration = new ApplicationDeclaration("music", featureGroups);
+        var store = new DeclarationSnapshotStore();
+
+        var accepted = store.Submit(declaration);
+        featureGroups.Clear();
+        components.Clear();
+        slots.Clear();
+        flyouts.Clear();
+        flyoutSlots.Clear();
+
+        Assert.True(accepted.IsSuccess);
+        var feature = Assert.Single(store.Current!.FeatureGroups);
+        Assert.Single(feature.Components);
+        Assert.Single(feature.Components[0].ActionSlots);
+        Assert.Single(feature.TaskbarFlyouts);
+        Assert.Single(feature.TaskbarFlyouts[0].ActionSlots);
+    }
+
+    [Fact]
     public void LocalSourceReadsTheConfiguredJsonFile()
     {
         var path = Path.Combine(Path.GetTempPath(), $"mtp-declaration-{Guid.NewGuid():N}.json");
@@ -115,6 +164,42 @@ public sealed class DeclarationLoadingTests
     }
 
     [Fact]
+    public void OversizedDeclarationIsRejectedBeforeDeserialization()
+    {
+        var json = new string('x', DeclarationValidator.MaximumJsonSizeInBytes + 1);
+
+        var result = new DeclarationValidator().ValidateJson(json);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("declaration_too_large", result.Error!.Code);
+    }
+
+    [Fact]
+    public void OversizedLocalDeclarationIsRejectedBeforeReadingTheWholeFile()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"mtp-declaration-large-{Guid.NewGuid():N}.json");
+        try
+        {
+            using (var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                stream.SetLength(DeclarationValidator.MaximumJsonSizeInBytes + 1L);
+            }
+
+            var result = new LocalJsonDeclarationSource(path).Read();
+
+            Assert.False(result.IsSuccess);
+            Assert.Equal("declaration_too_large", result.Error!.Code);
+        }
+        finally
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+    }
+
+    [Fact]
     public void SourceFailureAlsoKeepsTheLastAcceptedSnapshot()
     {
         var store = new DeclarationSnapshotStore();
@@ -149,6 +234,15 @@ public sealed class DeclarationLoadingTests
           ]
         }
         """;
+
+    private static void AssertReadOnly<T>(IReadOnlyList<T> items)
+    {
+        if (items is IList<T> mutableView)
+        {
+            Assert.True(mutableView.IsReadOnly);
+            Assert.Throws<NotSupportedException>(() => mutableView.Clear());
+        }
+    }
 
     private sealed class StubDeclarationSource : IDeclarationSource
     {

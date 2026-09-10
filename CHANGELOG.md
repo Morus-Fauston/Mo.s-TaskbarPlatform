@@ -1,5 +1,85 @@
 # Changelog
 
+## v0.1.0-alpha.8 (2026-09-10 23:45)
+
+### 状态完整性修复
+
+- **已校验声明不可变**：现象是调用方可以改写已校验声明的输出集合，或绕过校验直接构造“已校验”对象。根因是三个声明类型以记录和可变集合暴露。修复为密封类、只读集合和内部构造函数，强制校验父子身份关系，并要求只能经 `DeclarationValidator` 创建。
+- **偏好读取状态分类**：现象是“文件缺失”“内容损坏”“暂时读不到”被当作同一类，且暂时不可读时会用空偏好覆盖磁盘上的未知旧值。修复为区分 `Loaded / Missing / Invalid / Unavailable`；`Unavailable` 时拒绝写入并保留未知旧偏好。
+- **偏好陈旧快照覆盖**：现象是两个 Host 实例或长时间运行后，内存里的旧偏好会覆盖磁盘上的较新内容。修复为提交前重新读取磁盘最新偏好并合并本次改动。
+- **偏好原子写入**：现象是写入中断可能留下半份文件。修复为同目录临时文件加原子替换，失败时保留上一份完整文件并清理本次临时文件。
+- **载荷上限**：现象是超大 JSON 会被整体读入内存。修复为声明与偏好在完整读取和反序列化前拒绝超过 1 MiB 的载荷，读取端按上限加一字节截断判断，写入端同样受限。
+- **偏好写入并发**：同一偏好文件的写入改为使用按完整路径哈希命名的命名互斥量，短时等待后失败返回结构化错误，避免两个 Host 同时写坏文件。
+
+### 窗口与生命周期修复
+
+- **错误在组件隐藏时不可见**：现象是组件关闭后 Host 错误文本一起被隐藏。根因是错误文本位于组件可见性容器内部。修复为把错误文本移出该容器，并让加载结果汇总声明与偏好两类错误。
+- **窗口关闭未确认即释放**：现象是关闭调用返回后立刻释放引用，即使窗口尚未真正关闭。修复为只有收到 `Closed` 确认才释放资源与关闭通知，未确认时返回 `dock_window_close_unconfirmed` 并保留重试入口。
+- **显示失败后资源所有权丢失**：现象是显示或配置失败后适配器丢掉窗口引用，导致无法重试关闭。修复为失败时按真实 `IsOpen` 保留所有权与组件模型，并新增 `dock_window_closed_during_show` 处理显示期间被关闭的情况。
+- **过期关闭事件**：修复为按引用核对关闭事件来源，忽略属于旧窗口的迟到事件。
+- **诊断对照窗口所有权**：新增 `TopLevelControlWindowOwner`，只有收到关闭确认才释放；关闭失败保留重试入口、阻止 Host 本次退出，且不先关闭其他显示资源。
+- **Explorer 探针生命周期**：原先只有“已嵌入/未嵌入”两态，清理进行中会被误报为已分离。修复为 `Detached / Embedded / CleanupPending` 三态，区分停止探针与 Host 退出两种意图，逐步校验隐藏、恢复父窗口、恢复样式和零句柄关闭确认，失败时保留所有权与可用重试入口，迟到的分离事件先恢复可用承载。
+
+### 逻辑与架构优化
+
+- **统一显示动作入口**：新增 `HostDisplayActionController`，把偏好修改、组件显示模型、独立贴靠窗口和探针诊断统一协调；启动恢复与用户切换走同一入口，UI 不再自行排列这些步骤，消除了两条路径行为漂移。
+- **偏好提交接口单一化**：由“读全量再写全量”改为按稳定 ID 提交一次可见性变更，由存储层在锁内完成读取、合并与写入，避免调用方持有过期快照。
+- **合成器共享**：现象是反复切换材质会泄漏合成器并导致进程崩溃。修复为进程内共享单个 `Compositor`，材质切换只重建画刷。
+- **测试可见性**：新增 `InternalsVisibleTo` 程序集声明，使测试能通过真实内部边界验证失败与恢复路径。
+
+### 验证
+
+- **自动化测试**：Release 配置下 `dotnet test Mtp.sln --configuration Release` 通过，共 149 个测试成功，0 个失败，0 个跳过；相比 alpha.7 新增 55 个测试。
+- **构建结果**：Release 配置下 `dotnet build Mtp.sln --configuration Release` 成功，0 个警告，0 个错误；`dotnet format --verify-no-changes` 通过。
+- **新增覆盖**：显示动作的显示、隐藏、保存失败、显示失败、关闭失败、启动恢复与退出重试；偏好独占锁恢复、历史稳定 ID 保留、陈旧快照合并、读取状态分类、双向载荷上限、受限读取、超长路径与原子替换失败；窗口初始化、配置、显示、清理、关闭确认与关闭重试；探针三态生命周期与迟到事件；对照窗口所有权；错误文本位于可见性容器之外。
+- **静态隔离**：平台核心与公共契约中未引入 WinUI、Win32、P/Invoke、Explorer 或窗口句柄依赖。
+
+### 待人工验收
+
+- **真机项**：真实 Windows 上以隐藏状态启动并制造偏好读取或窗口承载错误，确认主窗口仍显示可复制的结构化错误；反复显示、隐藏和关闭独立贴靠窗口后重启，确认无遗留窗口且偏好按最后一次成功保存恢复；若存在可控的真实关闭失败入口，确认 Host 不把失败窗口报告为已关闭且后续可重试释放。若无法稳定制造关闭失败，将记录为证据缺口，不以测试替身结果代替。
+
+### 范围边界
+
+- **不含内容**：本版本不新增 SDK、Broker、媒体服务、动作回传、完整浮窗、安装更新或完整设置壳。
+- **未决事项**：不改变 05A 的任务栏承载路线结论，05A 仍为阻塞状态；Explorer 嵌入仍为实验能力，不是正式支持。
+
+### 文件变更表
+
+| 文件 | 变更 |
+|:-----|:------|
+| `src/Mtp.Host/ValidatedDeclaration.cs` | **修改** — 已校验声明改为密封类与只读集合，强制身份关系 |
+| `src/Mtp.Host/DeclarationValidator.cs` | **修改** — 增加 1 MiB 载荷上限与可信构造入口 |
+| `src/Mtp.Host/DeclarationSource.cs` | **修改** — 按上限有界读取声明文件并去除 BOM |
+| `src/Mtp.Host/ComponentDisplayPreferences.cs` | **修改** — 读取状态分类、原子替换、跨进程锁、载荷上限与合并提交 |
+| `src/Mtp.Host/HostDisplayController.cs` | **修改** — 接入偏好管理器并汇总加载错误 |
+| `src/Mtp.Host/HostDisplayActionController.cs` | **新增** — 统一协调偏好、显示模型、贴靠窗口与探针 |
+| `src/Mtp.Host/IndependentDockWindowController.cs` | **修改** — 按真实打开状态保留失败态信息 |
+| `src/Mtp.Host/WinUiIndependentDockWindowAdapter.cs` | **修改** — 保留资源至关闭确认并支持关闭重试 |
+| `src/Mtp.Host/TopLevelControlWindowOwner.cs` | **新增** — 诊断对照窗口的关闭确认所有权 |
+| `src/Mtp.Host/ExplorerTaskbarProbeController.cs` | **修改** — 三态生命周期、分离意图与清理校验 |
+| `src/Mtp.Host/ExplorerTaskbarProbeWindow.xaml.cs` | **修改** — 共享合成器并统一材质资源释放 |
+| `src/Mtp.Host/Win32ExplorerTaskbarEmbedAdapter.cs` | **修改** — 探针资源所有权与清理确认 |
+| `src/Mtp.Host/IndependentDockWindow.xaml.cs` | **修改** — 配合关闭确认与资源释放路径 |
+| `src/Mtp.Host/MainWindow.xaml` | **修改** — 错误文本移出组件可见性容器 |
+| `src/Mtp.Host/MainWindow.xaml.cs` | **修改** — 改用统一显示动作入口并展示聚合错误 |
+| `src/Mtp.Host/App.xaml.cs` | **修改** — 启动接线显示动作控制器与恢复结果 |
+| `src/Mtp.Host/Properties/AssemblyInfo.cs` | **新增** — 允许测试访问内部边界 |
+| `tests/Mtp.Platform.Core.Tests/HostDisplayActionTests.cs` | **新增** — 覆盖显示、隐藏、失败与退出重试 |
+| `tests/Mtp.Platform.Core.Tests/HostErrorPresentationTests.cs` | **新增** — 覆盖组件隐藏时的错误可见性 |
+| `tests/Mtp.Platform.Core.Tests/TopLevelControlWindowOwnerTests.cs` | **新增** — 覆盖对照窗口关闭确认 |
+| `tests/Mtp.Platform.Core.Tests/ExplorerProbeWindowOwnerTests.cs` | **新增** — 覆盖探针清理与迟到事件 |
+| `tests/Mtp.Platform.Core.Tests/WinUiIndependentDockWindowAdapterTests.cs` | **新增** — 覆盖窗口资源初始化、显示与关闭重试 |
+| `tests/Mtp.Platform.Core.Tests/DisplayPreferenceTests.cs` | **修改** — 覆盖锁、状态分类、上限与原子替换失败 |
+| `tests/Mtp.Platform.Core.Tests/DeclarationLoadingTests.cs` | **修改** — 覆盖声明不可变与载荷上限 |
+| `tests/Mtp.Platform.Core.Tests/ExplorerTaskbarProbeTests.cs` | **修改** — 覆盖三态生命周期与恢复 |
+| `tests/Mtp.Platform.Core.Tests/IndependentDockWindowTests.cs` | **修改** — 覆盖失败态所有权保留 |
+| `tests/Mtp.Platform.Core.Tests/HostDisplayModelTests.cs` | **修改** — 适配不可变声明与错误聚合 |
+| `tests/Mtp.Platform.Core.Tests/Mtp.Platform.Core.Tests.csproj` | **修改** — 保持测试项目配置一致 |
+| `CHANGELOG.md` | **修改** — 记录本次开发版本 |
+| `CHANGELOG.txt` | **修改** — 记录本次开发版本 |
+
+---
+
 ## v0.1.0-alpha.7 (2026-09-09 21:46)
 
 ### 透明窗口修复

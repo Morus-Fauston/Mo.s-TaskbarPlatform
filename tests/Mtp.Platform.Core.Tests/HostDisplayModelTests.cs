@@ -23,18 +23,22 @@ public sealed class HostDisplayModelTests
     [Fact]
     public void ValidatedDeclarationProjectsItsFirstComponentUsingStableIdentity()
     {
-        var application = new StableIdentity(new StableId("local-app"));
-        var feature = application.CreateChild(new StableId("feature"));
-        var component = feature.CreateChild(new StableId("component"));
-        var declaration = new ValidatedApplicationDeclaration(
-            application,
-            new[]
+        var declaration = new DeclarationValidator().ValidateJson("""
             {
-                new ValidatedFeatureGroup(
-                    feature,
-                    new[] { new Component(component, CapabilityState.Available) },
-                    Array.Empty<ValidatedTaskbarFlyout>()),
-            });
+              "applicationId": "local-app",
+              "featureGroups": [
+                {
+                  "featureGroupId": "feature",
+                  "components": [
+                    { "componentId": "component", "actionSlots": [{ "actionSlotId": "go" }] }
+                  ],
+                  "taskbarFlyouts": [
+                    { "taskbarFlyoutId": "panel", "actionSlots": [{ "actionSlotId": "go" }] }
+                  ]
+                }
+              ]
+            }
+            """).Value!;
 
         var display = HostComponentDisplayModel.From(declaration);
 
@@ -43,5 +47,54 @@ public sealed class HostDisplayModelTests
             display.Identity.Segments.Select(segment => segment.Value));
         Assert.Equal("MTP Host 组件", display.Text);
         Assert.Equal("可用", display.StatusLabel);
+    }
+
+    [Fact]
+    public void CurrentDisplayComponentsCannotBeChangedThroughThePublicCollection()
+    {
+        var controller = new HostDisplayController(
+            new DeclarationSource("""
+                {
+                  "applicationId": "local-app",
+                  "featureGroups": [
+                    {
+                      "featureGroupId": "feature",
+                      "components": [
+                        { "componentId": "component", "actionSlots": [{ "actionSlotId": "go" }] }
+                      ],
+                      "taskbarFlyouts": [
+                        { "taskbarFlyoutId": "panel", "actionSlots": [{ "actionSlotId": "go" }] }
+                      ]
+                    }
+                  ]
+                }
+                """),
+            new PreferenceStore());
+
+        var loaded = controller.Load();
+
+        Assert.IsAssignableFrom<System.Collections.IList>(loaded.Components);
+        Assert.True(((System.Collections.IList)loaded.Components).IsReadOnly);
+        Assert.Throws<NotSupportedException>(() => ((System.Collections.IList)loaded.Components)[0] = loaded.Components[0]);
+        Assert.Same(loaded.Components, controller.CurrentComponents);
+    }
+
+    private sealed class DeclarationSource(string json) : IDeclarationSource
+    {
+        public CoreResult<string> Read() => CoreResult<string>.Success(json);
+    }
+
+    private sealed class PreferenceStore : IComponentDisplayPreferenceStore
+    {
+        private ComponentDisplayPreferences preferences = new();
+
+        public ComponentDisplayPreferenceLoadResult Load() =>
+            new(preferences, null, ComponentDisplayPreferenceLoadState.Loaded);
+
+        public CoreResult<ComponentDisplayPreferences> CommitVisibility(StableIdentity identity, bool isVisible)
+        {
+            preferences = preferences.WithVisibility(identity, isVisible);
+            return CoreResult<ComponentDisplayPreferences>.Success(preferences);
+        }
     }
 }

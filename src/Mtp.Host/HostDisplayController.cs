@@ -13,22 +13,27 @@ public sealed record HostDisplayLoadResult(
     ValidatedApplicationDeclaration? Declaration,
     IReadOnlyList<HostComponentDisplayModel> Components,
     StructuredError? DeclarationError,
-    StructuredError? PreferenceError);
+    StructuredError? PreferenceError)
+{
+    public IReadOnlyList<StructuredError> Errors =>
+        new[] { DeclarationError, PreferenceError }
+            .Where(error => error is not null)
+            .Cast<StructuredError>()
+            .ToArray();
+}
 
 public sealed class HostDisplayController
 {
     private readonly HostDeclarationLoader declarationLoader;
-    private readonly IComponentDisplayPreferenceStore preferenceStore;
-    private ComponentDisplayPreferences preferences = new();
+    private readonly ComponentDisplayPreferenceManager preferenceManager;
     private IReadOnlyList<HostComponentDisplayModel> components = Array.Empty<HostComponentDisplayModel>();
-    private bool preferencesLoaded;
 
     public HostDisplayController(
         IDeclarationSource declarationSource,
         IComponentDisplayPreferenceStore preferenceStore)
     {
         declarationLoader = new HostDeclarationLoader(declarationSource);
-        this.preferenceStore = preferenceStore ?? throw new ArgumentNullException(nameof(preferenceStore));
+        preferenceManager = new ComponentDisplayPreferenceManager(preferenceStore);
     }
 
     public IReadOnlyList<HostComponentDisplayModel> CurrentComponents => components;
@@ -46,9 +51,7 @@ public sealed class HostDisplayController
                 null);
         }
 
-        var preferenceResult = preferenceStore.Load();
-        preferences = preferenceResult.Preferences;
-        preferencesLoaded = true;
+        var preferenceResult = preferenceManager.Load();
         components = BuildComponents(declarationResult.Current);
 
         return new HostDisplayLoadResult(
@@ -73,19 +76,9 @@ public sealed class HostDisplayController
                 new StructuredError("component_not_declared", "The component is not present in the current declaration.", identity.ToString()));
         }
 
-        if (!preferencesLoaded)
-        {
-            var preferenceResult = preferenceStore.Load();
-            preferences = preferenceResult.Preferences;
-            preferencesLoaded = true;
-        }
-
-        var previous = preferences.IsVisible(identity);
-        preferences.Set(identity, isVisible);
-        var saveResult = preferenceStore.Save(preferences);
+        var saveResult = preferenceManager.SetVisibility(identity, isVisible);
         if (!saveResult.IsSuccess)
         {
-            preferences.Set(identity, previous);
             return CoreResult<HostComponentDisplayModel>.Failure(saveResult.Error!);
         }
 
@@ -95,8 +88,8 @@ public sealed class HostDisplayController
     }
 
     private IReadOnlyList<HostComponentDisplayModel> BuildComponents(ValidatedApplicationDeclaration declaration) =>
-        declaration.FeatureGroups
+        Array.AsReadOnly(declaration.FeatureGroups
             .SelectMany(featureGroup => featureGroup.Components)
-            .Select(component => HostComponentDisplayModel.From(component, preferences.IsVisible(component.Identity)))
-            .ToArray();
+            .Select(component => HostComponentDisplayModel.From(component, preferenceManager.Current.IsVisible(component.Identity)))
+            .ToArray());
 }

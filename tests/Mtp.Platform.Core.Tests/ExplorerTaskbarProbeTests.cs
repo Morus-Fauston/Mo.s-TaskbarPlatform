@@ -125,6 +125,117 @@ public sealed class ExplorerTaskbarProbeTests
     }
 
     [Fact]
+    public void DetachReportsFailureWhenTheIndependentWindowCannotBeRestored()
+    {
+        var harness = ProbeHarness.CreateWithVisibleComponent(
+            dockShowError: new StructuredError("dock_window_show_failed", "The dock window could not be restored."));
+        Assert.True(harness.ProbeController.Run(harness.Component, new ExplorerTaskbarProbeRequest()).Succeeded);
+
+        var detached = harness.ProbeController.Detach();
+
+        Assert.False(detached.IsSuccess);
+        Assert.Equal("dock_window_show_failed", detached.Error!.Code);
+        Assert.False(harness.ProbeController.State.IsEmbedded);
+        Assert.Equal("dock_window_show_failed", harness.ProbeController.State.FallbackError!.Code);
+    }
+
+    [Fact]
+    public void DelayedDetachConfirmationRestoresTheIndependentWindow()
+    {
+        var harness = ProbeHarness.CreateWithVisibleComponent(
+            detachError: new StructuredError("explorer_probe_close_unconfirmed", "The probe window did not confirm that it closed."));
+        Assert.True(harness.ProbeController.Run(harness.Component, new ExplorerTaskbarProbeRequest()).Succeeded);
+
+        var detached = harness.ProbeController.Detach();
+        harness.EmbedAdapter.RaiseDetached();
+
+        Assert.False(detached.IsSuccess);
+        Assert.False(harness.ProbeController.State.IsEmbedded);
+        Assert.Null(harness.ProbeController.State.Error);
+        Assert.True(harness.DockAdapter.IsOpen);
+        Assert.Equal(1, harness.DockAdapter.ShowCount);
+    }
+
+    [Fact]
+    public void DelayedDetachConfirmationDuringShutdownDoesNotReopenTheIndependentWindow()
+    {
+        var harness = ProbeHarness.CreateWithVisibleComponent(
+            detachError: new StructuredError("explorer_probe_close_unconfirmed", "The probe window did not confirm that it closed."));
+        Assert.True(harness.ProbeController.Run(harness.Component, new ExplorerTaskbarProbeRequest()).Succeeded);
+
+        var shutdown = harness.ProbeController.Shutdown();
+        harness.EmbedAdapter.RaiseDetached();
+
+        Assert.False(shutdown.IsSuccess);
+        Assert.False(harness.ProbeController.State.IsEmbedded);
+        Assert.False(harness.DockAdapter.IsOpen);
+        Assert.Equal(0, harness.DockAdapter.ShowCount);
+    }
+
+    [Fact]
+    public void FailedDockRestoreRetainsTheComponentAndCanBeRetried()
+    {
+        var harness = ProbeHarness.CreateWithVisibleComponent();
+        Assert.True(harness.ProbeController.Run(harness.Component, new ExplorerTaskbarProbeRequest()).Succeeded);
+        harness.DockAdapter.ShowError = new StructuredError("dock_window_show_failed", "The dock window could not be restored.");
+
+        var failed = harness.ProbeController.Detach();
+
+        Assert.False(failed.IsSuccess);
+        Assert.Equal(harness.Component.Identity, harness.ProbeController.State.Component!.Identity);
+        Assert.Equal("dock_window_show_failed", harness.ProbeController.State.FallbackError!.Code);
+
+        harness.DockAdapter.ShowError = null;
+        var retried = harness.ProbeController.Detach();
+
+        Assert.True(retried.IsSuccess);
+        Assert.True(harness.DockAdapter.IsOpen);
+        Assert.Null(harness.ProbeController.State.Component);
+        Assert.Null(harness.ProbeController.State.FallbackError);
+    }
+
+    [Fact]
+    public void CleanupPendingStateMatchesTheAdapterAndRemainsRecoverable()
+    {
+        var harness = ProbeHarness.CreateWithVisibleComponent(
+            detachError: new StructuredError("explorer_probe_restore_style_failed", "The probe window style could not be restored."));
+        Assert.True(harness.ProbeController.Run(harness.Component, new ExplorerTaskbarProbeRequest()).Succeeded);
+        harness.EmbedAdapter.LifecycleOnDetachFailure = ExplorerTaskbarProbeLifecycle.CleanupPending;
+
+        var failed = harness.ProbeController.Detach();
+
+        Assert.False(failed.IsSuccess);
+        Assert.Equal(ExplorerTaskbarProbeLifecycle.CleanupPending, harness.ProbeController.State.Lifecycle);
+        Assert.False(harness.ProbeController.State.IsEmbedded);
+        Assert.True(harness.ProbeController.State.IsRecoveryPending);
+        Assert.Equal(harness.Component.Identity, harness.ProbeController.State.Component!.Identity);
+    }
+
+    [Fact]
+    public void DelayedDetachFromARerunRestoresFallbackAndAllowsAnotherRun()
+    {
+        var harness = ProbeHarness.CreateWithVisibleComponent();
+        Assert.True(harness.ProbeController.Run(harness.Component, new ExplorerTaskbarProbeRequest()).Succeeded);
+        harness.EmbedAdapter.DetachError = new StructuredError(
+            "explorer_probe_close_unconfirmed",
+            "The old probe did not confirm that it closed.");
+
+        var failedRerun = harness.ProbeController.Run(harness.Component, new ExplorerTaskbarProbeRequest());
+        harness.EmbedAdapter.RaiseDetached();
+
+        Assert.False(failedRerun.Succeeded);
+        Assert.True(harness.DockAdapter.IsOpen);
+        Assert.Equal(ExplorerTaskbarProbeLifecycle.Detached, harness.ProbeController.State.Lifecycle);
+
+        harness.EmbedAdapter.DetachError = null;
+        var retried = harness.ProbeController.Run(harness.Component, new ExplorerTaskbarProbeRequest());
+
+        Assert.True(retried.Succeeded);
+        Assert.False(harness.DockAdapter.IsOpen);
+        Assert.Equal(ExplorerTaskbarProbeLifecycle.Embedded, harness.ProbeController.State.Lifecycle);
+    }
+
+    [Fact]
     public void LostEmbeddedWindowResetsStateAndRestoresDockWindow()
     {
         var harness = ProbeHarness.CreateWithVisibleComponent();
@@ -142,6 +253,21 @@ public sealed class ExplorerTaskbarProbeTests
     }
 
     [Fact]
+    public void LostEmbeddedWindowPreservesBothTheLossAndFallbackErrors()
+    {
+        var harness = ProbeHarness.CreateWithVisibleComponent(
+            dockShowError: new StructuredError("dock_window_show_failed", "The dock window could not be restored."));
+        Assert.True(harness.ProbeController.Run(harness.Component, new ExplorerTaskbarProbeRequest()).Succeeded);
+
+        harness.EmbedAdapter.RaiseLost();
+
+        Assert.Equal("explorer_probe_host_window_lost", harness.ProbeController.State.Error!.Code);
+        Assert.Equal("dock_window_show_failed", harness.ProbeController.State.FallbackError!.Code);
+        Assert.Equal(harness.Component.Identity, harness.ProbeController.State.Component!.Identity);
+        Assert.True(harness.ProbeController.State.IsRecoveryPending);
+    }
+
+    [Fact]
     public void RunningAgainWhileEmbeddedDetachesTheOldProbeFirst()
     {
         var harness = ProbeHarness.CreateWithVisibleComponent();
@@ -153,6 +279,39 @@ public sealed class ExplorerTaskbarProbeTests
         Assert.Equal(1, harness.EmbedAdapter.DetachCount);
         Assert.Equal(2, harness.EmbedAdapter.EmbedCount);
         Assert.True(harness.ProbeController.State.IsEmbedded);
+    }
+
+    [Fact]
+    public void RunningAgainStopsWhenTheOldProbeCannotBeDetached()
+    {
+        var harness = ProbeHarness.CreateWithVisibleComponent();
+        Assert.True(harness.ProbeController.Run(harness.Component, new ExplorerTaskbarProbeRequest()).Succeeded);
+        harness.EmbedAdapter.DetachError = new StructuredError(
+            "explorer_probe_detach_failed",
+            "The old probe could not be detached.");
+
+        var second = harness.ProbeController.Run(harness.Component, new ExplorerTaskbarProbeRequest());
+
+        Assert.False(second.Succeeded);
+        Assert.Equal("explorer_probe_detach_failed", second.Error!.Code);
+        Assert.Equal(1, harness.EmbedAdapter.EmbedCount);
+        Assert.True(harness.ProbeController.State.IsEmbedded);
+    }
+
+    [Fact]
+    public void SuccessfulEmbedReportsDockCloseFailureAsAnIncompleteTransition()
+    {
+        var harness = ProbeHarness.CreateWithVisibleComponent(
+            dockCloseError: new StructuredError("dock_window_close_failed", "The old dock window could not close."));
+        Assert.True(harness.DockController.ShowCurrent().IsSuccess);
+
+        var outcome = harness.ProbeController.Run(harness.Component, new ExplorerTaskbarProbeRequest());
+
+        Assert.False(outcome.Succeeded);
+        Assert.NotNull(outcome.Report);
+        Assert.Equal("dock_window_close_failed", outcome.Error!.Code);
+        Assert.True(harness.ProbeController.State.IsEmbedded);
+        Assert.Equal("dock_window_close_failed", harness.ProbeController.State.Error!.Code);
     }
 
     [Fact]
@@ -211,9 +370,10 @@ public sealed class ExplorerTaskbarProbeTests
         public static ProbeHarness CreateWithVisibleComponent(
             StructuredError? embedError = null,
             StructuredError? detachError = null,
-            StructuredError? dockShowError = null)
+            StructuredError? dockShowError = null,
+            StructuredError? dockCloseError = null)
         {
-            var harness = Create(embedError, detachError, dockShowError);
+            var harness = Create(embedError, detachError, dockShowError, dockCloseError);
             var visible = harness.DisplayController.SetVisibility(harness.Component.Identity, true);
             Assert.True(visible.IsSuccess);
             return new ProbeHarness(
@@ -226,7 +386,7 @@ public sealed class ExplorerTaskbarProbeTests
                 visible.Value!);
         }
 
-        public static ProbeHarness CreateWithHiddenComponent() => Create(null, null, null);
+        public static ProbeHarness CreateWithHiddenComponent() => Create(null, null, null, null);
 
         public static ExplorerTaskbarProbeReport CreateReport() => new(
             DateTimeOffset.UnixEpoch,
@@ -242,12 +402,20 @@ public sealed class ExplorerTaskbarProbeTests
             new RectInt32(1352, 1036, 240, 40),
             new[] { new ExplorerTaskbarProbeStep("find_taskbar", true, null) });
 
-        private static ProbeHarness Create(StructuredError? embedError, StructuredError? detachError, StructuredError? dockShowError)
+        private static ProbeHarness Create(
+            StructuredError? embedError,
+            StructuredError? detachError,
+            StructuredError? dockShowError,
+            StructuredError? dockCloseError)
         {
             var preferenceStore = new CountingPreferenceStore();
             var displayController = new HostDisplayController(new StubDeclarationSource(ValidJson()), preferenceStore);
             var component = displayController.Load().Components.Single();
-            var dockAdapter = new RecordingDockWindowAdapter { ShowError = dockShowError };
+            var dockAdapter = new RecordingDockWindowAdapter
+            {
+                ShowError = dockShowError,
+                CloseError = dockCloseError,
+            };
             var dockController = new IndependentDockWindowController(displayController, dockAdapter);
             var embedAdapter = new RecordingEmbedAdapter { EmbedError = embedError, DetachError = detachError };
             var probeController = new ExplorerTaskbarProbeController(displayController, embedAdapter, dockController);
@@ -287,12 +455,13 @@ public sealed class ExplorerTaskbarProbeTests
 
         public int SaveCount { get; private set; }
 
-        public ComponentDisplayPreferenceLoadResult Load() => new(preferences, null);
+        public ComponentDisplayPreferenceLoadResult Load() =>
+            new(preferences, null, ComponentDisplayPreferenceLoadState.Loaded);
 
-        public CoreResult<ComponentDisplayPreferences> Save(ComponentDisplayPreferences preferences)
+        public CoreResult<ComponentDisplayPreferences> CommitVisibility(StableIdentity identity, bool isVisible)
         {
             SaveCount++;
-            this.preferences = preferences;
+            preferences = preferences.WithVisibility(identity, isVisible);
             return CoreResult<ComponentDisplayPreferences>.Success(preferences);
         }
     }
@@ -303,7 +472,9 @@ public sealed class ExplorerTaskbarProbeTests
 
         public bool IsOpen { get; private set; }
 
-        public StructuredError? ShowError { get; init; }
+        public StructuredError? ShowError { get; set; }
+
+        public StructuredError? CloseError { get; init; }
 
         public int ShowCount { get; private set; }
 
@@ -324,6 +495,11 @@ public sealed class ExplorerTaskbarProbeTests
         public CoreResult<bool> Close()
         {
             CloseCount++;
+            if (CloseError is not null)
+            {
+                return CoreResult<bool>.Failure(CloseError);
+            }
+
             IsOpen = false;
             Closed?.Invoke(this, EventArgs.Empty);
             return CoreResult<bool>.Success(true);
@@ -334,11 +510,17 @@ public sealed class ExplorerTaskbarProbeTests
     {
         public event EventHandler? Lost;
 
-        public bool IsEmbedded { get; private set; }
+        public event EventHandler? Detached;
+
+        public ExplorerTaskbarProbeLifecycle Lifecycle { get; private set; } = ExplorerTaskbarProbeLifecycle.Detached;
+
+        public bool IsEmbedded => Lifecycle == ExplorerTaskbarProbeLifecycle.Embedded;
+
+        public ExplorerTaskbarProbeLifecycle LifecycleOnDetachFailure { get; set; } = ExplorerTaskbarProbeLifecycle.Embedded;
 
         public StructuredError? EmbedError { get; init; }
 
-        public StructuredError? DetachError { get; init; }
+        public StructuredError? DetachError { get; set; }
 
         public int EmbedCount { get; private set; }
 
@@ -355,7 +537,7 @@ public sealed class ExplorerTaskbarProbeTests
                 return CoreResult<ExplorerTaskbarProbeReport>.Failure(EmbedError);
             }
 
-            IsEmbedded = true;
+            Lifecycle = ExplorerTaskbarProbeLifecycle.Embedded;
             return CoreResult<ExplorerTaskbarProbeReport>.Success(ProbeHarness.CreateReport());
         }
 
@@ -364,17 +546,24 @@ public sealed class ExplorerTaskbarProbeTests
             DetachCount++;
             if (DetachError is not null)
             {
+                Lifecycle = LifecycleOnDetachFailure;
                 return CoreResult<bool>.Failure(DetachError);
             }
 
-            IsEmbedded = false;
+            Lifecycle = ExplorerTaskbarProbeLifecycle.Detached;
             return CoreResult<bool>.Success(true);
         }
 
         public void RaiseLost()
         {
-            IsEmbedded = false;
+            Lifecycle = ExplorerTaskbarProbeLifecycle.Detached;
             Lost?.Invoke(this, EventArgs.Empty);
+        }
+
+        public void RaiseDetached()
+        {
+            Lifecycle = ExplorerTaskbarProbeLifecycle.Detached;
+            Detached?.Invoke(this, EventArgs.Empty);
         }
     }
 }

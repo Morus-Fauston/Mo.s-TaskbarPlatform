@@ -56,6 +56,44 @@ public sealed class IndependentDockWindowTests
     }
 
     [Fact]
+    public void ShowFailureReportsAnAdapterResourceThatStillNeedsCleanup()
+    {
+        var declarationController = CreateDisplayController();
+        var component = declarationController.Load().Components.Single();
+        Assert.True(declarationController.SetVisibility(component.Identity, true).IsSuccess);
+        var adapter = new RecordingDockWindowAdapter
+        {
+            ShowError = new StructuredError("dock_window_show_failed", "The dock window could not be created."),
+            RemainOpenOnShowFailure = true,
+        };
+        using var controller = new IndependentDockWindowController(declarationController, adapter);
+
+        var result = controller.ShowCurrent();
+
+        Assert.False(result.IsSuccess);
+        Assert.True(controller.State.IsOpen);
+        Assert.Equal(component.Identity, controller.State.Component!.Identity);
+        Assert.Equal("dock_window_show_failed", controller.State.Error!.Code);
+    }
+
+    [Fact]
+    public void WindowThatClosesDuringShowCannotLeaveAnImpossibleOpenState()
+    {
+        var declarationController = CreateDisplayController();
+        var component = declarationController.Load().Components.Single();
+        Assert.True(declarationController.SetVisibility(component.Identity, true).IsSuccess);
+        var adapter = new RecordingDockWindowAdapter { CloseDuringShow = true };
+        using var controller = new IndependentDockWindowController(declarationController, adapter);
+
+        var result = controller.ShowCurrent();
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("dock_window_closed_during_show", result.Error!.Code);
+        Assert.False(controller.State.IsOpen);
+        Assert.Null(controller.State.Component);
+    }
+
+    [Fact]
     public void CloseFailureKeepsOpenStateAndComponentModel()
     {
         var declarationController = CreateDisplayController();
@@ -134,11 +172,11 @@ public sealed class IndependentDockWindowTests
         private ComponentDisplayPreferences preferences = new();
 
         public ComponentDisplayPreferenceLoadResult Load() =>
-            new(preferences, null);
+            new(preferences, null, ComponentDisplayPreferenceLoadState.Loaded);
 
-        public CoreResult<ComponentDisplayPreferences> Save(ComponentDisplayPreferences preferences)
+        public CoreResult<ComponentDisplayPreferences> CommitVisibility(StableIdentity identity, bool isVisible)
         {
-            this.preferences = preferences;
+            preferences = preferences.WithVisibility(identity, isVisible);
             return CoreResult<ComponentDisplayPreferences>.Success(preferences);
         }
     }
@@ -155,6 +193,10 @@ public sealed class IndependentDockWindowTests
 
         public StructuredError? CloseError { get; init; }
 
+        public bool RemainOpenOnShowFailure { get; init; }
+
+        public bool CloseDuringShow { get; init; }
+
         public int ShowCount { get; private set; }
 
         public int CloseCount { get; private set; }
@@ -164,11 +206,18 @@ public sealed class IndependentDockWindowTests
             ShowCount++;
             if (ShowError is not null)
             {
+                IsOpen = RemainOpenOnShowFailure;
                 return CoreResult<HostComponentDisplayModel>.Failure(ShowError);
             }
 
             IsOpen = true;
             ShownComponent = component;
+            if (CloseDuringShow)
+            {
+                IsOpen = false;
+                Closed?.Invoke(this, EventArgs.Empty);
+            }
+
             return CoreResult<HostComponentDisplayModel>.Success(component);
         }
 

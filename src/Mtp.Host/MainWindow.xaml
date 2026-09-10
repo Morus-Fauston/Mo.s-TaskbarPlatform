@@ -104,11 +104,6 @@
                             x:Name="IdentityText"
                             Opacity="0.7"
                             TextTrimming="CharacterEllipsis" />
-                        <TextBlock
-                            x:Name="ErrorText"
-                            Foreground="{ThemeResource SystemFillColorCriticalBrush}"
-                            TextWrapping="WrapWholeWords"
-                            Visibility="Collapsed" />
                     </StackPanel>
 
                     <StackPanel
@@ -129,6 +124,13 @@
                     </StackPanel>
                 </Grid>
             </Border>
+
+            <TextBlock
+                x:Name="ErrorText"
+                Foreground="{ThemeResource SystemFillColorCriticalBrush}"
+                IsTextSelectionEnabled="True"
+                TextWrapping="WrapWholeWords"
+                Visibility="Collapsed" />
         </StackPanel>
     </Grid>
 </Window>

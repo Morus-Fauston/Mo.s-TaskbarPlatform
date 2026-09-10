@@ -13,18 +13,35 @@ public interface IExplorerTaskbarEmbedAdapter
     /// <summary>Raised only when the embedded window disappears without a Host request.</summary>
     event EventHandler? Lost;
 
-    bool IsEmbedded { get; }
+    /// <summary>Raised whenever requested cleanup reaches a confirmed closed state, before or after the caller returns.</summary>
+    event EventHandler? Detached;
+
+    ExplorerTaskbarProbeLifecycle Lifecycle { get; }
 
     CoreResult<ExplorerTaskbarProbeReport> TryEmbed(HostComponentDisplayModel component, ExplorerTaskbarProbeRequest request);
 
     CoreResult<bool> Detach();
 }
 
+public enum ExplorerTaskbarProbeLifecycle
+{
+    Detached,
+    Embedded,
+    CleanupPending,
+}
+
 public sealed record ExplorerTaskbarProbeState(
-    bool IsEmbedded,
+    ExplorerTaskbarProbeLifecycle Lifecycle,
     HostComponentDisplayModel? Component,
     ExplorerTaskbarProbeReport? Report,
-    StructuredError? Error);
+    StructuredError? Error,
+    StructuredError? FallbackError)
+{
+    public bool IsEmbedded => Lifecycle == ExplorerTaskbarProbeLifecycle.Embedded;
+
+    public bool IsRecoveryPending =>
+        Lifecycle == ExplorerTaskbarProbeLifecycle.CleanupPending || FallbackError is not null;
+}
 
 /// <summary>
 /// The result of one probe run, including whether the independent dock window took over.
@@ -48,6 +65,8 @@ public sealed class ExplorerTaskbarProbeController : IDisposable
     private readonly HostDisplayController displayController;
     private readonly IExplorerTaskbarEmbedAdapter adapter;
     private readonly IndependentDockWindowController dockFallback;
+    private bool adapterOperationInProgress;
+    private PendingDetachIntent pendingDetachIntent;
 
     public ExplorerTaskbarProbeController(
         HostDisplayController displayController,
@@ -58,7 +77,8 @@ public sealed class ExplorerTaskbarProbeController : IDisposable
         this.adapter = adapter ?? throw new ArgumentNullException(nameof(adapter));
         this.dockFallback = dockFallback ?? throw new ArgumentNullException(nameof(dockFallback));
         this.adapter.Lost += Adapter_Lost;
-        State = new ExplorerTaskbarProbeState(false, null, null, null);
+        this.adapter.Detached += Adapter_Detached;
+        State = new ExplorerTaskbarProbeState(ExplorerTaskbarProbeLifecycle.Detached, null, null, null, null);
     }
 
     public event EventHandler? StateChanged;
@@ -90,22 +110,58 @@ public sealed class ExplorerTaskbarProbeController : IDisposable
             return Rejected(new StructuredError("explorer_probe_component_not_visible", "A hidden component cannot be probed.", declaredComponent.Identity.ToString()));
         }
 
-        if (adapter.IsEmbedded)
+        if (adapter.Lifecycle != ExplorerTaskbarProbeLifecycle.Detached)
         {
-            _ = adapter.Detach();
+            pendingDetachIntent = PendingDetachIntent.RestoreDock;
+            var detachResult = ExecuteAdapterOperation(adapter.Detach);
+            if (!detachResult.IsSuccess)
+            {
+                State = new ExplorerTaskbarProbeState(
+                    adapter.Lifecycle,
+                    declaredComponent,
+                    State.Report,
+                    detachResult.Error,
+                    null);
+                StateChanged?.Invoke(this, EventArgs.Empty);
+                return new ExplorerTaskbarProbeOutcome(false, null, detachResult.Error, false, null);
+            }
+
+            pendingDetachIntent = PendingDetachIntent.None;
         }
 
-        var embedResult = adapter.TryEmbed(declaredComponent, request);
+        pendingDetachIntent = PendingDetachIntent.RestoreDock;
+        var embedResult = ExecuteAdapterOperation(() => adapter.TryEmbed(declaredComponent, request));
         if (embedResult.IsSuccess)
         {
+            pendingDetachIntent = PendingDetachIntent.None;
             var closeResult = dockFallback.Close();
-            State = new ExplorerTaskbarProbeState(true, declaredComponent, embedResult.Value, closeResult.IsSuccess ? null : closeResult.Error);
+            State = new ExplorerTaskbarProbeState(
+                ExplorerTaskbarProbeLifecycle.Embedded,
+                declaredComponent,
+                embedResult.Value,
+                closeResult.IsSuccess ? null : closeResult.Error,
+                null);
             StateChanged?.Invoke(this, EventArgs.Empty);
-            return new ExplorerTaskbarProbeOutcome(true, embedResult.Value, null, false, null);
+            return new ExplorerTaskbarProbeOutcome(
+                closeResult.IsSuccess,
+                embedResult.Value,
+                closeResult.IsSuccess ? null : closeResult.Error,
+                false,
+                null);
         }
 
         var fallbackResult = dockFallback.Show(declaredComponent);
-        State = new ExplorerTaskbarProbeState(false, null, null, embedResult.Error);
+        if (fallbackResult.IsSuccess || adapter.Lifecycle == ExplorerTaskbarProbeLifecycle.Detached)
+        {
+            pendingDetachIntent = PendingDetachIntent.None;
+        }
+
+        State = new ExplorerTaskbarProbeState(
+            adapter.Lifecycle,
+            fallbackResult.IsSuccess && adapter.Lifecycle == ExplorerTaskbarProbeLifecycle.Detached ? null : declaredComponent,
+            null,
+            embedResult.Error,
+            fallbackResult.IsSuccess ? null : fallbackResult.Error);
         StateChanged?.Invoke(this, EventArgs.Empty);
         return new ExplorerTaskbarProbeOutcome(
             false,
@@ -115,19 +171,41 @@ public sealed class ExplorerTaskbarProbeController : IDisposable
             fallbackResult.IsSuccess ? null : fallbackResult.Error);
     }
 
-    public CoreResult<bool> Detach()
+    public CoreResult<bool> Detach() => Detach(restoreDockWindow: true);
+
+    public CoreResult<bool> Shutdown() => Detach(restoreDockWindow: false);
+
+    private CoreResult<bool> Detach(bool restoreDockWindow)
     {
         var component = State.Component;
-        var detachResult = adapter.Detach();
+        pendingDetachIntent = restoreDockWindow ? PendingDetachIntent.RestoreDock : PendingDetachIntent.Shutdown;
+        var detachResult = ExecuteAdapterOperation(adapter.Detach);
+
         if (!detachResult.IsSuccess)
         {
-            State = State with { Error = detachResult.Error };
+            State = State with
+            {
+                Lifecycle = adapter.Lifecycle,
+                Component = component,
+                Error = detachResult.Error,
+            };
             StateChanged?.Invoke(this, EventArgs.Empty);
             return detachResult;
         }
 
-        State = new ExplorerTaskbarProbeState(false, null, null, null);
-        RestoreDockWindow(component);
+        pendingDetachIntent = PendingDetachIntent.None;
+        State = new ExplorerTaskbarProbeState(ExplorerTaskbarProbeLifecycle.Detached, null, null, null, null);
+        if (restoreDockWindow)
+        {
+            var restoreResult = RestoreDockWindow(component);
+            if (!restoreResult.IsSuccess)
+            {
+                State = State with { Component = component, FallbackError = restoreResult.Error };
+                StateChanged?.Invoke(this, EventArgs.Empty);
+                return restoreResult;
+            }
+        }
+
         StateChanged?.Invoke(this, EventArgs.Empty);
         return detachResult;
     }
@@ -135,25 +213,68 @@ public sealed class ExplorerTaskbarProbeController : IDisposable
     public void Dispose()
     {
         adapter.Lost -= Adapter_Lost;
+        adapter.Detached -= Adapter_Detached;
     }
 
     private void Adapter_Lost(object? sender, EventArgs args)
     {
         var component = State.Component;
         State = new ExplorerTaskbarProbeState(
-            false,
+            ExplorerTaskbarProbeLifecycle.Detached,
             null,
             null,
-            new StructuredError("explorer_probe_host_window_lost", "The embedded probe window disappeared without a Host request."));
-        RestoreDockWindow(component);
+            new StructuredError("explorer_probe_host_window_lost", "The embedded probe window disappeared without a Host request."),
+            null);
+        var restoreResult = RestoreDockWindow(component);
+        if (!restoreResult.IsSuccess)
+        {
+            State = State with { Component = component, FallbackError = restoreResult.Error };
+        }
+
         StateChanged?.Invoke(this, EventArgs.Empty);
     }
 
-    private void RestoreDockWindow(HostComponentDisplayModel? component)
+    private void Adapter_Detached(object? sender, EventArgs args)
+    {
+        if (adapterOperationInProgress)
+        {
+            return;
+        }
+
+        var component = State.Component;
+        var intent = pendingDetachIntent;
+        pendingDetachIntent = PendingDetachIntent.None;
+        State = new ExplorerTaskbarProbeState(ExplorerTaskbarProbeLifecycle.Detached, null, null, null, null);
+        if (intent == PendingDetachIntent.RestoreDock)
+        {
+            var restoreResult = RestoreDockWindow(component);
+            if (!restoreResult.IsSuccess)
+            {
+                State = State with { Component = component, FallbackError = restoreResult.Error };
+            }
+        }
+
+        StateChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private CoreResult<T> ExecuteAdapterOperation<T>(Func<CoreResult<T>> operation)
+    {
+        adapterOperationInProgress = true;
+        try
+        {
+            return operation();
+        }
+        finally
+        {
+            adapterOperationInProgress = false;
+        }
+    }
+
+    private CoreResult<bool> RestoreDockWindow(HostComponentDisplayModel? component)
     {
         if (component is null)
         {
-            return;
+            return CoreResult<bool>.Success(true);
         }
 
         var current = displayController.CurrentComponents
@@ -163,9 +284,11 @@ public sealed class ExplorerTaskbarProbeController : IDisposable
             var showResult = dockFallback.Show(current);
             if (!showResult.IsSuccess)
             {
-                State = State with { Error = showResult.Error };
+                return CoreResult<bool>.Failure(showResult.Error!);
             }
         }
+
+        return CoreResult<bool>.Success(true);
     }
 
     private ExplorerTaskbarProbeOutcome Rejected(StructuredError error)
@@ -173,5 +296,12 @@ public sealed class ExplorerTaskbarProbeController : IDisposable
         State = State with { Error = error };
         StateChanged?.Invoke(this, EventArgs.Empty);
         return new ExplorerTaskbarProbeOutcome(false, null, error, false, null);
+    }
+
+    private enum PendingDetachIntent
+    {
+        None,
+        RestoreDock,
+        Shutdown,
     }
 }

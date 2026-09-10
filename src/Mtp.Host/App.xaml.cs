@@ -1,7 +1,6 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Windowing;
 using System.IO;
-using System.Linq;
 
 namespace Mtp.Host;
 
@@ -35,17 +34,15 @@ public partial class App : Application
             controller,
             new Win32ExplorerTaskbarEmbedAdapter(() => DisplayArea.FindAll().Count),
             dockWindowController);
-        ownerWindow = new MainWindow(controller, displayLoad, dockWindowController, probeController);
+        var displayActions = new HostDisplayActionController(controller, dockWindowController, probeController);
+        ownerWindow = new MainWindow(displayLoad, displayActions);
         window = ownerWindow;
         window.Activate();
 
-        if (displayLoad.Components.Any(component => component.IsVisible))
+        var restoreResult = displayActions.RestoreCurrent();
+        foreach (var error in restoreResult.Errors)
         {
-            var dockResult = dockWindowController.ShowCurrent();
-            if (!dockResult.IsSuccess)
-            {
-                window.ShowHostError(dockResult.Error!);
-            }
+            window.ShowHostError(error);
         }
     }
 }

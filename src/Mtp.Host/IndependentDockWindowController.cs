@@ -73,10 +73,17 @@ public sealed class IndependentDockWindowController : IDisposable
         var result = adapter.Show(declaredComponent);
         if (!result.IsSuccess)
         {
-            State = adapter.IsOpen
-                ? State with { Error = result.Error }
-                : new IndependentDockWindowState(false, null, result.Error);
+            State = new IndependentDockWindowState(
+                adapter.IsOpen,
+                adapter.IsOpen ? declaredComponent : null,
+                result.Error);
             return result;
+        }
+
+        if (!adapter.IsOpen)
+        {
+            return Failure<HostComponentDisplayModel>(
+                new StructuredError("dock_window_closed_during_show", "The independent dock window closed before the show operation completed."));
         }
 
         State = new IndependentDockWindowState(true, result.Value, null);
@@ -88,7 +95,10 @@ public sealed class IndependentDockWindowController : IDisposable
         var result = adapter.Close();
         if (!result.IsSuccess)
         {
-            State = State with { Error = result.Error };
+            State = new IndependentDockWindowState(
+                adapter.IsOpen,
+                adapter.IsOpen ? State.Component : null,
+                result.Error);
             return result;
         }
 

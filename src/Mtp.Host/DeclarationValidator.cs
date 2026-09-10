@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Mtp.Contracts;
@@ -13,6 +14,8 @@ namespace Mtp.Host;
 /// </summary>
 public sealed class DeclarationValidator
 {
+    public const int MaximumJsonSizeInBytes = 1024 * 1024;
+
     private static readonly JsonSerializerOptions jsonOptions = new()
     {
         PropertyNameCaseInsensitive = true,
@@ -153,6 +156,14 @@ public sealed class DeclarationValidator
         if (string.IsNullOrWhiteSpace(json))
         {
             return Failure("declaration_required", "Declaration JSON cannot be empty.", "json");
+        }
+
+        if (json.Length > MaximumJsonSizeInBytes || Encoding.UTF8.GetByteCount(json) > MaximumJsonSizeInBytes)
+        {
+            return Failure(
+                "declaration_too_large",
+                "The declaration JSON exceeds the 1 MiB limit.",
+                "json");
         }
 
         try

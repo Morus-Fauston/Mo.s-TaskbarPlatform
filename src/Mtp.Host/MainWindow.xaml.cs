@@ -1,6 +1,7 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
+using Microsoft.UI.Windowing;
 using System.Linq;
 using System.Text;
 using Mtp.Platform.Core;
@@ -12,26 +13,21 @@ namespace Mtp.Host;
 /// </summary>
 public sealed partial class MainWindow : Window
 {
-    private readonly HostDisplayController displayController;
-    private readonly IndependentDockWindowController dockWindowController;
-    private readonly ExplorerTaskbarProbeController probeController;
+    private readonly HostDisplayActionController displayActions;
+    private readonly TopLevelControlWindowOwner topLevelControlWindowOwner = new();
     private HostComponentDisplayModel? selectedComponent;
     private ExplorerTaskbarProbeWindow? topLevelControlWindow;
     private bool applyingVisibility;
 
     public MainWindow(
-        HostDisplayController displayController,
         HostDisplayLoadResult displayLoad,
-        IndependentDockWindowController dockWindowController,
-        ExplorerTaskbarProbeController probeController)
+        HostDisplayActionController displayActions)
     {
-        this.displayController = displayController ?? throw new ArgumentNullException(nameof(displayController));
         ArgumentNullException.ThrowIfNull(displayLoad);
-        this.dockWindowController = dockWindowController ?? throw new ArgumentNullException(nameof(dockWindowController));
-        this.probeController = probeController ?? throw new ArgumentNullException(nameof(probeController));
+        this.displayActions = displayActions ?? throw new ArgumentNullException(nameof(displayActions));
         InitializeComponent();
-        Closed += MainWindow_Closed;
-        this.probeController.StateChanged += ProbeController_StateChanged;
+        AppWindow.Closing += MainWindow_Closing;
+        this.displayActions.ProbeStateChanged += DisplayActions_ProbeStateChanged;
 
         AppWindow.Resize(new Windows.Graphics.SizeInt32(560, 460));
 
@@ -58,12 +54,7 @@ public sealed partial class MainWindow : Window
         materialCapabilities = ExplorerTaskbarProbeWindow.ProbeCapabilities();
         PopulateMaterialCombo();
 
-        var error = displayLoad.DeclarationError ?? displayLoad.PreferenceError;
-        if (error is not null)
-        {
-            ErrorText.Text = FormatError(error);
-            ErrorText.Visibility = Visibility.Visible;
-        }
+        ShowHostErrors(displayLoad.Errors);
     }
 
     private void ApplyDisplay(HostComponentDisplayModel display)
@@ -81,44 +72,18 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        var result = displayController.SetVisibility(selectedComponent.Identity, VisibilityToggle.IsOn);
-        if (result.IsSuccess)
+        var result = displayActions.SetVisibility(selectedComponent.Identity, VisibilityToggle.IsOn);
+        if (result.Component is not null)
         {
-            selectedComponent = result.Value!;
+            selectedComponent = result.Component;
             ApplyDisplay(selectedComponent);
-            if (selectedComponent.IsVisible)
-            {
-                var showResult = dockWindowController.Show(selectedComponent);
-                if (!showResult.IsSuccess)
-                {
-                    ShowHostError(showResult.Error!);
-                }
-            }
-            else
-            {
-                // The component is already hidden, so detaching the probe does not reopen the dock window.
-                var detachResult = probeController.Detach();
-                if (!detachResult.IsSuccess)
-                {
-                    ShowHostError(detachResult.Error!);
-                }
-
-                var closeResult = dockWindowController.Close();
-                if (!closeResult.IsSuccess)
-                {
-                    ShowHostError(closeResult.Error!);
-                }
-            }
-
-            UpdateProbeButtons();
-            return;
         }
 
         applyingVisibility = true;
-        VisibilityToggle.IsOn = selectedComponent.IsVisible;
+        VisibilityToggle.IsOn = selectedComponent?.IsVisible == true;
         applyingVisibility = false;
-        ErrorText.Text = FormatError(result.Error!);
-        ErrorText.Visibility = Visibility.Visible;
+        ShowHostErrors(result.Errors);
+        UpdateProbeButtons();
     }
 
     private void RunProbeButton_Click(object sender, RoutedEventArgs args)
@@ -128,7 +93,7 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        var outcome = probeController.Run(
+        var outcome = displayActions.RunProbe(
             selectedComponent,
             new ExplorerTaskbarProbeRequest(SimulateFailureCheck.IsChecked == true, SelectedTransparencyMode));
         ShowProbeOutcome(outcome);
@@ -137,7 +102,7 @@ public sealed partial class MainWindow : Window
 
     private void StopProbeButton_Click(object sender, RoutedEventArgs args)
     {
-        var result = probeController.Detach();
+        var result = displayActions.DetachProbe();
         if (!result.IsSuccess)
         {
             ShowHostError(result.Error!);
@@ -159,21 +124,46 @@ public sealed partial class MainWindow : Window
     {
         if (topLevelControlWindow is not null)
         {
-            CloseTopLevelControlWindow();
-            TopLevelControlButton.Content = "显示透明顶级对照窗口";
+            var closeResult = CloseTopLevelControlWindow();
+            if (!closeResult.IsSuccess)
+            {
+                ShowHostError(closeResult.Error!);
+            }
+
             return;
         }
 
         var display = selectedComponent ?? HostComponentDisplayModel.From(new Component(
             new StableIdentity(new StableId("mtp")).CreateChild(new StableId("transparency-control")),
             CapabilityState.Available));
-        var controlWindow = new ExplorerTaskbarProbeWindow(display);
-        controlWindow.PrepareHidden(new Windows.Graphics.SizeInt32(360, 60), useToolWindowPresenter: false);
-        controlWindow.PrepareAsTopLevelControl();
-        controlWindow.Closed += TopLevelControlWindow_Closed;
-        var position = AppWindow.Position;
-        controlWindow.ShowAt(new Windows.Graphics.PointInt32(position.X + 24, position.Y + AppWindow.Size.Height - 90));
+        var controlWindow = new ExplorerTaskbarProbeWindow();
+        topLevelControlWindowOwner.TakeOwnership(new ExplorerTopLevelControlWindowResource(controlWindow));
         topLevelControlWindow = controlWindow;
+        controlWindow.Closed += TopLevelControlWindow_Closed;
+        try
+        {
+            controlWindow.InitializeView(display);
+            controlWindow.PrepareHidden(new Windows.Graphics.SizeInt32(360, 60), useToolWindowPresenter: false);
+            controlWindow.PrepareAsTopLevelControl();
+            var position = AppWindow.Position;
+            controlWindow.ShowAt(new Windows.Graphics.PointInt32(position.X + 24, position.Y + AppWindow.Size.Height - 90));
+        }
+        catch (Exception exception)
+        {
+            var errors = new List<StructuredError>
+            {
+                new("top_level_control_window_show_failed", "The diagnostic top-level window could not be shown.", exception.GetType().Name),
+            };
+            var cleanup = CloseTopLevelControlWindow();
+            if (!cleanup.IsSuccess)
+            {
+                errors.Add(cleanup.Error!);
+            }
+
+            ShowHostErrors(errors);
+            return;
+        }
+
         TopLevelControlButton.Content = "关闭透明顶级对照窗口";
 
         // The material dropdown is the single source of truth for this window. The transparency mode
@@ -312,50 +302,44 @@ public sealed partial class MainWindow : Window
 
     private void TopLevelControlWindow_Closed(object sender, WindowEventArgs args)
     {
-        if (topLevelControlWindow is not null)
-        {
-            topLevelControlWindow.Closed -= TopLevelControlWindow_Closed;
-            topLevelControlWindow = null;
-        }
-
-        TopLevelControlButton.Content = "显示透明顶级对照窗口";
-    }
-
-    private void CloseTopLevelControlWindow()
-    {
-        var controlWindow = topLevelControlWindow;
-        if (controlWindow is null)
+        if (sender is not ExplorerTaskbarProbeWindow closed || !ReferenceEquals(topLevelControlWindow, closed))
         {
             return;
         }
 
-        controlWindow.Closed -= TopLevelControlWindow_Closed;
+        closed.Closed -= TopLevelControlWindow_Closed;
         try
         {
-            controlWindow.AppWindow.Changed -= TopLevelControlWindow_Changed;
+            closed.AppWindow.Changed -= TopLevelControlWindow_Changed;
         }
         catch (Exception)
         {
-            // The AppWindow may already be gone.
+            // The AppWindow may already be gone after Closed.
         }
 
         topLevelControlWindow = null;
-        try
-        {
-            controlWindow.Close();
-        }
-        catch (Exception)
-        {
-            // The control window is diagnostic only; a close failure must not block the Host.
-        }
+        TopLevelControlButton.Content = "显示透明顶级对照窗口";
     }
 
-    private void ProbeController_StateChanged(object? sender, EventArgs args)
+    private CoreResult<bool> CloseTopLevelControlWindow()
     {
-        var state = probeController.State;
-        if (!state.IsEmbedded && state.Error is { Code: "explorer_probe_host_window_lost" } lostError)
+        return topLevelControlWindowOwner.Close();
+    }
+
+    private void DisplayActions_ProbeStateChanged(object? sender, EventArgs args)
+    {
+        var state = displayActions.ProbeState;
+        if (!state.IsEmbedded && state.Error is not null)
         {
-            ProbeStatusText.Text = $"{ExplorerTaskbarProbeOutcome.FallbackMessage}\n{FormatError(lostError)}";
+            var builder = new StringBuilder();
+            builder.AppendLine(ExplorerTaskbarProbeOutcome.FallbackMessage);
+            builder.AppendLine(FormatError(state.Error));
+            if (state.FallbackError is not null)
+            {
+                builder.AppendLine($"独立贴靠窗口恢复失败：{FormatError(state.FallbackError)}");
+            }
+
+            ProbeStatusText.Text = builder.ToString().TrimEnd();
             ProbeStatusText.Visibility = Visibility.Visible;
         }
 
@@ -364,9 +348,13 @@ public sealed partial class MainWindow : Window
 
     private void ShowProbeOutcome(ExplorerTaskbarProbeOutcome outcome)
     {
-        if (outcome.Succeeded && outcome.Report is not null)
+        if (outcome.Report is not null)
         {
             ProbeStatusText.Text = ExplorerTaskbarProbeReportFormatter.Format(outcome.Report);
+            if (outcome.Error is not null)
+            {
+                ProbeStatusText.Text += $"{Environment.NewLine}独立贴靠窗口关闭失败：{FormatError(outcome.Error)}";
+            }
         }
         else
         {
@@ -391,8 +379,12 @@ public sealed partial class MainWindow : Window
     private void UpdateProbeButtons()
     {
         var canProbe = selectedComponent is { IsVisible: true };
+        var probeState = displayActions.ProbeState;
         RunProbeButton.IsEnabled = canProbe;
-        StopProbeButton.IsEnabled = probeController.State.IsEmbedded;
+        StopProbeButton.IsEnabled = probeState.IsEmbedded || probeState.IsRecoveryPending;
+        StopProbeButton.Content = probeState.IsRecoveryPending
+            ? "重试恢复独立贴靠"
+            : "停止探针，恢复独立贴靠";
     }
 
     public void ShowHostError(StructuredError error)
@@ -402,14 +394,35 @@ public sealed partial class MainWindow : Window
         ErrorText.Visibility = Visibility.Visible;
     }
 
-    private void MainWindow_Closed(object sender, WindowEventArgs args)
+    private void ShowHostErrors(IReadOnlyList<StructuredError> errors)
     {
-        probeController.StateChanged -= ProbeController_StateChanged;
-        CloseTopLevelControlWindow();
-        _ = probeController.Detach();
-        probeController.Dispose();
-        _ = dockWindowController.Close();
-        dockWindowController.Dispose();
+        ErrorText.Text = string.Join(Environment.NewLine, errors.Select(FormatError));
+        ErrorText.Visibility = errors.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    private void MainWindow_Closing(AppWindow sender, AppWindowClosingEventArgs args)
+    {
+        var errors = new List<StructuredError>();
+        var controlWindowClose = CloseTopLevelControlWindow();
+        if (!controlWindowClose.IsSuccess)
+        {
+            args.Cancel = true;
+            ShowHostError(controlWindowClose.Error!);
+            return;
+        }
+
+        var shutdown = displayActions.Shutdown();
+        errors.AddRange(shutdown.Errors);
+        if (errors.Count > 0)
+        {
+            args.Cancel = true;
+            ShowHostErrors(errors);
+            return;
+        }
+
+        AppWindow.Closing -= MainWindow_Closing;
+        displayActions.ProbeStateChanged -= DisplayActions_ProbeStateChanged;
+        displayActions.Dispose();
     }
 
     private static string FormatError(StructuredError error) =>

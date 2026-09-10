@@ -8,11 +8,181 @@ using Windows.Graphics;
 
 namespace Mtp.Host;
 
+internal interface IExplorerProbeWindowResource
+{
+    event EventHandler? Closed;
+
+    nint Handle { get; }
+
+    void Close();
+}
+
+internal interface IExplorerWindowOperations
+{
+    bool IsWindow(nint handle);
+
+    bool Hide(nint handle);
+
+    bool RestoreParent(nint handle);
+
+    bool RestoreStyle(nint handle, nint style);
+}
+
+internal sealed class ExplorerProbeWindowOwner
+{
+    private readonly IExplorerWindowOperations operations;
+    private IExplorerProbeWindowResource? resource;
+    private bool cleanupRequested;
+    private nint originalStyle;
+
+    public ExplorerProbeWindowOwner(IExplorerWindowOperations operations)
+    {
+        this.operations = operations ?? throw new ArgumentNullException(nameof(operations));
+    }
+
+    public event EventHandler? Released;
+
+    public event EventHandler? CleanupCompleted;
+
+    public event EventHandler? Lost;
+
+    public bool HasResource => resource is not null;
+
+    public bool IsCleanupPending => resource is not null && cleanupRequested;
+
+    public bool IsReparented { get; private set; }
+
+    public bool IsStyleChanged { get; private set; }
+
+    public void TakeOwnership(IExplorerProbeWindowResource resource)
+    {
+        ArgumentNullException.ThrowIfNull(resource);
+        if (this.resource is not null)
+        {
+            throw new InvalidOperationException("The previous probe window must be released before another is created.");
+        }
+
+        this.resource = resource;
+        cleanupRequested = false;
+        originalStyle = 0;
+        IsReparented = false;
+        IsStyleChanged = false;
+        resource.Closed += Resource_Closed;
+    }
+
+    public void MarkStyleChanged(nint style)
+    {
+        originalStyle = style;
+        IsStyleChanged = true;
+    }
+
+    public void MarkReparented() => IsReparented = true;
+
+    public CoreResult<bool> Cleanup()
+    {
+        var current = resource;
+        if (current is null)
+        {
+            return CoreResult<bool>.Success(true);
+        }
+
+        cleanupRequested = true;
+        var handle = current.Handle;
+        if (handle != 0 && operations.IsWindow(handle))
+        {
+            if (!operations.Hide(handle))
+            {
+                return CleanupFailure("explorer_probe_hide_failed", "The probe window could not be hidden before cleanup.");
+            }
+
+            if (IsReparented)
+            {
+                if (!operations.RestoreParent(handle))
+                {
+                    return CleanupFailure("explorer_probe_restore_parent_failed", "The probe window could not be detached from Explorer.");
+                }
+
+                IsReparented = false;
+            }
+
+            if (IsStyleChanged)
+            {
+                if (!operations.RestoreStyle(handle, originalStyle))
+                {
+                    return CleanupFailure("explorer_probe_restore_style_failed", "The probe window style could not be restored.");
+                }
+
+                IsStyleChanged = false;
+            }
+        }
+
+        try
+        {
+            current.Close();
+        }
+        catch (Exception exception)
+        {
+            return CleanupFailure(
+                "explorer_probe_close_failed",
+                "The probe window could not be closed.",
+                exception.GetType().Name);
+        }
+
+        if (ReferenceEquals(resource, current) && (handle == 0 || operations.IsWindow(handle)))
+        {
+            return CleanupFailure(
+                "explorer_probe_close_unconfirmed",
+                "The probe window did not confirm that it closed.");
+        }
+
+        ReleaseIfCurrent(current);
+        return CoreResult<bool>.Success(true);
+    }
+
+    private void Resource_Closed(object? sender, EventArgs args)
+    {
+        if (sender is not IExplorerProbeWindowResource closed || !ReferenceEquals(resource, closed))
+        {
+            return;
+        }
+
+        var wasUnexpected = !cleanupRequested;
+        ReleaseIfCurrent(closed);
+        if (wasUnexpected)
+        {
+            Lost?.Invoke(this, EventArgs.Empty);
+        }
+        else
+        {
+            CleanupCompleted?.Invoke(this, EventArgs.Empty);
+        }
+    }
+
+    private void ReleaseIfCurrent(IExplorerProbeWindowResource current)
+    {
+        if (!ReferenceEquals(resource, current))
+        {
+            return;
+        }
+
+        current.Closed -= Resource_Closed;
+        resource = null;
+        cleanupRequested = false;
+        originalStyle = 0;
+        IsReparented = false;
+        IsStyleChanged = false;
+        Released?.Invoke(this, EventArgs.Empty);
+    }
+
+    private static CoreResult<bool> CleanupFailure(string code, string message, string? path = null) =>
+        CoreResult<bool>.Failure(new StructuredError(code, message, path));
+}
+
 /// <summary>
 /// Experimental Windows adapter that reparents the probe window into the Explorer taskbar.
 /// Everything Explorer-specific (window classes, reparenting, styles) is private to this class
-/// and is a replaceable experiment, not an MTP contract. Every Win32 step is checked and any
-/// failure removes the probe window again so the taskbar never keeps an orphaned child.
+/// and is a replaceable experiment, not an MTP contract. Every cleanup step is checked; failed
+/// cleanup retains resource ownership so the Host can retry instead of abandoning an Explorer child.
 /// </summary>
 public sealed class Win32ExplorerTaskbarEmbedAdapter : IExplorerTaskbarEmbedAdapter
 {
@@ -26,29 +196,42 @@ public sealed class Win32ExplorerTaskbarEmbedAdapter : IExplorerTaskbarEmbedAdap
     private static nint systemDispatcherQueueController;
 
     private readonly Func<int>? displayCountProvider;
+    private readonly ExplorerProbeWindowOwner owner;
     private ExplorerTaskbarProbeWindow? window;
     private nint windowHandle;
-    private nint originalStyle;
-    private bool styleChanged;
-    private bool reparented;
 
     public Win32ExplorerTaskbarEmbedAdapter(Func<int>? displayCountProvider = null)
     {
         this.displayCountProvider = displayCountProvider;
+        owner = new ExplorerProbeWindowOwner(new NativeExplorerWindowOperations());
+        owner.Released += Owner_Released;
+        owner.CleanupCompleted += Owner_CleanupCompleted;
+        owner.Lost += Owner_Lost;
     }
 
     public event EventHandler? Lost;
 
-    public bool IsEmbedded => window is not null && reparented;
+    public event EventHandler? Detached;
+
+    public ExplorerTaskbarProbeLifecycle Lifecycle =>
+        !owner.HasResource
+            ? ExplorerTaskbarProbeLifecycle.Detached
+            : owner.IsCleanupPending || !owner.IsReparented
+                ? ExplorerTaskbarProbeLifecycle.CleanupPending
+                : ExplorerTaskbarProbeLifecycle.Embedded;
 
     public CoreResult<ExplorerTaskbarProbeReport> TryEmbed(HostComponentDisplayModel component, ExplorerTaskbarProbeRequest request)
     {
         ArgumentNullException.ThrowIfNull(component);
         ArgumentNullException.ThrowIfNull(request);
 
-        if (window is not null)
+        if (owner.HasResource)
         {
-            Cleanup();
+            var cleanup = Cleanup();
+            if (!cleanup.IsSuccess)
+            {
+                return CoreResult<ExplorerTaskbarProbeReport>.Failure(cleanup.Error!);
+            }
         }
 
         var steps = new List<ExplorerTaskbarProbeStep>();
@@ -58,8 +241,10 @@ public sealed class Win32ExplorerTaskbarEmbedAdapter : IExplorerTaskbarEmbedAdap
         }
         catch (Exception exception)
         {
-            Cleanup();
-            return Failure("explorer_probe_unexpected_exception", "The probe stopped on an unexpected exception.", exception.GetType().Name);
+            return FailAndCleanup(
+                "explorer_probe_unexpected_exception",
+                "The probe stopped on an unexpected exception.",
+                exception.GetType().Name);
         }
     }
 
@@ -72,8 +257,7 @@ public sealed class Win32ExplorerTaskbarEmbedAdapter : IExplorerTaskbarEmbedAdap
 
         try
         {
-            Cleanup();
-            return CoreResult<bool>.Success(true);
+            return Cleanup();
         }
         catch (Exception exception)
         {
@@ -292,17 +476,17 @@ public sealed class Win32ExplorerTaskbarEmbedAdapter : IExplorerTaskbarEmbedAdap
         var target = placement.Value!;
         steps.Add(new ExplorerTaskbarProbeStep("calculate_placement", true, $"{target.AnchorKind} {FormatRect(target.ClientRect)}"));
 
-        window = new ExplorerTaskbarProbeWindow(component);
+        window = new ExplorerTaskbarProbeWindow();
+        owner.TakeOwnership(new ExplorerProbeWindowResource(window));
+        window.InitializeView(component);
         window.PrepareHidden(new SizeInt32(target.ClientRect.Width, target.ClientRect.Height));
         windowHandle = window.WindowHandle;
         if (windowHandle == 0 || !NativeMethods.IsWindow(windowHandle))
         {
             steps.Add(new ExplorerTaskbarProbeStep("create_window", false, null));
-            Cleanup();
-            return Failure("explorer_probe_window_create_failed", "The probe window handle could not be created.");
+            return FailAndCleanup("explorer_probe_window_create_failed", "The probe window handle could not be created.");
         }
 
-        window.Closed += Window_Closed;
         steps.Add(new ExplorerTaskbarProbeStep("create_window", true, null));
 
         var dispatcherReady = EnsureSystemDispatcherQueue(out var dispatcherDetail);
@@ -315,7 +499,7 @@ public sealed class Win32ExplorerTaskbarEmbedAdapter : IExplorerTaskbarEmbedAdap
             "apply_transparency",
             false,
             $"{request.TransparencyMode}: skipped, DWM materials are not available to WS_CHILD windows"));
-        originalStyle = NativeMethods.GetWindowLongPtrW(windowHandle, NativeMethods.GWL_STYLE);
+        var originalStyle = NativeMethods.GetWindowLongPtrW(windowHandle, NativeMethods.GWL_STYLE);
         var childStyle = ((uint)(long)originalStyle & ~NativeMethods.TopLevelStyleMask) | NativeMethods.WS_CHILD;
         NativeMethods.SetLastError(0);
         var previousStyle = NativeMethods.SetWindowLongPtrW(windowHandle, NativeMethods.GWL_STYLE, unchecked((nint)(int)childStyle));
@@ -323,11 +507,10 @@ public sealed class Win32ExplorerTaskbarEmbedAdapter : IExplorerTaskbarEmbedAdap
         {
             var error = Marshal.GetLastWin32Error();
             steps.Add(new ExplorerTaskbarProbeStep("apply_child_style", false, FormatWin32Error(error)));
-            Cleanup();
-            return Failure("explorer_probe_style_change_failed", "The probe window style could not be changed to a child window.", FormatWin32Error(error));
+            return FailAndCleanup("explorer_probe_style_change_failed", "The probe window style could not be changed to a child window.", FormatWin32Error(error));
         }
 
-        styleChanged = true;
+        owner.MarkStyleChanged(originalStyle);
         steps.Add(new ExplorerTaskbarProbeStep("apply_child_style", true, null));
 
         NativeMethods.SetLastError(0);
@@ -336,16 +519,14 @@ public sealed class Win32ExplorerTaskbarEmbedAdapter : IExplorerTaskbarEmbedAdap
         {
             var error = Marshal.GetLastWin32Error();
             steps.Add(new ExplorerTaskbarProbeStep("set_parent", false, FormatWin32Error(error)));
-            Cleanup();
-            return Failure("explorer_probe_set_parent_failed", "The probe window could not be attached to the taskbar.", FormatWin32Error(error));
+            return FailAndCleanup("explorer_probe_set_parent_failed", "The probe window could not be attached to the taskbar.", FormatWin32Error(error));
         }
 
-        reparented = true;
+        owner.MarkReparented();
         if (NativeMethods.GetAncestor(windowHandle, NativeMethods.GA_PARENT) != taskbar)
         {
             steps.Add(new ExplorerTaskbarProbeStep("set_parent", false, "parent mismatch"));
-            Cleanup();
-            return Failure("explorer_probe_parent_mismatch", "The taskbar did not become the parent of the probe window.");
+            return FailAndCleanup("explorer_probe_parent_mismatch", "The taskbar did not become the parent of the probe window.");
         }
 
         steps.Add(new ExplorerTaskbarProbeStep("set_parent", true, null));
@@ -361,8 +542,7 @@ public sealed class Win32ExplorerTaskbarEmbedAdapter : IExplorerTaskbarEmbedAdap
         {
             var error = Marshal.GetLastWin32Error();
             steps.Add(new ExplorerTaskbarProbeStep("position_window", false, FormatWin32Error(error)));
-            Cleanup();
-            return Failure("explorer_probe_position_failed", "The probe window could not be positioned inside the taskbar.", FormatWin32Error(error));
+            return FailAndCleanup("explorer_probe_position_failed", "The probe window could not be positioned inside the taskbar.", FormatWin32Error(error));
         }
 
         steps.Add(new ExplorerTaskbarProbeStep("position_window", true, null));
@@ -371,16 +551,14 @@ public sealed class Win32ExplorerTaskbarEmbedAdapter : IExplorerTaskbarEmbedAdap
         if (!NativeMethods.IsWindowVisible(windowHandle))
         {
             steps.Add(new ExplorerTaskbarProbeStep("verify_visible", false, null));
-            Cleanup();
-            return Failure("explorer_probe_not_visible", "The probe window is attached but not visible.");
+            return FailAndCleanup("explorer_probe_not_visible", "The probe window is attached but not visible.");
         }
 
         if (!NativeMethods.GetWindowRect(windowHandle, out var embeddedScreen) ||
             !IsWithin(embeddedScreen.ToRectInt32(), taskbarScreenRect))
         {
             steps.Add(new ExplorerTaskbarProbeStep("verify_visible", false, "outside taskbar"));
-            Cleanup();
-            return Failure("explorer_probe_geometry_mismatch", "The probe window is not inside the taskbar rectangle.");
+            return FailAndCleanup("explorer_probe_geometry_mismatch", "The probe window is not inside the taskbar rectangle.");
         }
 
         var embeddedScreenRect = embeddedScreen.ToRectInt32();
@@ -539,64 +717,92 @@ public sealed class Win32ExplorerTaskbarEmbedAdapter : IExplorerTaskbarEmbedAdap
         }
     }
 
-    private void Cleanup()
+    private CoreResult<bool> Cleanup() => owner.Cleanup();
+
+    private CoreResult<ExplorerTaskbarProbeReport> FailAndCleanup(
+        string code,
+        string message,
+        string? path = null)
     {
-        var current = window;
-        if (current is null)
+        var cleanup = Cleanup();
+        return cleanup.IsSuccess
+            ? Failure(code, message, path)
+            : CoreResult<ExplorerTaskbarProbeReport>.Failure(cleanup.Error!);
+    }
+
+    private void Owner_Released(object? sender, EventArgs args)
+    {
+        window = null;
+        windowHandle = 0;
+    }
+
+    private void Owner_Lost(object? sender, EventArgs args)
+    {
+        Lost?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void Owner_CleanupCompleted(object? sender, EventArgs args)
+    {
+        Detached?.Invoke(this, EventArgs.Empty);
+    }
+
+    private sealed class ExplorerProbeWindowResource : IExplorerProbeWindowResource
+    {
+        private readonly ExplorerTaskbarProbeWindow window;
+
+        public ExplorerProbeWindowResource(ExplorerTaskbarProbeWindow window)
         {
-            return;
+            this.window = window;
+            window.Closed += Window_Closed;
         }
 
-        current.Closed -= Window_Closed;
-        try
-        {
-            if (windowHandle != 0 && NativeMethods.IsWindow(windowHandle))
-            {
-                _ = NativeMethods.ShowWindow(windowHandle, NativeMethods.SW_HIDE);
-                if (reparented)
-                {
-                    _ = NativeMethods.SetParent(windowHandle, 0);
-                }
+        public event EventHandler? Closed;
 
-                if (styleChanged)
-                {
-                    _ = NativeMethods.SetWindowLongPtrW(windowHandle, NativeMethods.GWL_STYLE, originalStyle);
-                }
-            }
-        }
-        finally
-        {
-            window = null;
-            windowHandle = 0;
-            reparented = false;
-            styleChanged = false;
-            originalStyle = 0;
-        }
+        public nint Handle => window.WindowHandle;
 
-        try
+        public void Close() => window.Close();
+
+        private void Window_Closed(object sender, WindowEventArgs args)
         {
-            current.Close();
-        }
-        catch (Exception)
-        {
-            // The window may already have been destroyed by Explorer; nothing else can be released here.
+            window.Closed -= Window_Closed;
+            Closed?.Invoke(this, EventArgs.Empty);
         }
     }
 
-    private void Window_Closed(object sender, WindowEventArgs args)
+    private sealed class NativeExplorerWindowOperations : IExplorerWindowOperations
     {
-        if (window is null)
+        public bool IsWindow(nint handle) => NativeMethods.IsWindow(handle);
+
+        public bool Hide(nint handle)
         {
-            return;
+            _ = NativeMethods.ShowWindow(handle, NativeMethods.SW_HIDE);
+            return !NativeMethods.IsWindowVisible(handle);
         }
 
-        window.Closed -= Window_Closed;
-        window = null;
-        windowHandle = 0;
-        reparented = false;
-        styleChanged = false;
-        originalStyle = 0;
-        Lost?.Invoke(this, EventArgs.Empty);
+        public bool RestoreParent(nint handle)
+        {
+            NativeMethods.SetLastError(0);
+            var previousParent = NativeMethods.SetParent(handle, 0);
+            var error = Marshal.GetLastWin32Error();
+            if (previousParent == 0 && error != 0)
+            {
+                return false;
+            }
+
+            return NativeMethods.GetAncestor(handle, NativeMethods.GA_PARENT) == 0;
+        }
+
+        public bool RestoreStyle(nint handle, nint style)
+        {
+            NativeMethods.SetLastError(0);
+            var previous = NativeMethods.SetWindowLongPtrW(handle, NativeMethods.GWL_STYLE, style);
+            if (previous == 0 && Marshal.GetLastWin32Error() != 0)
+            {
+                return false;
+            }
+
+            return NativeMethods.GetWindowLongPtrW(handle, NativeMethods.GWL_STYLE) == style;
+        }
     }
 
     private static bool IsWithin(RectInt32 rectangle, RectInt32 bounds) =>

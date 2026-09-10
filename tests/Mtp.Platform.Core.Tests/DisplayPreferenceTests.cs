@@ -162,6 +162,272 @@ public sealed class DisplayPreferenceTests
         Assert.False(controller.CurrentComponents.Single().IsVisible);
     }
 
+    [Fact]
+    public void TemporaryReadFailureDoesNotErasePreferencesForComponentsMissingFromTheCurrentDeclaration()
+    {
+        var path = PreferencePath();
+        try
+        {
+            var original = new HostDisplayController(
+                new StubDeclarationSource(ValidJson("music", "controls", "remembered")),
+                new LocalComponentDisplayPreferenceStore(path));
+            var remembered = original.Load().Components.Single();
+            Assert.True(original.SetVisibility(remembered.Identity, true).IsSuccess);
+
+            var current = new HostDisplayController(
+                new StubDeclarationSource(ValidJson("music", "controls", "current")),
+                new LocalComponentDisplayPreferenceStore(path));
+            HostComponentDisplayModel currentComponent;
+            using (var locked = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+            {
+                var unavailable = current.Load();
+                Assert.Equal("preference_read_failed", unavailable.PreferenceError!.Code);
+                currentComponent = unavailable.Components.Single();
+            }
+
+            Assert.True(current.SetVisibility(currentComponent.Identity, true).IsSuccess);
+
+            var restored = new HostDisplayController(
+                new StubDeclarationSource(ValidJson("music", "controls", "remembered")),
+                new LocalComponentDisplayPreferenceStore(path)).Load();
+            Assert.True(restored.Components.Single().IsVisible);
+        }
+        finally
+        {
+            Delete(path);
+        }
+    }
+
+    [Fact]
+    public void PreferenceLoadDistinguishesMissingInvalidAndTemporarilyUnavailableFiles()
+    {
+        var path = PreferencePath();
+        try
+        {
+            var store = new LocalComponentDisplayPreferenceStore(path);
+            var missing = store.Load();
+            Assert.Equal(ComponentDisplayPreferenceLoadState.Missing, missing.State);
+
+            File.WriteAllText(path, "{\"components\": [");
+            var invalid = store.Load();
+            Assert.Equal(ComponentDisplayPreferenceLoadState.Invalid, invalid.State);
+
+            File.WriteAllText(path, "{\"components\": []}");
+            using var locked = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+            var unavailable = store.Load();
+            Assert.Equal(ComponentDisplayPreferenceLoadState.Unavailable, unavailable.State);
+        }
+        finally
+        {
+            Delete(path);
+        }
+    }
+
+    [Fact]
+    public void PreferenceLoadResultRejectsContradictoryStateAndErrorCombinations()
+    {
+        var error = new StructuredError("preference_read_failed", "Cannot read preferences.");
+
+        Assert.Throws<ArgumentException>(() => new ComponentDisplayPreferenceLoadResult(
+            new ComponentDisplayPreferences(),
+            error,
+            ComponentDisplayPreferenceLoadState.Loaded));
+        Assert.Throws<ArgumentException>(() => new ComponentDisplayPreferenceLoadResult(
+            new ComponentDisplayPreferences(),
+            null,
+            ComponentDisplayPreferenceLoadState.Unavailable));
+    }
+
+    [Fact]
+    public void DisplayLoadResultPreservesDeclarationAndPreferenceErrorsTogether()
+    {
+        var declarationError = new StructuredError("declaration_invalid", "Invalid declaration.");
+        var preferenceError = new StructuredError("preference_invalid", "Invalid preferences.");
+        var result = new HostDisplayLoadResult(
+            false,
+            null,
+            Array.Empty<HostComponentDisplayModel>(),
+            declarationError,
+            preferenceError);
+
+        Assert.Equal(new[] { declarationError, preferenceError }, result.Errors);
+    }
+
+    [Fact]
+    public void AtomicReplacementFailureKeepsThePreviousFileAndCleansTemporaryOutput()
+    {
+        var path = PreferencePath();
+        try
+        {
+            var originalController = new HostDisplayController(
+                new StubDeclarationSource(ValidJson("music", "controls", "remembered")),
+                new LocalComponentDisplayPreferenceStore(path));
+            var original = originalController.Load().Components.Single();
+            Assert.True(originalController.SetVisibility(original.Identity, true).IsSuccess);
+            var previousContent = File.ReadAllText(path);
+
+            var replacement = new ComponentDisplayPreferences();
+            CoreResult<ComponentDisplayPreferences> saveResult;
+            using (var locked = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+            {
+                saveResult = new LocalComponentDisplayPreferenceStore(path)
+                    .CommitVisibility(original.Identity, false);
+            }
+
+            Assert.False(saveResult.IsSuccess);
+            Assert.Equal("preference_write_failed", saveResult.Error!.Code);
+            Assert.Equal(previousContent, File.ReadAllText(path));
+            Assert.Empty(Directory.GetFiles(
+                Path.GetDirectoryName(path)!,
+                $"{Path.GetFileName(path)}.*.tmp"));
+        }
+        finally
+        {
+            Delete(path);
+        }
+    }
+
+    [Fact]
+    public void InvalidPreferencePathReturnsAStructuredFailureInsteadOfThrowing()
+    {
+        var store = new LocalComponentDisplayPreferenceStore("\0");
+
+        var load = store.Load();
+        var save = store.CommitVisibility(new StableIdentity(new StableId("test")), true);
+
+        Assert.Equal(ComponentDisplayPreferenceLoadState.Unavailable, load.State);
+        Assert.Equal("preference_read_failed", load.Error!.Code);
+        Assert.False(save.IsSuccess);
+        Assert.Equal("preference_write_failed", save.Error!.Code);
+    }
+
+    [Fact]
+    public void TwoHostsMergeVisibilityChangesAgainstTheLatestPreferenceFile()
+    {
+        var path = PreferencePath();
+        const string declaration = """
+            {
+              "applicationId": "music",
+              "featureGroups": [
+                {
+                  "featureGroupId": "controls",
+                  "components": [
+                    { "componentId": "first", "actionSlots": [{ "actionSlotId": "go" }] },
+                    { "componentId": "second", "actionSlots": [{ "actionSlotId": "go" }] }
+                  ],
+                  "taskbarFlyouts": [
+                    { "taskbarFlyoutId": "panel", "actionSlots": [{ "actionSlotId": "go" }] }
+                  ]
+                }
+              ]
+            }
+            """;
+        try
+        {
+            var firstHost = new HostDisplayController(
+                new StubDeclarationSource(declaration),
+                new LocalComponentDisplayPreferenceStore(path));
+            var secondHost = new HostDisplayController(
+                new StubDeclarationSource(declaration),
+                new LocalComponentDisplayPreferenceStore(path));
+            var firstSnapshot = firstHost.Load().Components;
+            var secondSnapshot = secondHost.Load().Components;
+
+            Assert.True(firstHost.SetVisibility(firstSnapshot[0].Identity, true).IsSuccess);
+            Assert.True(secondHost.SetVisibility(secondSnapshot[1].Identity, true).IsSuccess);
+
+            var reloaded = new HostDisplayController(
+                new StubDeclarationSource(declaration),
+                new LocalComponentDisplayPreferenceStore(path)).Load();
+            Assert.All(reloaded.Components, component => Assert.True(component.IsVisible));
+        }
+        finally
+        {
+            Delete(path);
+        }
+    }
+
+    [Fact]
+    public void OversizedPreferenceFileIsRejectedBeforeDeserialization()
+    {
+        var path = PreferencePath();
+        try
+        {
+            using (var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                stream.SetLength(LocalComponentDisplayPreferenceStore.MaximumJsonSizeInBytes + 1L);
+            }
+
+            var result = new LocalComponentDisplayPreferenceStore(path).Load();
+
+            Assert.Equal(ComponentDisplayPreferenceLoadState.Invalid, result.State);
+            Assert.Equal("preference_too_large", result.Error!.Code);
+        }
+        finally
+        {
+            Delete(path);
+        }
+    }
+
+    [Fact]
+    public void OversizedPreferenceCommitKeepsThePreviousFile()
+    {
+        var path = PreferencePath();
+        try
+        {
+            var store = new LocalComponentDisplayPreferenceStore(path);
+            var originalIdentity = new StableIdentity(new StableId("original"));
+            Assert.True(store.CommitVisibility(originalIdentity, true).IsSuccess);
+            var previousContent = File.ReadAllText(path);
+            var oversizedIdentity = new StableIdentity(
+                new StableId(new string('x', LocalComponentDisplayPreferenceStore.MaximumJsonSizeInBytes)));
+
+            var result = store.CommitVisibility(oversizedIdentity, true);
+
+            Assert.False(result.IsSuccess);
+            Assert.Equal("preference_too_large", result.Error!.Code);
+            Assert.Equal(previousContent, File.ReadAllText(path));
+        }
+        finally
+        {
+            Delete(path);
+        }
+    }
+
+    [Fact]
+    public void ExcessivelyLongPreferencePathReturnsStructuredFailures()
+    {
+        var path = @"C:\" + new string('a', 40000);
+        var store = new LocalComponentDisplayPreferenceStore(path);
+
+        var load = store.Load();
+        var save = store.CommitVisibility(new StableIdentity(new StableId("test")), true);
+
+        Assert.Equal(ComponentDisplayPreferenceLoadState.Unavailable, load.State);
+        Assert.Equal("preference_read_failed", load.Error!.Code);
+        Assert.False(save.IsSuccess);
+        Assert.Equal("preference_write_failed", save.Error!.Code);
+    }
+
+    [Fact]
+    public void BoundedUtf8ReaderRejectsContentBeyondTheRequestedLimit()
+    {
+        var path = PreferencePath();
+        try
+        {
+            File.WriteAllBytes(path, new byte[4096]);
+
+            var accepted = BoundedUtf8File.TryRead(path, 32, out var content);
+
+            Assert.False(accepted);
+            Assert.Empty(content);
+        }
+        finally
+        {
+            Delete(path);
+        }
+    }
+
     private static string PreferencePath() => Path.Combine(Path.GetTempPath(), $"mtp-preferences-{Guid.NewGuid():N}.json");
 
     private static void Delete(string path)
@@ -201,9 +467,12 @@ public sealed class DisplayPreferenceTests
     private sealed class FailingPreferenceStore : IComponentDisplayPreferenceStore
     {
         public ComponentDisplayPreferenceLoadResult Load() =>
-            new(new ComponentDisplayPreferences(), null);
+            new(
+                new ComponentDisplayPreferences(),
+                null,
+                ComponentDisplayPreferenceLoadState.Loaded);
 
-        public CoreResult<ComponentDisplayPreferences> Save(ComponentDisplayPreferences preferences) =>
+        public CoreResult<ComponentDisplayPreferences> CommitVisibility(StableIdentity identity, bool isVisible) =>
             CoreResult<ComponentDisplayPreferences>.Failure(
                 new StructuredError("preference_write_failed", "The display preference file cannot be written."));
     }

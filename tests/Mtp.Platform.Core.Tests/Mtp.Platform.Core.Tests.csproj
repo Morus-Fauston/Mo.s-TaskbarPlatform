@@ -25,4 +25,8 @@
     <ProjectReference Include="..\..\src\Mtp.Host\Mtp.Host.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Include="..\..\src\Mtp.Host\MainWindow.xaml" Link="MainWindow.xaml" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

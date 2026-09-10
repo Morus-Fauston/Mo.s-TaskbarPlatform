@@ -26,13 +26,29 @@ public sealed partial class ExplorerTaskbarProbeWindow : Window
     private DesktopAcrylicController? acrylicController;
     private MicaController? micaController;
     private SystemBackdropConfiguration? acrylicConfiguration;
+    private bool initialized;
 
     public ExplorerTaskbarProbeWindow(HostComponentDisplayModel display)
+        : this()
+    {
+        InitializeView(display);
+    }
+
+    internal ExplorerTaskbarProbeWindow()
+    {
+        Closed += (_, _) => ReleaseAcrylicController();
+    }
+
+    internal void InitializeView(HostComponentDisplayModel display)
     {
         ArgumentNullException.ThrowIfNull(display);
-        InitializeComponent();
+        if (!initialized)
+        {
+            InitializeComponent();
+            initialized = true;
+        }
+
         SetDisplay(display);
-        Closed += (_, _) => ReleaseAcrylicController();
     }
 
     /// <summary>

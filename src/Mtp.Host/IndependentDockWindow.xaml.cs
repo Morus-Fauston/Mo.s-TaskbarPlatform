@@ -17,19 +17,29 @@ public sealed partial class IndependentDockWindow : Window
     private const int WindowHeight = 84;
     private const int WorkAreaMargin = 8;
 
-    public IndependentDockWindow(HostComponentDisplayModel display, DisplayArea? targetDisplayArea = null)
+    private bool presenterConfigured;
+
+    public IndependentDockWindow()
+    {
+    }
+
+    internal void InitializeView() => InitializeComponent();
+
+    public void Configure(HostComponentDisplayModel display, DisplayArea? targetDisplayArea = null)
     {
         ArgumentNullException.ThrowIfNull(display);
-        InitializeComponent();
-
-        var presenter = OverlappedPresenter.CreateForToolWindow();
-        presenter.IsAlwaysOnTop = true;
-        presenter.IsResizable = false;
-        presenter.IsMaximizable = false;
-        presenter.IsMinimizable = false;
-        presenter.SetBorderAndTitleBar(false, false);
-        AppWindow.SetPresenter(presenter);
-        AppWindow.Resize(new SizeInt32(WindowWidth, WindowHeight));
+        if (!presenterConfigured)
+        {
+            var presenter = OverlappedPresenter.CreateForToolWindow();
+            presenter.IsAlwaysOnTop = true;
+            presenter.IsResizable = false;
+            presenter.IsMaximizable = false;
+            presenter.IsMinimizable = false;
+            presenter.SetBorderAndTitleBar(false, false);
+            AppWindow.SetPresenter(presenter);
+            AppWindow.Resize(new SizeInt32(WindowWidth, WindowHeight));
+            presenterConfigured = true;
+        }
 
         SetDisplay(display, targetDisplayArea);
     }
