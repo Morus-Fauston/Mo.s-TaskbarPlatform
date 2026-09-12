@@ -43,6 +43,18 @@ public sealed partial class WindowTestApplication : Application
 
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
+        if (Environment.GetCommandLineArgs().Contains("--sustained"))
+        {
+            new SustainedCostProbe(this).Run();
+            return;
+        }
+
+        if (Environment.GetCommandLineArgs().Contains("--render-latency"))
+        {
+            _ = new RenderLatencyProbe(this).Run();
+            return;
+        }
+
         if (Environment.GetCommandLineArgs().Contains("--acrylic-child"))
         {
             new AcrylicChildProbe(this).Run();
