@@ -14,7 +14,7 @@ public sealed class Win32TaskbarDockEnvironmentTests
         Assert.Null(result.Value!.Geometry);
         Assert.Null(result.Value.TaskbarIdentity);
         Assert.Equal("dock_probe_timeout", result.Value.Error?.Code);
-        Assert.Equal(TaskbarVisibility.Unknown, result.Value.Visibility);
+        Assert.Equal(TaskbarVisibility.Allowed, result.Value.Visibility);
         Assert.True(result.Value.DisplayBounds.Contains(result.Value.WorkArea));
     }
 

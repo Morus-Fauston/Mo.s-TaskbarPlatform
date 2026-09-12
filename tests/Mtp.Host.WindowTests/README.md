@@ -6,7 +6,7 @@ Run on Windows with an interactive desktop and the Host Windows App SDK prerequi
 powershell -ExecutionPolicy Bypass -File tests/Mtp.Host.WindowTests/Run.ps1
 ```
 
-This separate process instantiates the production 05A/05C dock through reflection, shows it offscreen,
+This separate process instantiates the production 05A/05D dock through reflection, shows it offscreen,
 and checks native frame styles and the full client rectangle across dispatcher turns, repeated
 layout, resizing, hiding, restoration, and recreation. It checks that NOACTIVATE and TOOLWINDOW
 are retained, hiding preserves window identity, restoration keeps foreground focus, and repeated

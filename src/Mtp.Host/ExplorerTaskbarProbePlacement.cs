@@ -17,7 +17,6 @@ public sealed record ExplorerTaskbarProbePlacementResult(RectInt32 ClientRect, s
 public static class ExplorerTaskbarProbePlacement
 {
     public const string TrayNotifyAnchor = "tray_notify_window";
-    public const string FixedInsetAnchor = "fixed_inset";
 
     public static CoreResult<ExplorerTaskbarProbePlacementResult> TryCalculate(
         SizeInt32 taskbarClientSize,
@@ -51,18 +50,11 @@ public static class ExplorerTaskbarProbePlacement
         var height = ScaleToPixels(probeSizeDip.Height, scale);
         var margin = ScaleToPixels(marginDip, scale);
 
-        string anchorKind;
-        int x;
-        if (trayLeftEdgeClientX is int trayX && trayX > 0 && trayX <= taskbarClientSize.Width)
-        {
-            anchorKind = TrayNotifyAnchor;
-            x = trayX - margin - width;
-        }
-        else
-        {
-            anchorKind = FixedInsetAnchor;
-            x = taskbarClientSize.Width - margin - width;
-        }
+        if (trayLeftEdgeClientX is not int trayX || trayX <= 0 || trayX > taskbarClientSize.Width)
+            return Failure("explorer_probe_tray_anchor_unavailable", "The notification area anchor could not be determined.");
+
+        const string anchorKind = TrayNotifyAnchor;
+        var x = trayX - margin - width;
 
         if (x < 0 || height > taskbarClientSize.Height)
         {

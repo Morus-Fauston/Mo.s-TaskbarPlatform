@@ -24,19 +24,18 @@ public sealed class ExplorerTaskbarProbePlacementTests
     [InlineData(0)]
     [InlineData(-10)]
     [InlineData(2000)]
-    public void MissingOrOutOfRangeAnchorFallsBackToFixedInset(int? trayLeftEdge)
+    public void MissingOrOutOfRangeAnchorIsRejected(int? trayLeftEdge)
     {
         var result = ExplorerTaskbarProbePlacement.TryCalculate(new SizeInt32(1920, 48), trayLeftEdge, ProbeSize, 96, Margin);
 
-        Assert.True(result.IsSuccess);
-        Assert.Equal(ExplorerTaskbarProbePlacement.FixedInsetAnchor, result.Value!.AnchorKind);
-        Assert.Equal(new RectInt32(1672, 4, 240, 40), result.Value.ClientRect);
+        Assert.False(result.IsSuccess);
+        Assert.Equal("explorer_probe_tray_anchor_unavailable", result.Error!.Code);
     }
 
     [Fact]
     public void VerticalTaskbarIsRejected()
     {
-        var result = ExplorerTaskbarProbePlacement.TryCalculate(new SizeInt32(48, 1080), null, ProbeSize, 96, Margin);
+        var result = ExplorerTaskbarProbePlacement.TryCalculate(new SizeInt32(48, 1080), 20, ProbeSize, 96, Margin);
 
         Assert.False(result.IsSuccess);
         Assert.Equal("explorer_probe_taskbar_orientation_unsupported", result.Error!.Code);
@@ -48,7 +47,7 @@ public sealed class ExplorerTaskbarProbePlacementTests
     [InlineData(-1, 48)]
     public void EmptyTaskbarRectangleIsRejected(int width, int height)
     {
-        var result = ExplorerTaskbarProbePlacement.TryCalculate(new SizeInt32(width, height), null, ProbeSize, 96, Margin);
+        var result = ExplorerTaskbarProbePlacement.TryCalculate(new SizeInt32(width, height), 20, ProbeSize, 96, Margin);
 
         Assert.False(result.IsSuccess);
         Assert.Equal("explorer_probe_taskbar_rect_invalid", result.Error!.Code);
@@ -57,8 +56,8 @@ public sealed class ExplorerTaskbarProbePlacementTests
     [Fact]
     public void InvalidProbeSizeOrMarginIsRejected()
     {
-        var zeroWidth = ExplorerTaskbarProbePlacement.TryCalculate(new SizeInt32(1920, 48), null, new SizeInt32(0, 40), 96, Margin);
-        var negativeMargin = ExplorerTaskbarProbePlacement.TryCalculate(new SizeInt32(1920, 48), null, ProbeSize, 96, -1);
+        var zeroWidth = ExplorerTaskbarProbePlacement.TryCalculate(new SizeInt32(1920, 48), 1600, new SizeInt32(0, 40), 96, Margin);
+        var negativeMargin = ExplorerTaskbarProbePlacement.TryCalculate(new SizeInt32(1920, 48), 1600, ProbeSize, 96, -1);
 
         Assert.Equal("explorer_probe_taskbar_rect_invalid", zeroWidth.Error!.Code);
         Assert.Equal("explorer_probe_taskbar_rect_invalid", negativeMargin.Error!.Code);
@@ -67,7 +66,7 @@ public sealed class ExplorerTaskbarProbePlacementTests
     [Fact]
     public void ZeroDpiIsRejected()
     {
-        var result = ExplorerTaskbarProbePlacement.TryCalculate(new SizeInt32(1920, 48), null, ProbeSize, 0, Margin);
+        var result = ExplorerTaskbarProbePlacement.TryCalculate(new SizeInt32(1920, 48), 1600, ProbeSize, 0, Margin);
 
         Assert.False(result.IsSuccess);
         Assert.Equal("explorer_probe_dpi_unavailable", result.Error!.Code);
@@ -78,7 +77,7 @@ public sealed class ExplorerTaskbarProbePlacementTests
     [InlineData(1920, 30)]
     public void TaskbarWithoutRoomIsRejected(int width, int height)
     {
-        var result = ExplorerTaskbarProbePlacement.TryCalculate(new SizeInt32(width, height), null, ProbeSize, 96, Margin);
+        var result = ExplorerTaskbarProbePlacement.TryCalculate(new SizeInt32(width, height), width, ProbeSize, 96, Margin);
 
         Assert.False(result.IsSuccess);
         Assert.Equal("explorer_probe_taskbar_too_small", result.Error!.Code);
@@ -87,7 +86,7 @@ public sealed class ExplorerTaskbarProbePlacementTests
     [Fact]
     public void HigherDpiScalesProbeSizeAndMargin()
     {
-        var result = ExplorerTaskbarProbePlacement.TryCalculate(new SizeInt32(1920, 72), null, ProbeSize, 144, Margin);
+        var result = ExplorerTaskbarProbePlacement.TryCalculate(new SizeInt32(1920, 72), 1920, ProbeSize, 144, Margin);
 
         Assert.True(result.IsSuccess);
         Assert.Equal(new RectInt32(1548, 6, 360, 60), result.Value!.ClientRect);
@@ -99,7 +98,7 @@ public sealed class ExplorerTaskbarProbePlacementTests
     [InlineData(1366, 40, 96, null)]
     public void SuccessfulPlacementStaysInsideTaskbarClientArea(int width, int height, uint dpi, int? trayLeftEdge)
     {
-        var result = ExplorerTaskbarProbePlacement.TryCalculate(new SizeInt32(width, height), trayLeftEdge, ProbeSize, dpi, Margin);
+        var result = ExplorerTaskbarProbePlacement.TryCalculate(new SizeInt32(width, height), trayLeftEdge ?? width - 200, ProbeSize, dpi, Margin);
 
         Assert.True(result.IsSuccess);
         var rect = result.Value!.ClientRect;

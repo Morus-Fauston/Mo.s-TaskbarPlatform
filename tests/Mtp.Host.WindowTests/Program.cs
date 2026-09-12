@@ -43,6 +43,11 @@ public sealed partial class WindowTestApplication : Application
 
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
+        if (Environment.GetCommandLineArgs().Contains("--child-material"))
+        {
+            new ChildMaterialRegression(this).Run();
+            return;
+        }
         try
         {
             // Keep the application alive while the last dock is closed and recreated.

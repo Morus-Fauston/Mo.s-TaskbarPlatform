@@ -5,6 +5,7 @@ using Microsoft.UI.Composition.SystemBackdrops;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Hosting;
 using Mtp.Platform.Core;
 using Windows.Graphics;
 using WinRT;
@@ -23,13 +24,37 @@ public sealed partial class ExplorerTaskbarProbeWindow : Window
     private static readonly Windows.UI.Composition.Compositor SharedCompositor = new();
 
     private TransparentBackdrop? transparentBackdrop;
+    private ChildColorBrush? childBrush;
     private DesktopAcrylicController? acrylicController;
     private MicaController? micaController;
     private SystemBackdropConfiguration? acrylicConfiguration;
     private bool initialized;
 
     internal event EventHandler? BackdropConnectionChanged;
-    internal bool IsBackdropConnected => transparentBackdrop?.IsConnected == true;
+    internal bool IsBackdropConnected => childBrush?.IsConnected == true || transparentBackdrop?.IsConnected == true;
+
+    internal bool TryApplyChildMaterial(double opacity, uint colorRgb, out string? detail)
+    {
+        try
+        {
+            var alpha = (byte)Math.Clamp(Math.Round(MaterialSpec.ClampOpacity(opacity) * 255), 0, 255);
+            var compositor = ElementCompositionPreview.GetElementVisual(RootGrid).Compositor;
+            var color = Windows.UI.Color.FromArgb(alpha, (byte)(colorRgb >> 16), (byte)(colorRgb >> 8), (byte)colorRgb);
+            var brush = new ChildColorBrush(compositor, color,
+                () => BackdropConnectionChanged?.Invoke(this, EventArgs.Empty));
+            RootGrid.Background = brush;
+            childBrush = brush;
+            RequiresSurfacePaint = true;
+            detail = $"child composition color brush requested; argb=({alpha},{color.R},{color.G},{color.B})";
+            BackdropConnectionChanged?.Invoke(this, EventArgs.Empty);
+            return true;
+        }
+        catch (Exception exception)
+        {
+            detail = $"{FormatException(exception)} HRESULT=0x{exception.HResult:X8}";
+            return false;
+        }
+    }
 
     public ExplorerTaskbarProbeWindow(HostComponentDisplayModel display)
         : this()
@@ -127,6 +152,11 @@ public sealed partial class ExplorerTaskbarProbeWindow : Window
     /// <summary>Removes any attached material so the window falls back to an opaque surface.</summary>
     public void ClearMaterial()
     {
+        if (childBrush is not null)
+        {
+            RootGrid.Background = new SolidColorBrush(Windows.UI.Color.FromArgb(0, 0, 0, 0));
+            childBrush = null;
+        }
         SystemBackdrop = null;
         transparentBackdrop = null;
         RequiresSurfacePaint = false;
@@ -315,7 +345,7 @@ public sealed partial class ExplorerTaskbarProbeWindow : Window
     /// <summary>
     /// "created" only proves the brush exists; "connected" proves XAML handed it a composition target.
     /// </summary>
-    public string DescribeBackdropState() => transparentBackdrop switch
+    public string DescribeBackdropState() => childBrush is not null ? childBrush.IsConnected ? "child composition color brush connected" : "child composition color brush pending" : transparentBackdrop switch
     {
         null when acrylicController is not null => "acrylic controller attached",
         null => "not applied",
@@ -344,6 +374,26 @@ public sealed partial class ExplorerTaskbarProbeWindow : Window
     /// (see <c>Win32ExplorerTaskbarEmbedAdapter.PaintWindowSurfaceOnce</c>) to keep alpha honoured.
     /// No Win32 call lives here; that boundary is enforced by the platform-skeleton tests.
     /// </summary>
+    private sealed class ChildColorBrush(Microsoft.UI.Composition.Compositor compositor, Windows.UI.Color color, Action changed) : XamlCompositionBrushBase
+    {
+        public bool IsConnected { get; private set; }
+        protected override void OnConnected()
+        {
+            CompositionBrush = compositor.CreateColorBrush(color);
+            IsConnected = true;
+            changed();
+        }
+
+        protected override void OnDisconnected()
+        {
+            var brush = CompositionBrush;
+            CompositionBrush = null;
+            brush?.Dispose();
+            IsConnected = false;
+            changed();
+        }
+    }
+
     private sealed partial class TransparentBackdrop(Windows.UI.Color tint, Action connectionChanged) : SystemBackdrop
     {
         private readonly Windows.UI.Composition.Compositor compositor = SharedCompositor;

@@ -398,5 +398,7 @@ public sealed class HostDisplayActionTests
             IsEmbedded = false;
             return CoreResult<bool>.Success(true);
         }
+
+        public CoreResult<bool> Refresh() => CoreResult<bool>.Success(true);
     }
 }

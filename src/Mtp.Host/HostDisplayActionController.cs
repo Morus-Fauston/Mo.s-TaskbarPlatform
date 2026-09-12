@@ -41,15 +41,18 @@ public sealed class HostDisplayActionController : IDisposable
     private readonly HostDisplayController displayController;
     private readonly IndependentDockWindowController dockWindowController;
     private readonly ExplorerTaskbarProbeController probeController;
+    private readonly bool preferEmbedded;
 
     public HostDisplayActionController(
         HostDisplayController displayController,
         IndependentDockWindowController dockWindowController,
-        ExplorerTaskbarProbeController probeController)
+        ExplorerTaskbarProbeController probeController,
+        bool preferEmbedded = false)
     {
         this.displayController = displayController ?? throw new ArgumentNullException(nameof(displayController));
         this.dockWindowController = dockWindowController ?? throw new ArgumentNullException(nameof(dockWindowController));
         this.probeController = probeController ?? throw new ArgumentNullException(nameof(probeController));
+        this.preferEmbedded = preferEmbedded;
         this.probeController.StateChanged += ProbeController_StateChanged;
     }
 
@@ -92,6 +95,8 @@ public sealed class HostDisplayActionController : IDisposable
 
     public CoreResult<bool> DetachProbe() => probeController.Detach();
 
+    public CoreResult<bool> RefreshPresentation() => probeController.Refresh();
+
     public HostDisplayActionResult Shutdown()
     {
         var errors = new List<StructuredError>();
@@ -131,13 +136,21 @@ public sealed class HostDisplayActionController : IDisposable
         var errors = new List<StructuredError>();
         if (component.IsVisible)
         {
-            if (!probeController.State.IsEmbedded)
+            if (preferEmbedded && !probeController.State.IsEmbedded)
+            {
+                // Keep the embedded surface visibly translucent over the taskbar instead of
+                // turning the dark solid brush into an opaque-looking gray block.
+                var embedResult = probeController.Run(component, new ExplorerTaskbarProbeRequest(
+                    false, ProbeTransparencyMode.SolidPaint, MaterialKind.Solid, 0.1, 0xFFFFFF));
+                if (!embedResult.FallbackShown && !embedResult.Succeeded)
+                {
+                    errors.Add(embedResult.Error!);
+                }
+            }
+            else if (!preferEmbedded)
             {
                 var showResult = dockWindowController.Show(component);
-                if (!showResult.IsSuccess)
-                {
-                    errors.Add(showResult.Error!);
-                }
+                if (!showResult.IsSuccess) errors.Add(showResult.Error!);
             }
         }
         else

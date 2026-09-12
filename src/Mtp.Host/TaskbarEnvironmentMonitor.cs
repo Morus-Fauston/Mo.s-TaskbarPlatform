@@ -46,8 +46,7 @@ internal sealed class TaskbarEnvironmentMonitor : IDisposable
         if (stopped) return;
         try
         {
-            if (kind == 3 || (objectId == 0 && childId == 0 && window != 0 &&
-                (window == taskbar() || window == Win32TaskbarVisibility.ForegroundWindow)))
+            if (objectId == 0 && childId == 0 && window != 0 && window == taskbar())
                 RequestRefresh();
         }
         catch (Exception exception)

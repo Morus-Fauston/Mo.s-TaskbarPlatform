@@ -204,6 +204,7 @@ public sealed class Win32ExplorerTaskbarEmbedAdapter : IExplorerTaskbarEmbedAdap
     private readonly ExplorerProbeWindowOwner owner;
     private ExplorerTaskbarProbeWindow? window;
     private nint windowHandle;
+    private nint embeddedTaskbar;
 
     public Win32ExplorerTaskbarEmbedAdapter(Func<int>? displayCountProvider = null)
     {
@@ -269,6 +270,45 @@ public sealed class Win32ExplorerTaskbarEmbedAdapter : IExplorerTaskbarEmbedAdap
             return CoreResult<bool>.Failure(
                 new StructuredError("explorer_probe_detach_failed", "The probe window could not be removed from the taskbar.", exception.GetType().Name));
         }
+    }
+
+    public CoreResult<bool> Refresh()
+    {
+        if (window is null || Lifecycle != ExplorerTaskbarProbeLifecycle.Embedded)
+            return CoreResult<bool>.Success(true);
+
+        var taskbar = NativeMethods.FindWindowW(TaskbarClassName, null);
+        if (taskbar == 0 || taskbar != embeddedTaskbar ||
+            NativeMethods.GetAncestor(windowHandle, NativeMethods.GA_PARENT) != taskbar)
+            return CoreResult<bool>.Failure(new StructuredError("explorer_probe_parent_lost", "The taskbar parent relationship was lost; rebind is required."));
+
+        if (!NativeMethods.GetClientRect(taskbar, out var clientRect) || !NativeMethods.GetWindowRect(taskbar, out _))
+            return CoreResult<bool>.Failure(new StructuredError("explorer_probe_taskbar_rect_invalid", "The taskbar rectangle could not be refreshed."));
+
+        var dpi = NativeMethods.GetDpiForWindow(taskbar);
+        if (dpi == 0)
+            return CoreResult<bool>.Failure(new StructuredError("explorer_probe_dpi_unavailable", "The taskbar DPI could not be refreshed."));
+
+        int? trayLeft = null;
+        var tray = NativeMethods.FindWindowExW(taskbar, 0, TrayNotifyClassName, null);
+        if (tray != 0 && NativeMethods.GetWindowRect(tray, out var trayRect))
+        {
+            var point = new NativeMethods.POINT { X = trayRect.Left, Y = trayRect.Top };
+            if (NativeMethods.ScreenToClient(taskbar, ref point)) trayLeft = point.X;
+        }
+
+        var placement = ExplorerTaskbarProbePlacement.TryCalculate(
+            new SizeInt32(clientRect.Width, clientRect.Height), trayLeft,
+            new SizeInt32(ProbeWidthDip, ProbeHeightDip), dpi, ProbeMarginDip);
+        if (!placement.IsSuccess)
+            return CoreResult<bool>.Failure(placement.Error!);
+
+        var target = placement.Value!.ClientRect;
+        if (!NativeMethods.SetWindowPos(windowHandle, NativeMethods.HWND_TOP, target.X, target.Y, target.Width, target.Height,
+            NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_NOZORDER | NativeMethods.SWP_FRAMECHANGED))
+            return CoreResult<bool>.Failure(new StructuredError("explorer_probe_position_failed", "The embedded window could not be repositioned."));
+
+        return CoreResult<bool>.Success(true);
     }
 
     /// <summary>
@@ -513,13 +553,6 @@ public sealed class Win32ExplorerTaskbarEmbedAdapter : IExplorerTaskbarEmbedAdap
         var dispatcherReady = EnsureSystemDispatcherQueue(out var dispatcherDetail);
         steps.Add(new ExplorerTaskbarProbeStep("system_dispatcher_queue", dispatcherReady, dispatcherDetail));
 
-        // DWM per-window attributes and composition backdrops reject WS_CHILD windows (E_HANDLE / E_INVALIDARG),
-        // and a material attached while top-level crashes the process once the window is reparented.
-        // The embed path therefore applies no material; the recorded HRESULTs are the probe evidence.
-        steps.Add(new ExplorerTaskbarProbeStep(
-            "apply_transparency",
-            false,
-            $"{request.TransparencyMode}: skipped, DWM materials are not available to WS_CHILD windows"));
         var originalStyle = NativeMethods.GetWindowLongPtrW(windowHandle, NativeMethods.GWL_STYLE);
         var childStyle = ((uint)(long)originalStyle & ~NativeMethods.TopLevelStyleMask) | NativeMethods.WS_CHILD;
         NativeMethods.SetLastError(0);
@@ -544,6 +577,7 @@ public sealed class Win32ExplorerTaskbarEmbedAdapter : IExplorerTaskbarEmbedAdap
         }
 
         owner.MarkReparented();
+        embeddedTaskbar = taskbar;
         if (NativeMethods.GetAncestor(windowHandle, NativeMethods.GA_PARENT) != taskbar)
         {
             steps.Add(new ExplorerTaskbarProbeStep("set_parent", false, "parent mismatch"));
@@ -551,6 +585,20 @@ public sealed class Win32ExplorerTaskbarEmbedAdapter : IExplorerTaskbarEmbedAdap
         }
 
         steps.Add(new ExplorerTaskbarProbeStep("set_parent", true, null));
+
+        // Attach the pure color brush after parenting, then perform the contractual one-time GDI paint.
+        // This keeps the child-window experiment separate from top-level DWM controller materials.
+        var brushApplied = request.Material == MaterialKind.Solid
+            ? window.TryApplyChildMaterial(request.MaterialOpacity, request.MaterialColorRgb, out var brushDetail)
+            : window.TryApplyMaterial(new MaterialSpec(request.Material, request.MaterialOpacity), out brushDetail);
+        steps.Add(new ExplorerTaskbarProbeStep("apply_transparency", brushApplied, brushDetail));
+
+        if (brushApplied && window.RequiresSurfacePaint)
+        {
+            var painted = PaintWindowSurfaceOnce(windowHandle, out var paintDetail);
+            steps.Add(new ExplorerTaskbarProbeStep("paint_surface", painted, paintDetail));
+            if (painted) window.MarkSurfacePainted();
+        }
 
         if (!NativeMethods.SetWindowPos(
                 windowHandle,
@@ -567,7 +615,7 @@ public sealed class Win32ExplorerTaskbarEmbedAdapter : IExplorerTaskbarEmbedAdap
         }
 
         steps.Add(new ExplorerTaskbarProbeStep("position_window", true, null));
-        steps.Add(new ExplorerTaskbarProbeStep("dwm_child_window_check", true, SuppressFrameDecorations(windowHandle)));
+        steps.Add(new ExplorerTaskbarProbeStep("dwm_child_window_check", true, "WS_CHILD window bound; no top-level DWM frame APIs applied"));
 
         if (!NativeMethods.IsWindowVisible(windowHandle))
         {

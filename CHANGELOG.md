@@ -1,5 +1,63 @@
 # Changelog
 
+## v0.1.0-alpha.10 (2026-09-12 18:21)
+
+### 05D 实际嵌入任务栏父子窗口与动态锚点探针
+
+- **父子窗口承载**：承载路线由“MTP 自有顶级窗口”改为实际 Explorer 任务栏子窗口。绑定前保存原始样式与父级，去掉顶级样式位并置 `WS_CHILD`，调用 `SetParent`，绑定后校验实际父句柄；只有样式切换失败、`SetParent` 失败、父句柄不一致、绑定后立即丢失或 Explorer 重建后无法重绑才算嵌入失败，失败时恢复原样式与原父级并回退独立贴靠窗口。
+- **嵌入失败定义收窄**：材质、布局、DPI 与输入问题不再伪装成绑定失败，单独保留诊断。新增失败码分类，只有绑定类错误才触发重绑与降级路径。
+- **材质方案**：改用带 alpha 的纯色色刷（默认 `0xFFFFFF`、透明度 0.1）。色刷连接后执行一次必要的 GDI 表面绘制，确认 `WS_CHILD` 路径的透明结果，不复用已知在子窗口路径不兼容的顶级窗口 DWM 材质；材质模式默认值同步改为纯色绘制。
+- **显隐改为父子同步**：子窗口显隐与父窗口移动由原生父子关系同步，Host 响应尺寸、锚点、目标显示器与 Explorer 重建变化；删除以“前台窗口是否全屏”和自动隐藏收起状态驱动的显隐判定。
+- **动态探针**：旧的一次性通知区域位置读取改为动态刷新，任务栏位置、通知区域矩形、父句柄与窗口尺寸变化时重新读取更新，监听相关窗口事件并保留定时兜底。探针只记录任务栏/子窗口关系与锚点变化，不再驱动独立窗口显隐。
+- **锚点不再静默回退**：探针放置移除 `fixed_inset` 兜底路径，通知区域锚点不可用时返回 `explorer_probe_tray_anchor_unavailable`，不再默默贴到任务栏右端。
+- **05C 清理**：删除 Core 层 `TaskbarVisibilityPolicy` 与 `Win32TaskbarVisibility` 及其测试，仅保留诊断用 `TaskbarVisibility` 枚举；前台全屏判定、自动隐藏收起判定与“暂时隐藏优先于降级”的独立策略退出运行链路。05A/05B 的偏好、生命周期、降级与窗口所有权能力保留。
+- **故障恢复**：Explorer 重启、目标显示器变化与绑定失败后的独立降级不遗留子窗口、旧父句柄、事件订阅或迟到回调；通过关系丢失重绑、延迟清理、失败重试与降级回归验证。
+
+### 验证
+
+- **自动化测试**：Release 配置下 `dotnet test Mtp.sln --configuration Release --no-restore` 通过，共 209 个测试成功，0 个失败，0 个跳过。
+- **构建与格式**：Release 构建 0 个警告、0 个错误。
+- **窗口回归入口**：`tests/Mtp.Host.WindowTests/Run.ps1` 标准 WinUI 窗口回归 9 个原生帧样本通过。
+- **子窗口色刷回归**：新增 `ChildMaterialRegression`，绑定父级 fixture 后请求带 alpha 纯色色刷、校验连接状态并执行一次 GDI 表面绘制，进程无崩溃，可选 `--child-pixels` 校验像素混合；证据位于 `.scratch/二期开发/verification/05D/runtime/child-material.log`。
+- **单元测试**：`Refresh()` 委托并保持 Embedded 状态，父句柄变化触发重绑路径；`preferEmbedded` 分支与动态锚点放置均有覆盖。
+- **人工验收**：真实 Windows 的任务栏自动隐藏收起/展开、全屏中唤出、普通桌面、Alt+Tab、Explorer 重启、输入、透明度、无白边、DPI 与故障恢复仍待维护者人工验收。
+
+### 范围边界
+
+- **维持单屏底部任务栏**：仍是单目标屏幕、底部任务栏与通知区域左缘锚点，不扩展多屏精细同步、混合 DPI、任意遮挡计算或正式第三方任务栏兼容承诺。
+- **实验性适配边界**：Explorer 窗口类名、窗口树与 `SetParent` 仍属实验性 Windows 适配边界，未通过真实 Windows 验证前不标记为正式兼容。
+- **不新增能力面**：未新增 SDK、Broker、业务动作、浮窗或外部应用进程探测。
+- **人工验收未代填**：票据保持 `ready-for-agent`，人工验收项由 Agent 留空。
+
+### 文件变更表
+
+| 文件 | 变更 |
+|:-----|:------|
+| `src/Mtp.Platform.Core/TaskbarVisibility.cs` | **新增** — 仅用于诊断保留的旧呈现状态枚举 |
+| `tests/Mtp.Host.WindowTests/ChildMaterialRegression.cs` | **新增** — 子窗口带 alpha 色刷与 GDI 表面绘制的原生回归 |
+| `src/Mtp.Platform.Core/TaskbarVisibilityPolicy.cs` | **删除** — 05C 独立显隐判定退出运行链路 |
+| `src/Mtp.Host/Win32TaskbarVisibility.cs` | **删除** — 前台全屏与自动隐藏状态读取退出 |
+| `tests/Mtp.Platform.Core.Tests/TaskbarVisibilityPolicyTests.cs` | **删除** — 随可见性策略一并移除 |
+| `tests/Mtp.Platform.Core.Tests/Win32TaskbarVisibilityTests.cs` | **删除** — 随可见性读取器一并移除 |
+| `src/Mtp.Host/Win32ExplorerTaskbarEmbedAdapter.cs` | **修改** — `WS_CHILD`/`SetParent` 绑定与父级校验、失败清理、动态 `Refresh`、带 alpha 纯色色刷 |
+| `src/Mtp.Host/ExplorerTaskbarProbeController.cs` | **修改** — 新增 `Refresh` 与绑定失败重绑编排 |
+| `src/Mtp.Host/ExplorerTaskbarProbePlacement.cs` | **修改** — 移除固定内缩兜底锚点，缺锚点返回结构化失败 |
+| `src/Mtp.Host/ExplorerTaskbarProbeReport.cs` | **修改** — 默认材质改为纯色绘制并带 alpha |
+| `src/Mtp.Host/ExplorerTaskbarProbeWindow.xaml.cs` | **修改** — 新增子窗口组合色刷与释放路径 |
+| `src/Mtp.Host/HostDisplayActionController.cs` | **修改** — 新增 `preferEmbedded` 与 `RefreshPresentation` |
+| `src/Mtp.Host/MainWindow.xaml.cs` | **修改** — 定时器改为刷新嵌入呈现，移除独立环境监视接线 |
+| `src/Mtp.Host/TaskbarEnvironmentMonitor.cs` | **修改** — 事件过滤只跟随目标任务栏窗口 |
+| `src/Mtp.Host/Win32TaskbarDockEnvironment.cs` | **修改** — 停止读取前台全屏与自动隐藏可见性 |
+| `src/Mtp.Host/App.xaml.cs` | **修改** — 以 `preferEmbedded` 启动接线 |
+| `tests/Mtp.Host.WindowTests/Program.cs` | **修改** — 接入子窗口材质回归入口 |
+| `tests/Mtp.Host.WindowTests/README.md` | **修改** — 说明新增子窗口回归 |
+| `tests/Mtp.Platform.Core.Tests/ExplorerTaskbarProbeTests.cs` | **修改** — 覆盖动态刷新与父句柄变化重绑 |
+| `tests/Mtp.Platform.Core.Tests/ExplorerTaskbarProbePlacementTests.cs` | **修改** — 对齐动态锚点与缺锚点失败 |
+| `tests/Mtp.Platform.Core.Tests/HostDisplayActionTests.cs` | **修改** — 覆盖 `preferEmbedded` 分支 |
+| `tests/Mtp.Platform.Core.Tests/Win32TaskbarDockEnvironmentTests.cs` | **修改** — 对齐可见性判定移除 |
+| `CHANGELOG.md` | **修改** — 记录本版本 |
+| `CHANGELOG.txt` | **修改** — 记录本版本 |
+
 ## v0.1.0-alpha.9 (2026-09-12 15:51)
 
 ### 05A 单屏右贴靠任务栏组件

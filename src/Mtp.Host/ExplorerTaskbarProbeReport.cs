@@ -46,9 +46,10 @@ public sealed record ExplorerTaskbarProbeReport(
 /// </summary>
 public sealed record ExplorerTaskbarProbeRequest(
     bool SimulateTaskbarUnavailable = false,
-    ProbeTransparencyMode TransparencyMode = ProbeTransparencyMode.AcrylicController,
-    Mtp.Platform.Core.MaterialKind Material = Mtp.Platform.Core.MaterialKind.Acrylic,
-    double MaterialOpacity = 0.8);
+    ProbeTransparencyMode TransparencyMode = ProbeTransparencyMode.SolidPaint,
+    Mtp.Platform.Core.MaterialKind Material = Mtp.Platform.Core.MaterialKind.Solid,
+    double MaterialOpacity = 0.1,
+    uint MaterialColorRgb = 0xFFFFFF);
 
 /// <summary>
 /// Experimental transparency mechanisms compared by the probe. The acrylic controller is the maintainer-accepted

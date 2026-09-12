@@ -44,13 +44,10 @@ internal sealed class Win32TaskbarDockEnvironment(TimeProvider? clock = null) : 
                 ? new("dock_display_missing", "目标显示器暂时不可用，使用主屏幕独立贴靠，已保留原屏幕偏好。") : null;
             TaskbarDockGeometry? geometry = null;
             string? identity = null;
-            var foreground = Win32TaskbarVisibility.ForegroundWindow;
-            var fullScreen = Win32TaskbarVisibility.IsFullScreenWindow(foreground, display.Bounds);
             var taskbar = FindTaskbar(display);
             ObservedTaskbar = taskbar;
-            var exposed = Win32TaskbarVisibility.ReadTaskbarExposure(taskbar, display, out var autoHide);
-            var visibility = TaskbarVisibilityPolicy.Evaluate(fullScreen, exposed);
-            if (error is null && !SimulateUnavailable && exposed == true && taskbar != 0 && Native.GetWindowRect(taskbar, out var barRect))
+            var visibility = TaskbarVisibility.Allowed;
+            if (error is null && !SimulateUnavailable && taskbar != 0 && Native.GetWindowRect(taskbar, out var barRect))
             {
                 var tray = Native.FindWindowExW(taskbar, 0, "TrayNotifyWnd", null);
                 PixelRect? anchor = tray != 0 && Native.IsWindowVisible(tray) && Native.GetWindowRect(tray, out var trayRect)
@@ -60,29 +57,15 @@ internal sealed class Win32TaskbarDockEnvironment(TimeProvider? clock = null) : 
                 identity = $"{taskbar}:{pid}:{explorer.StartTime.ToUniversalTime().Ticks}";
                 geometry = new(display.Id, display.Bounds, barRect.ToPixelRect(), anchor, Native.GetDpiForWindow(taskbar));
                 // The taskbar can start retracting between the visibility read and the anchor read.
-                exposed = Win32TaskbarVisibility.EvaluateTaskbarExposure(display.Bounds, display.WorkArea, geometry.TaskbarBounds, autoHide);
-                visibility = TaskbarVisibilityPolicy.Evaluate(fullScreen, exposed);
             }
-            else if (SimulateUnavailable || taskbar == 0 || exposed == true)
+            else if (SimulateUnavailable || taskbar == 0)
                 error ??= new("dock_taskbar_unavailable", "目标屏幕的任务栏锚点不可用。");
-            if (autoHide && visibility == TaskbarVisibility.Allowed &&
-                (geometry?.NotificationBounds is not PixelRect reliableAnchor || !geometry.TaskbarBounds.Contains(reliableAnchor)))
-            {
-                visibility = TaskbarVisibility.Unknown;
-                error ??= new("dock_autohide_anchor_unavailable", "自动隐藏任务栏尚未取得可靠锚点，等待展开完成。");
-            }
-            if (foreground != Win32TaskbarVisibility.ForegroundWindow ||
-                fullScreen != Win32TaskbarVisibility.IsFullScreenWindow(foreground, display.Bounds))
-            {
-                visibility = TaskbarVisibility.Unknown;
-                error ??= new("dock_environment_changed", "采集期间前台窗口发生变化，等待下一次有效状态。");
-            }
             // Discard stale multi-read snapshots, including shell auto-hide queries.
             if (clock.GetElapsedTime(started) > TimeSpan.FromMilliseconds(250))
             {
                 geometry = null;
                 identity = null;
-                visibility = TaskbarVisibility.Unknown;
+                visibility = TaskbarVisibility.Allowed;
                 error = new("dock_probe_timeout", "任务栏探测超过时间预算，已舍弃本次锚点。");
             }
             return CoreResult<TaskbarDockEnvironmentSnapshot>.Success(new(

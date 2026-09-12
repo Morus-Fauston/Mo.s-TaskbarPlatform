@@ -30,6 +30,47 @@ public sealed class ExplorerTaskbarProbeTests
     }
 
     [Fact]
+    public void RefreshKeepsEmbeddedProbeAndDelegatesDynamicAnchorRead()
+    {
+        var harness = ProbeHarness.CreateWithVisibleComponent();
+        Assert.True(harness.ProbeController.Run(harness.Component, new ExplorerTaskbarProbeRequest()).Succeeded);
+
+        var refreshed = harness.ProbeController.Refresh();
+
+        Assert.True(refreshed.IsSuccess);
+        Assert.Equal(1, harness.EmbedAdapter.RefreshCount);
+        Assert.True(harness.ProbeController.State.IsEmbedded);
+        Assert.False(harness.DockAdapter.IsOpen);
+    }
+
+    [Fact]
+    public void RefreshRebindsOnlyWhenParentBindingIsLostAndPreservesRequest()
+    {
+        var harness = ProbeHarness.CreateWithVisibleComponent();
+        var request = new ExplorerTaskbarProbeRequest(false, ProbeTransparencyMode.TintDiagnostic, MaterialKind.Acrylic, 0.42);
+        Assert.True(harness.ProbeController.Run(harness.Component, request).Succeeded);
+        harness.EmbedAdapter.RefreshError = new StructuredError("explorer_probe_parent_lost", "parent lost");
+
+        Assert.True(harness.ProbeController.Refresh().IsSuccess);
+        Assert.Equal(2, harness.EmbedAdapter.EmbedCount);
+        Assert.Equal(request, harness.EmbedAdapter.LastRequest);
+    }
+
+    [Fact]
+    public void RefreshKeepsEmbeddedProbeWhenGeometryFails()
+    {
+        var harness = ProbeHarness.CreateWithVisibleComponent();
+        Assert.True(harness.ProbeController.Run(harness.Component, new ExplorerTaskbarProbeRequest()).Succeeded);
+        harness.EmbedAdapter.RefreshError = new StructuredError("explorer_probe_dpi_unavailable", "dpi unavailable");
+
+        var refreshed = harness.ProbeController.Refresh();
+
+        Assert.False(refreshed.IsSuccess);
+        Assert.Equal(1, harness.EmbedAdapter.EmbedCount);
+        Assert.True(harness.ProbeController.State.IsEmbedded);
+    }
+
+    [Fact]
     public void FailedProbeFallsBackToIndependentDockWindowWithExplainableError()
     {
         var harness = ProbeHarness.CreateWithVisibleComponent(
@@ -49,7 +90,7 @@ public sealed class ExplorerTaskbarProbeTests
         Assert.Equal("explorer_probe_taskbar_not_found", harness.ProbeController.State.Error!.Code);
         Assert.True(harness.EmbedAdapter.LastRequest!.SimulateTaskbarUnavailable);
         Assert.Equal(ProbeTransparencyMode.TintDiagnostic, harness.EmbedAdapter.LastRequest.TransparencyMode);
-        Assert.Equal(ProbeTransparencyMode.AcrylicController, new ExplorerTaskbarProbeRequest().TransparencyMode);
+        Assert.Equal(ProbeTransparencyMode.SolidPaint, new ExplorerTaskbarProbeRequest().TransparencyMode);
         Assert.Equal("任务栏嵌入当前不可用，已切换独立贴靠", ExplorerTaskbarProbeOutcome.FallbackMessage);
     }
 
@@ -522,9 +563,13 @@ public sealed class ExplorerTaskbarProbeTests
 
         public StructuredError? DetachError { get; set; }
 
+        public StructuredError? RefreshError { get; set; }
+
         public int EmbedCount { get; private set; }
 
         public int DetachCount { get; private set; }
+
+        public int RefreshCount { get; private set; }
 
         public ExplorerTaskbarProbeRequest? LastRequest { get; private set; }
 
@@ -552,6 +597,14 @@ public sealed class ExplorerTaskbarProbeTests
 
             Lifecycle = ExplorerTaskbarProbeLifecycle.Detached;
             return CoreResult<bool>.Success(true);
+        }
+
+        public CoreResult<bool> Refresh()
+        {
+            RefreshCount++;
+            return RefreshError is null
+                ? CoreResult<bool>.Success(true)
+                : CoreResult<bool>.Failure(RefreshError);
         }
 
         public void RaiseLost()

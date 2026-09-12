@@ -21,7 +21,6 @@ public sealed partial class MainWindow : Window
     private readonly TaskbarDockWindowAdapter taskbarDock;
     private readonly Win32TaskbarDockEnvironment taskbarEnvironment;
     private readonly DispatcherTimer dockTimer = new() { Interval = TimeSpan.FromMilliseconds(250) };
-    private readonly TaskbarEnvironmentMonitor environmentMonitor;
     private int settingsRefreshTicks;
     private bool stoppingDock;
     private bool applyingDockSettings;
@@ -42,8 +41,6 @@ public sealed partial class MainWindow : Window
         this.displayActions.ProbeStateChanged += DisplayActions_ProbeStateChanged;
 
         AppWindow.Resize(new Windows.Graphics.SizeInt32(600, 720));
-        environmentMonitor = new(action => DispatcherQueue.TryEnqueue(() => action()), RefreshDockPresentation,
-            () => taskbarEnvironment.ObservedTaskbar);
         taskbarDock.StateChanged += TaskbarDock_StateChanged;
         RefreshDockSettings();
         dockTimer.Tick += DockTimer_Tick;
@@ -77,7 +74,8 @@ public sealed partial class MainWindow : Window
 
     private void DockTimer_Tick(object? sender, object args)
     {
-        environmentMonitor.RequestRefresh();
+        var refresh = displayActions.RefreshPresentation();
+        if (!refresh.IsSuccess) ShowHostError(refresh.Error!);
         if (++settingsRefreshTicks % 4 == 0) RefreshDockSettings();
     }
 
@@ -121,7 +119,7 @@ public sealed partial class MainWindow : Window
 
     private void UpdateDockStatus()
     {
-        var errors = new[] { taskbarDock.PreferenceError, taskbarDock.PresentationError, taskbarDock.VisualError, environmentMonitor?.Error }
+        var errors = new[] { taskbarDock.PreferenceError, taskbarDock.PresentationError, taskbarDock.VisualError }
             .Where(error => error is not null).Distinct().Select(error => FormatError(error!));
         DockStatusText.Text = string.Join(Environment.NewLine, new[] { taskbarDock.Status }.Concat(errors));
     }
@@ -517,12 +515,6 @@ public sealed partial class MainWindow : Window
         }
 
         stoppingDock = true;
-        if (!environmentMonitor.TryStop())
-        {
-            args.Cancel = true;
-            ShowHostError(environmentMonitor.Error!);
-            return;
-        }
         AppWindow.Closing -= MainWindow_Closing;
         dockTimer.Stop();
         dockTimer.Tick -= DockTimer_Tick;

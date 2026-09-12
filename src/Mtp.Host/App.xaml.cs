@@ -36,7 +36,7 @@ public partial class App : Application
             controller,
             new Win32ExplorerTaskbarEmbedAdapter(() => DisplayArea.FindAll().Count),
             dockWindowController);
-        var displayActions = new HostDisplayActionController(controller, dockWindowController, probeController);
+        var displayActions = new HostDisplayActionController(controller, dockWindowController, probeController, preferEmbedded: true);
         window = new MainWindow(displayLoad, displayActions, taskbarDock, taskbarEnvironment);
         var launchEnvironment = taskbarEnvironment.Capture(taskbarDock.Preferences.TargetDisplayId);
         if (launchEnvironment.Value?.Visibility == Mtp.Platform.Core.TaskbarVisibility.Allowed)

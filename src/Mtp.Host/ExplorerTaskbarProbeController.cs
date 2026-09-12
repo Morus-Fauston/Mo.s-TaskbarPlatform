@@ -21,6 +21,8 @@ public interface IExplorerTaskbarEmbedAdapter
     CoreResult<ExplorerTaskbarProbeReport> TryEmbed(HostComponentDisplayModel component, ExplorerTaskbarProbeRequest request);
 
     CoreResult<bool> Detach();
+
+    CoreResult<bool> Refresh();
 }
 
 public enum ExplorerTaskbarProbeLifecycle
@@ -56,6 +58,18 @@ public sealed record ExplorerTaskbarProbeOutcome(
     public const string FallbackMessage = "任务栏嵌入当前不可用，已切换独立贴靠";
 }
 
+internal static class ExplorerTaskbarEmbedFailure
+{
+    public static bool IsBindingFailure(StructuredError? error) => error?.Code is
+        "explorer_probe_taskbar_not_found" or
+        "explorer_probe_window_create_failed" or
+        "explorer_probe_style_change_failed" or
+        "explorer_probe_set_parent_failed" or
+        "explorer_probe_parent_mismatch" or
+        "explorer_probe_parent_lost" or
+        "explorer_probe_window_lost";
+}
+
 /// <summary>
 /// Runs the embed probe against the current validated component and always keeps the
 /// independent dock window as the fallback. It never reads or writes display preferences.
@@ -67,6 +81,7 @@ public sealed class ExplorerTaskbarProbeController : IDisposable
     private readonly IndependentDockWindowController dockFallback;
     private bool adapterOperationInProgress;
     private PendingDetachIntent pendingDetachIntent;
+    private ExplorerTaskbarProbeRequest? lastRequest;
 
     public ExplorerTaskbarProbeController(
         HostDisplayController displayController,
@@ -133,6 +148,7 @@ public sealed class ExplorerTaskbarProbeController : IDisposable
         var embedResult = ExecuteAdapterOperation(() => adapter.TryEmbed(declaredComponent, request));
         if (embedResult.IsSuccess)
         {
+            lastRequest = request;
             pendingDetachIntent = PendingDetachIntent.None;
             var closeResult = dockFallback.Close();
             State = new ExplorerTaskbarProbeState(
@@ -148,6 +164,13 @@ public sealed class ExplorerTaskbarProbeController : IDisposable
                 closeResult.IsSuccess ? null : closeResult.Error,
                 false,
                 null);
+        }
+
+        if (!ExplorerTaskbarEmbedFailure.IsBindingFailure(embedResult.Error))
+        {
+            State = new ExplorerTaskbarProbeState(adapter.Lifecycle, declaredComponent, null, embedResult.Error, null);
+            StateChanged?.Invoke(this, EventArgs.Empty);
+            return new ExplorerTaskbarProbeOutcome(false, null, embedResult.Error, false, null);
         }
 
         var fallbackResult = dockFallback.Show(declaredComponent);
@@ -172,6 +195,27 @@ public sealed class ExplorerTaskbarProbeController : IDisposable
     }
 
     public CoreResult<bool> Detach() => Detach(restoreDockWindow: true);
+
+    public CoreResult<bool> Refresh()
+    {
+        if (!adapter.Lifecycle.Equals(ExplorerTaskbarProbeLifecycle.Embedded))
+            return CoreResult<bool>.Success(true);
+
+        var result = ExecuteAdapterOperation(adapter.Refresh);
+        if (!result.IsSuccess && State.Component is { } component && ExplorerTaskbarEmbedFailure.IsBindingFailure(result.Error))
+        {
+            // A changed Explorer parent is a binding failure, so attempt one fresh bind. The
+            // adapter owns cleanup; a failed rebind leaves the independent fallback available.
+            var rebound = Run(component, lastRequest ?? new ExplorerTaskbarProbeRequest(false, ProbeTransparencyMode.SolidPaint));
+            if (rebound.Succeeded || rebound.FallbackShown)
+                return CoreResult<bool>.Success(true);
+
+            State = State with { Error = rebound.Error ?? result.Error };
+            StateChanged?.Invoke(this, EventArgs.Empty);
+        }
+
+        return result.IsSuccess ? result : CoreResult<bool>.Failure(result.Error!);
+    }
 
     public CoreResult<bool> Shutdown() => Detach(restoreDockWindow: false);
 
