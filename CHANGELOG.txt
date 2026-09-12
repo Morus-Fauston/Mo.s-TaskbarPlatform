@@ -1,3 +1,17 @@
+v0.1.0-alpha.11 (2026-09-12 20:17)
+  05D封存: 实际Explorer任务栏父子窗口承载判定不可行，封存到独立实验分支，主分支不再保留该实现；依据为机制实测失败而非未验证
+  不可行组合: WinUI内容岛在WS_CHILD上无法承载透明；组合色刷+GDI表面绘制在子窗口无效(绘制前后像素一致)；子窗口不能用DwmExtendFrameIntoClientArea；亚克力在WS_CHILD返回成功但进程以E_HANDLE崩溃，属绕过降级契约的生产风险
+  未排除机制: 分层子窗口可用，WS_EX_LAYERED+UpdateLayeredWindow在同一子窗口上可逐像素控alpha，读数能分辨不透明/全透明/半透明；须丢弃WinUI控件树自行画位图，本版本不采用，也不写"子窗口不能透明"
+  时序约束: 分层子窗口须先挂进任务栏再首次提交图层；顶层阶段提交过图层后即使SetParent成功+重设样式+SWP_FRAMECHANGED+ULW返回成功也永久不再显示(I/J/K 23-25/25等于任务栏)，挂载后才首次提交则正常(L组0/25全红)
+  位图路径: RenderTargetBitmap返回预乘BGRA且保留alpha，含透明/半透明/抗锯齿边缘，可直接交ULW_ALPHA；物理尺寸=DIP×窗口DPI比(现场1.50x)，旧"尺寸无法解释"已更正
+  探测工具: 新增--taskbar-surface透明契约回归(子窗口只测不断言)、--child-material色刷夹具、--layered-child分层对照A-L含不透明控制组、--acrylic-child材质崩溃复现、--render-target位图验证、--show-surface与--show-layered人工观察
+  保留资产: 05A/05B偏好、生命周期、降级与窗口所有权不受影响；05A保持维护者已验收状态
+  验证: Release构建0警告/0错误；209个测试通过，0失败/0跳过；探针A-L/亚克力/位图组真机复现，日志在tests/Mtp.Host.WindowTests/bin/window-regression
+  人工验收: 本版本不主张任何人工验收；像素读数与展示模式不能替代维护者肉眼确认
+  范围边界: 实验分支承载05D嵌入实验与探测工具，非正式兼容承诺；Explorer类名/窗口树/SetParent仍为实验性适配；材质契约与SYS-003"子窗口不可行"措辞是否修订待维护者决定
+
+====
+
 v0.1.0-alpha.10 (2026-09-12 18:21)
   05D父子承载: 承载体改为实际Explorer任务栏子窗口，保存原样式与父级后置WS_CHILD并SetParent，绑定后校验父句柄，失败恢复原状并回退独立贴靠窗口
   05D失败定义: 仅样式切换/SetParent/父句柄不一致/绑定丢失/Explorer重建后无法重绑算嵌入失败；材质、布局、DPI、输入单列诊断，不伪装成绑定失败

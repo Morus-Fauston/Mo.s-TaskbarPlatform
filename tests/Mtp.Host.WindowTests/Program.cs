@@ -43,6 +43,42 @@ public sealed partial class WindowTestApplication : Application
 
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
+        if (Environment.GetCommandLineArgs().Contains("--acrylic-child"))
+        {
+            new AcrylicChildProbe(this).Run();
+            return;
+        }
+
+        if (Environment.GetCommandLineArgs().Contains("--render-target"))
+        {
+            _ = new RenderTargetProbe(this).Run();
+            return;
+        }
+
+        if (Environment.GetCommandLineArgs().Contains("--show-layered"))
+        {
+            new LayeredChildShowcase(this).Run();
+            return;
+        }
+
+        if (Environment.GetCommandLineArgs().Contains("--layered-child"))
+        {
+            new LayeredChildProbe(this).Run();
+            return;
+        }
+
+        if (Environment.GetCommandLineArgs().Contains("--show-surface"))
+        {
+            new TaskbarSurfaceShowcase(this).Run();
+            return;
+        }
+
+        if (Environment.GetCommandLineArgs().Contains("--taskbar-surface"))
+        {
+            new TaskbarSurfaceRegression(this).Run();
+            return;
+        }
+
         if (Environment.GetCommandLineArgs().Contains("--child-material"))
         {
             new ChildMaterialRegression(this).Run();

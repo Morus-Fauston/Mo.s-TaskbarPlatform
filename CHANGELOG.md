@@ -1,5 +1,53 @@
 # Changelog
 
+## v0.1.0-alpha.11 (2026-09-12 20:17)
+
+### 05D 封存：实验性嵌入路线判定不可行
+
+- **封存结论**：05D 的“实际 Explorer 任务栏父子窗口承载组件”路线判定不可行，本版本将其封存到独立实验分支，主分支不再保留该实现。判定依据是机制层面的实测失败，不是未验证。
+- **不可行的组合**：WinUI 内容岛在 `WS_CHILD` 上无法承载透明。组合色刷加一次 GDI 表面绘制在子窗口上无效，绘制前后像素一致；`DwmExtendFrameIntoClientArea` 不能被内嵌子窗口使用，表面保持不透明；亚克力在 `WS_CHILD` 上返回成功但整个进程以 `E_HANDLE` 崩溃，属于会绕过降级契约的生产风险。
+- **同一条路线上未被排除的机制**：分层子窗口可用。`WS_EX_LAYERED` 加 `UpdateLayeredWindow` 在同一任务栏子窗口上能逐像素控制 alpha，不透明层、全透明层与半透明层的读数可明确区分。该机制要求丢弃 WinUI 控件树、自行把内容画进位图，代价与收益需另立项评估，本版本不采用，也不把“子窗口不能透明”当作结论。
+- **关键时序约束**：分层子窗口必须先挂进任务栏、再首次提交图层。若在顶层阶段提交过一次图层，之后即使 `SetParent` 成功、样式重设加 `SWP_FRAMECHANGED`、`UpdateLayeredWindow` 返回成功，图层也永久不再显示；改为挂载后才首次提交则图层正常。该约束已由四组时序对照确认。
+- **位图路径可行性**：`RenderTargetBitmap` 返回预乘 BGRA 且保留 alpha，透明、半透明与抗锯齿边缘像素齐备，可直接交给 `ULW_ALPHA`；物理尺寸为 DIP 尺寸乘窗口 DPI 比（现场 1.50 倍），此前“尺寸无法解释”的记录已更正。
+- **保留资产**：05A/05B 的偏好、生命周期、降级与窗口所有权能力不受影响；05A 保持维护者已验收状态。
+
+### 实验性探测工具
+
+- **`--taskbar-surface`**：透明契约回归。断言顶层 MTP 窗口在任务栏之上按契约顺序处理后保持透明；对内嵌子窗口只测量、不断言，避免未来修复反而让该组失败。
+- **`--child-material`**：子窗口色刷夹具，校验色刷连接与一次表面绘制。
+- **`--layered-child`**：分层子窗口对照探针，用 A–L 组区分“窗口没画”与“图层生效”，含不透明控制组。
+- **`--acrylic-child`**：系统材质在子窗口上的行为与崩溃复现。
+- **`--render-target`**：`RenderTargetBitmap` 预乘、透明与尺寸换算验证。
+- **`--show-surface` / `--show-layered`**：供人直接观察的展示模式，不作为自动判定。
+
+### 验证
+
+- **自动化测试**：Release 配置下 `dotnet test Mtp.sln --configuration Release --no-restore` 通过，共 209 个测试成功，0 个失败，0 个跳过。
+- **构建**：`Mtp.sln` 与 `tests/Mtp.Host.WindowTests` Release 构建 0 个警告、0 个错误。
+- **真机探针**：分层子窗口 A–L 组、亚克力组与位图组均在本机真实 Windows 复现，关键项至少两次；日志保存在 `tests/Mtp.Host.WindowTests/bin/window-regression/`。
+- **人工验收**：本版本不主张任何人工验收结果；探针像素读数与展示模式不能替代维护者肉眼确认。
+
+### 范围边界
+
+- **实验分支**：本版本承载 05D 嵌入实验与配套探测工具，不构成正式兼容承诺；Explorer 窗口类名、窗口树与 `SetParent` 仍属实验性 Windows 适配边界。
+- **不承诺**：多屏精细同步、混合 DPI、任意遮挡计算与第三方任务栏兼容均不在范围内。
+- **未决项**：`材质与透明实现契约` 与 `SYS-003` 中“子窗口承载不可行/机制已穷尽”的措辞是否修订，待维护者决定；分层子窗口路线是否立项另议。
+
+### 文件变更表
+
+| 文件 | 变更 |
+|:-----|:------|
+| `tests/Mtp.Host.WindowTests/LayeredChildProbe.cs` | **新增** — 分层子窗口 A–L 时序对照探针 |
+| `tests/Mtp.Host.WindowTests/TaskbarSurfaceRegression.cs` | **新增** — 顶层透明契约断言与子窗口只测不断言 |
+| `tests/Mtp.Host.WindowTests/RenderTargetProbe.cs` | **新增** — 预乘 BGRA、alpha 与尺寸换算验证 |
+| `tests/Mtp.Host.WindowTests/AcrylicChildProbe.cs` | **新增** — 子窗口系统材质行为与崩溃复现 |
+| `tests/Mtp.Host.WindowTests/TaskbarSurfaceShowcase.cs` | **新增** — 四种表面组合的人工展示模式 |
+| `tests/Mtp.Host.WindowTests/LayeredChildShowcase.cs` | **新增** — 分层子窗口的人工展示模式 |
+| `tests/Mtp.Host.WindowTests/Program.cs` | **修改** — 新增六个探针运行入口 |
+| `tests/Mtp.Host.WindowTests/README.md` | **修改** — 说明可选用途、依赖与红色运行条件 |
+| `CHANGELOG.md` | **修改** — 记录本版本 |
+| `CHANGELOG.txt` | **修改** — 记录本版本 |
+
 ## v0.1.0-alpha.10 (2026-09-12 18:21)
 
 ### 05D 实际嵌入任务栏父子窗口与动态锚点探针
