@@ -18,18 +18,36 @@ public sealed partial class MainWindow : Window
     private HostComponentDisplayModel? selectedComponent;
     private ExplorerTaskbarProbeWindow? topLevelControlWindow;
     private bool applyingVisibility;
+    private readonly TaskbarDockWindowAdapter taskbarDock;
+    private readonly Win32TaskbarDockEnvironment taskbarEnvironment;
+    private readonly DispatcherTimer dockTimer = new() { Interval = TimeSpan.FromMilliseconds(250) };
+    private readonly TaskbarEnvironmentMonitor environmentMonitor;
+    private int settingsRefreshTicks;
+    private bool stoppingDock;
+    private bool applyingDockSettings;
+    private string displayListKey = string.Empty;
 
-    public MainWindow(
+    internal MainWindow(
         HostDisplayLoadResult displayLoad,
-        HostDisplayActionController displayActions)
+        HostDisplayActionController displayActions,
+        TaskbarDockWindowAdapter taskbarDock,
+        Win32TaskbarDockEnvironment taskbarEnvironment)
     {
         ArgumentNullException.ThrowIfNull(displayLoad);
         this.displayActions = displayActions ?? throw new ArgumentNullException(nameof(displayActions));
+        this.taskbarDock = taskbarDock;
+        this.taskbarEnvironment = taskbarEnvironment;
         InitializeComponent();
         AppWindow.Closing += MainWindow_Closing;
         this.displayActions.ProbeStateChanged += DisplayActions_ProbeStateChanged;
 
-        AppWindow.Resize(new Windows.Graphics.SizeInt32(560, 460));
+        AppWindow.Resize(new Windows.Graphics.SizeInt32(600, 720));
+        environmentMonitor = new(action => DispatcherQueue.TryEnqueue(() => action()), RefreshDockPresentation,
+            () => taskbarEnvironment.ObservedTaskbar);
+        taskbarDock.StateChanged += TaskbarDock_StateChanged;
+        RefreshDockSettings();
+        dockTimer.Tick += DockTimer_Tick;
+        dockTimer.Start();
 
         selectedComponent = displayLoad.Components.FirstOrDefault();
         if (selectedComponent is not null)
@@ -55,6 +73,80 @@ public sealed partial class MainWindow : Window
         PopulateMaterialCombo();
 
         ShowHostErrors(displayLoad.Errors);
+    }
+
+    private void DockTimer_Tick(object? sender, object args)
+    {
+        environmentMonitor.RequestRefresh();
+        if (++settingsRefreshTicks % 4 == 0) RefreshDockSettings();
+    }
+
+    private void RefreshDockPresentation()
+    {
+        if (stoppingDock) return;
+        if (taskbarDock.IsOpen || taskbarDock.NeedsWindowRecovery)
+            displayActions.RestoreCurrent();
+    }
+
+    private void TaskbarDock_StateChanged(object? sender, EventArgs args) => UpdateDockStatus();
+
+    private void RefreshDockSettings()
+    {
+        applyingDockSettings = true;
+        try
+        {
+            var displays = taskbarEnvironment.GetDisplays();
+            var key = string.Join("|", displays.Select(item => $"{item.Id}:{item.IsPrimary}")) + ":" + taskbarDock.Preferences.TargetDisplayId;
+            if (key != displayListKey || TargetDisplayCombo.Items.Count == 0)
+            {
+                displayListKey = key;
+                TargetDisplayCombo.Items.Clear();
+                TargetDisplayCombo.Items.Add(new ComboBoxItem { Content = "主显示器（自动）", Tag = null });
+                foreach (var display in displays)
+                    TargetDisplayCombo.Items.Add(new ComboBoxItem { Content = $"{display.Id}{(display.IsPrimary ? "（主显示器）" : string.Empty)}", Tag = display.Id });
+                var preferred = taskbarDock.Preferences.TargetDisplayId;
+                if (preferred is not null && !displays.Any(item => item.Id == preferred))
+                    TargetDisplayCombo.Items.Add(new ComboBoxItem { Content = $"{preferred}（暂时不可用）", Tag = preferred });
+                TargetDisplayCombo.SelectedItem = TargetDisplayCombo.Items.Cast<ComboBoxItem>().First(item => Equals(item.Tag, preferred));
+            }
+            RightGapInput.Value = taskbarDock.Preferences.RightGapDip;
+            UpdateDockStatus();
+        }
+        catch (Exception exception)
+        {
+            DockStatusText.Text = $"显示器列表暂时不可用：{exception.GetType().Name}";
+        }
+        finally { applyingDockSettings = false; }
+    }
+
+    private void UpdateDockStatus()
+    {
+        var errors = new[] { taskbarDock.PreferenceError, taskbarDock.PresentationError, taskbarDock.VisualError, environmentMonitor?.Error }
+            .Where(error => error is not null).Distinct().Select(error => FormatError(error!));
+        DockStatusText.Text = string.Join(Environment.NewLine, new[] { taskbarDock.Status }.Concat(errors));
+    }
+
+    private void TargetDisplayCombo_SelectionChanged(object sender, SelectionChangedEventArgs args)
+    {
+        if (applyingDockSettings || TargetDisplayCombo.SelectedItem is not ComboBoxItem selected) return;
+        taskbarDock.SetDisplay(selected.Tag as string);
+        displayListKey = string.Empty;
+        RefreshDockSettings();
+    }
+
+    private void RightGapInput_ValueChanged(NumberBox sender, NumberBoxValueChangedEventArgs args)
+    {
+        if (applyingDockSettings || DockStatusText is null || taskbarDock is null) return;
+        if (double.IsFinite(args.NewValue) && args.NewValue == Math.Truncate(args.NewValue))
+            taskbarDock.SetGap((int)args.NewValue);
+        else ShowHostError(new("dock_gap_invalid", "右侧避让距离必须是 0 到 64 的整数。"));
+        RefreshDockSettings();
+    }
+
+    private void SimulateFailureCheck_Changed(object sender, RoutedEventArgs args)
+    {
+        taskbarEnvironment.SimulateUnavailable = SimulateFailureCheck.IsChecked == true;
+        taskbarDock.Refresh();
     }
 
     private void ApplyDisplay(HostComponentDisplayModel display)
@@ -290,13 +382,17 @@ public sealed partial class MainWindow : Window
         {
             var target = topLevelControlWindow;
             var baseText = ProbeStatusText.Text;
-            target.DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+            var requested = SelectedMaterialSpec;
+            var queued = target.DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
             {
+                if (!ReferenceEquals(topLevelControlWindow, target) || SelectedMaterialSpec != requested ||
+                    !target.RequiresSurfacePaint || !target.IsBackdropConnected) return;
                 var painted = Win32ExplorerTaskbarEmbedAdapter.PaintWindowSurfaceOnce(target.WindowHandle, out var paintResult);
-                target.MarkSurfacePainted();
-                ProbeStatusText.Text = $"{baseText}\n表面绘制（断开硬件平面提升）：{(painted ? paintResult : $"失败：{paintResult}")}";
+                if (painted) target.MarkSurfacePainted();
+                ProbeStatusText.Text = $"{baseText}\n透明表面绘制：{(painted ? paintResult : $"失败：{paintResult}")}";
                 ProbeStatusText.Visibility = Visibility.Visible;
             });
+            if (!queued) ShowHostError(new("control_surface_queue_failed", "对照窗口透明表面绘制未能进入队列。"));
         }
     }
 
@@ -420,7 +516,17 @@ public sealed partial class MainWindow : Window
             return;
         }
 
+        stoppingDock = true;
+        if (!environmentMonitor.TryStop())
+        {
+            args.Cancel = true;
+            ShowHostError(environmentMonitor.Error!);
+            return;
+        }
         AppWindow.Closing -= MainWindow_Closing;
+        dockTimer.Stop();
+        dockTimer.Tick -= DockTimer_Tick;
+        taskbarDock.StateChanged -= TaskbarDock_StateChanged;
         displayActions.ProbeStateChanged -= DisplayActions_ProbeStateChanged;
         displayActions.Dispose();
     }

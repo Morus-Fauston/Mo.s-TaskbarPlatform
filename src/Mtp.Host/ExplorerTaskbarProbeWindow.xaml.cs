@@ -12,7 +12,7 @@ using WinRT;
 namespace Mtp.Host;
 
 /// <summary>
-/// The compact single-row window used only by the Explorer taskbar embed probe.
+/// The compact single-row renderer shared by the probe, top-level control and 05A dock.
 /// It is prepared hidden; the adapter positions and shows it through Win32 after reparenting,
 /// so no AppWindow call other than Close may run once the window has a foreign parent.
 /// </summary>
@@ -27,6 +27,9 @@ public sealed partial class ExplorerTaskbarProbeWindow : Window
     private MicaController? micaController;
     private SystemBackdropConfiguration? acrylicConfiguration;
     private bool initialized;
+
+    internal event EventHandler? BackdropConnectionChanged;
+    internal bool IsBackdropConnected => transparentBackdrop?.IsConnected == true;
 
     public ExplorerTaskbarProbeWindow(HostComponentDisplayModel display)
         : this()
@@ -92,10 +95,8 @@ public sealed partial class ExplorerTaskbarProbeWindow : Window
                 return TryApplyMicaController(spec.Opacity, out detail);
 
             case MaterialKind.Solid:
-                // DeskBox solid mode: alpha = opacity * 255. The brush alone is NOT enough: on an
-                // output that promotes the window to a hardware plane the alpha is discarded, so the
-                // caller must also paint the window DC once (PaintWindowSurfaceOnce) to keep alpha
-                // honoured. RequiresSurfacePaint tells the caller that this step is still owed.
+                // The tested solid path requires both alpha on the brush and one window-DC paint.
+                // The underlying cause of alpha loss remains unverified.
                 var alpha = (byte)Math.Clamp(Math.Round(spec.Opacity * 255), 0, 255);
                 if (!TryApplyTransparentBackdrop(Windows.UI.Color.FromArgb(alpha, 0x20, 0x20, 0x20), out var solidFailure))
                 {
@@ -232,7 +233,7 @@ public sealed partial class ExplorerTaskbarProbeWindow : Window
         acrylicConfiguration = null;
     }
 
-    public nint WindowHandle => Win32Interop.GetWindowFromWindowId(AppWindow.Id);
+    public nint WindowHandle => WinRT.Interop.WindowNative.GetWindowHandle(this);
 
     public void SetDisplay(HostComponentDisplayModel display)
     {
@@ -298,7 +299,7 @@ public sealed partial class ExplorerTaskbarProbeWindow : Window
     {
         try
         {
-            transparentBackdrop = new TransparentBackdrop(tint);
+            transparentBackdrop = new TransparentBackdrop(tint, () => BackdropConnectionChanged?.Invoke(this, EventArgs.Empty));
             SystemBackdrop = transparentBackdrop;
             failureDetail = null;
             return true;
@@ -343,7 +344,7 @@ public sealed partial class ExplorerTaskbarProbeWindow : Window
     /// (see <c>Win32ExplorerTaskbarEmbedAdapter.PaintWindowSurfaceOnce</c>) to keep alpha honoured.
     /// No Win32 call lives here; that boundary is enforced by the platform-skeleton tests.
     /// </summary>
-    private sealed partial class TransparentBackdrop(Windows.UI.Color tint) : SystemBackdrop
+    private sealed partial class TransparentBackdrop(Windows.UI.Color tint, Action connectionChanged) : SystemBackdrop
     {
         private readonly Windows.UI.Composition.Compositor compositor = SharedCompositor;
         private readonly Windows.UI.Color tint = tint;
@@ -367,6 +368,7 @@ public sealed partial class ExplorerTaskbarProbeWindow : Window
                 // A failure inside the XAML callback must not take the Host down; the window stays opaque.
                 ConnectFailure = FormatException(exception);
             }
+            connectionChanged();
         }
 
         protected override void OnTargetDisconnected(ICompositionSupportsSystemBackdrop disconnectedTarget)

@@ -1,5 +1,84 @@
 # Changelog
 
+## v0.1.0-alpha.9 (2026-09-12 15:51)
+
+### 05A 单屏右贴靠任务栏组件
+
+- **几何与定位**：新增 Core 层 `TaskbarDockPlacement`，按目标显示器底部任务栏、通知区域左缘锚点和 DIP 换算计算组件位置；空锚点、越界、空间不足、非底部任务栏和无效显示器均返回结构化错误，明确不允许静默回退到任务栏右端。
+- **偏好存储**：新增 `TaskbarDockPreferences`，显示开关、目标显示器和 0–64 DIP 右侧间距独立持久化；采用命名互斥锁与同目录原子替换，文件不可读、损坏或提交失败时保留旧值，不破坏当前窗口状态。
+- **窗口适配**：新增 `TaskbarDockWindowAdapter` 与 `WinUiTaskbarDockWindow`，复用既有独立窗口接口统一拥有窗口、偏好与任务栏绑定；目标显示器缺失或锚点不可用时回退到工作区右下角独立贴靠并显示可解释状态。
+- **会话绑定**：嵌入会话绑定窗口身份、Explorer 进程实例、任务栏句柄、显示器和几何；重复相同重排不新建会话，环境或窗口变化才重新绑定，清理未确认时保留对象并阻止重建以便重试关闭。
+- **白边修复**：现象是组件外围出现白色立体边框。根因是窗口创建误用工具窗口 presenter，导致 `WS_DLGFRAME`、`WS_SYSMENU` 与 `WS_EX_WINDOWEDGE` 残留并压缩客户区。修复为显式使用普通 presenter，同时保留 `TOOLWINDOW`/`NOACTIVATE` 原生定位。
+- **透明绘制**：新增 `DeferredSurfacePaint`，在连接色刷后的低优先级 UI 队列执行一次 GDI 表面绘制以退出丢 alpha 的合成路径；窗口关闭取消未执行的绘制，绘制失败不改变组件状态或偏好。
+
+### 05C 独立窗口任务栏行为（实验分支）
+
+- **可见性策略**：新增 Core 层 `TaskbarVisibilityPolicy`，区分正常贴靠、全屏、任务栏收起和环境未知；暂时隐藏不写回显示偏好、不清空组件状态，并保留已有原因与诊断。
+- **全屏判定**：以目标屏幕前台窗口的客户区几何作为全屏依据，排除桌面/Shell 窗口和带标题栏的普通最大化窗口，保留无边框全屏判定；不查询游戏进程名、不打开其进程、不发送控制消息，普通最大化不再误判为全屏。
+- **自动隐藏任务栏**：通过目标屏幕底部自动隐藏任务栏查询结合实时矩形判断收起与展开；收起或动画中缺少可靠锚点时先隐藏组件，恢复时使用当前锚点，不留下点击热区或阻挡唤出区域。
+- **刷新与生命周期**：进程外 WinEvent 订阅前台切换与窗口显示/隐藏/位置变化，仅对相关窗口排队并合并重复请求；250 ms UI 定时器作为订阅漏报兜底，显示器设置每秒刷新。退出先使排队刷新失效并解除事件，解除失败保留所有权并提示重试关闭。
+- **焦点与层级**：只有首次显示或恢复才请求置顶，重复布局使用 `SWP_NOZORDER`；隐藏通过原生窗口隐藏移除输入表面，恢复复用同一窗口并重新验证无边框表面与延后绘制透明背景，避免抢焦点、闪烁重建和不必要的反复置顶。
+- **优先级**：暂时隐藏优先于独立故障降级；环境不确定时先隐藏并保留原因，只有允许呈现且锚点故障时才独立降级。
+
+### 文档与测试基建
+
+- **术语**：`CONTEXT.md` 更新右侧避让锚点与独立贴靠窗口在任务栏显示与隐藏规则下的语义，明确“在任务栏区域呈现”不等于成为 Explorer 子窗口。
+- **界面**：Host 主窗口新增目标显示器选择、右侧间距输入和靠右位置提示，原实验探针与材质对照移入可展开区域；主窗口改为可滚动布局。
+- **窗口回归入口**：新增 `tests/Mtp.Host.WindowTests` 独立 WinUI 回归程序与 `Run.ps1`，直接实例化生产窗口在屏幕外检查首次显示、跨 Dispatcher 刷新、相同布局、移动缩放与关闭重建；运行前需构建，仅新建测试进程。
+
+### 验证
+
+- **自动化测试**：Release 配置下 `dotnet test Mtp.sln --configuration Release` 通过，共 220 个测试成功，0 个失败，0 个跳过。
+- **构建与格式**：Release 构建 0 个警告、0 个错误；`dotnet format --verify-no-changes` 与 `git diff --check` 通过。
+- **红绿回归**：恢复旧的每次置顶调用使相对顺序检查失败，修复后通过；未接入隐藏分支时全屏、收起与未知三类用例错误显示降级窗口，接入后通过；仅看客户区会误判自定义标题栏最大化，加入样式排除后普通最大化与无边框全屏均通过。
+- **原生窗口证据**：`Run.ps1` 完成多次边框与客户区测量，确认首次隐藏不显示、恢复保持 HWND 与前台焦点、重复布局不提升相对层级、事件解除后无迟到刷新。
+- **人工验收**：05A 已由维护者在真实 Windows 确认位置、间距、透明、输入、锚点失败恢复、Explorer 重启与关闭再打开，正式收口；05C 的全屏游戏、视频与 Alt+Tab、自动隐藏任务栏、偏好优先、故障与恢复及生命周期组合仍待维护者验收。
+
+### 范围边界
+
+- **05C 为实验分支**：本版本沿用 MTP 自有透明顶级窗口路线，不把全屏游戏、多屏组件组、混合 DPI 或任意窗口遮挡计算标记为正式兼容承诺。
+- **未决事项**：05C 的人工验收项未被 Agent 代填，票据保持待人工验收；Explorer 子窗口实验入口未改动，仍不构成正式支持。
+
+### 文件变更表
+
+| 文件 | 变更 |
+|:-----|:------|
+| `src/Mtp.Platform.Core/TaskbarDockPlacement.cs` | **新增** — 底部任务栏与通知区域锚点的纯几何右贴靠计算 |
+| `src/Mtp.Platform.Core/TaskbarVisibilityPolicy.cs` | **新增** — 允许呈现、全屏、任务栏收起与环境未知的纯逻辑判定 |
+| `src/Mtp.Host/TaskbarDockWindowAdapter.cs` | **新增** — 统一拥有窗口、偏好与任务栏绑定的适配器 |
+| `src/Mtp.Host/WinUiTaskbarDockWindow.cs` | **新增** — MTP 自有贴靠窗口的显示、隐藏与定位 |
+| `src/Mtp.Host/Win32TaskbarDockEnvironment.cs` | **新增** — 目标任务栏、通知区域与显示器几何读取 |
+| `src/Mtp.Host/Win32TaskbarVisibility.cs` | **新增** — 前台全屏几何与自动隐藏任务栏状态判定 |
+| `src/Mtp.Host/TaskbarEnvironmentMonitor.cs` | **新增** — WinEvent 订阅、刷新排队与定时兜底 |
+| `src/Mtp.Host/TaskbarDockPreferences.cs` | **新增** — 显示、目标显示器与间距的独立持久化 |
+| `src/Mtp.Host/DeferredSurfacePaint.cs` | **新增** — 连接色刷后的延后 GDI 表面绘制调度 |
+| `src/Mtp.Host/MainWindow.xaml` | **修改** — 新增显示器与间距控件，探针移入可展开区域 |
+| `src/Mtp.Host/MainWindow.xaml.cs` | **修改** — 接入任务栏可见性状态、设置与诊断展示 |
+| `src/Mtp.Host/App.xaml.cs` | **修改** — 启动接线任务栏适配器与环境监视 |
+| `src/Mtp.Host/ExplorerTaskbarProbeWindow.xaml.cs` | **修改** — 配合延后绘制与窗口生命周期调整 |
+| `src/Mtp.Host/Win32ExplorerTaskbarEmbedAdapter.cs` | **修改** — 抽离延后绘制并校正 GDI 返回值检查 |
+| `CONTEXT.md` | **修改** — 更新锚点与独立贴靠窗口术语语义 |
+| `tests/Mtp.Platform.Core.Tests/TaskbarDockPlacementTests.cs` | **新增** — 覆盖 DIP、间距端点、负原点与无效几何 |
+| `tests/Mtp.Platform.Core.Tests/TaskbarVisibilityPolicyTests.cs` | **新增** — 覆盖可见性状态组合判定 |
+| `tests/Mtp.Platform.Core.Tests/TaskbarDockAdapterTests.cs` | **新增** — 覆盖成功、降级、重排、恢复与关闭失败 |
+| `tests/Mtp.Platform.Core.Tests/TaskbarDockPreferenceTests.cs` | **新增** — 覆盖保存失败保留旧值与原子替换 |
+| `tests/Mtp.Platform.Core.Tests/TaskbarEnvironmentMonitorTests.cs` | **新增** — 覆盖事件排队、合并、兜底与解除 |
+| `tests/Mtp.Platform.Core.Tests/Win32TaskbarDockEnvironmentTests.cs` | **新增** — 覆盖真实显示器读取与降级路径 |
+| `tests/Mtp.Platform.Core.Tests/Win32TaskbarVisibilityTests.cs` | **新增** — 覆盖全屏与自动隐藏判定 |
+| `tests/Mtp.Platform.Core.Tests/DeferredSurfacePaintTests.cs` | **新增** — 覆盖延后执行、取消与异常处理 |
+| `tests/Mtp.Platform.Core.Tests/WindowSurfacePaintIntegrationTests.cs` | **新增** — 覆盖原生 GDI 绘制与句柄校验 |
+| `tests/Mtp.Platform.Core.Tests/ExplorerProbeNativeCleanupTests.cs` | **新增** — 覆盖探针原生清理路径 |
+| `tests/Mtp.Platform.Core.Tests/ExplorerProbeWindowOwnerTests.cs` | **修改** — 适配探针清理与所有权变化 |
+| `tests/Mtp.Host.WindowTests/Mtp.Host.WindowTests.csproj` | **新增** — 独立 WinUI 窗口回归测试工程 |
+| `tests/Mtp.Host.WindowTests/Program.cs` | **新增** — 屏幕外实例化生产窗口并校验边框与客户区 |
+| `tests/Mtp.Host.WindowTests/WindowTestApplication.xaml` | **新增** — 回归测试宿主应用定义 |
+| `tests/Mtp.Host.WindowTests/Run.ps1` | **新增** — 回归测试构建与运行入口 |
+| `tests/Mtp.Host.WindowTests/README.md` | **新增** — 回归入口说明与查看方式 |
+| `CHANGELOG.md` | **修改** — 记录本次开发版本 |
+| `CHANGELOG.txt` | **修改** — 记录本次开发版本 |
+
+---
+
 ## v0.1.0-alpha.8 (2026-09-10 23:45)
 
 ### 状态完整性修复

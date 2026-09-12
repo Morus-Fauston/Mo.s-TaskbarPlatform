@@ -32,6 +32,7 @@ internal sealed class ExplorerProbeWindowOwner
 {
     private readonly IExplorerWindowOperations operations;
     private IExplorerProbeWindowResource? resource;
+    private nint ownedHandle;
     private bool cleanupRequested;
     private nint originalStyle;
 
@@ -68,6 +69,9 @@ internal sealed class ExplorerProbeWindowOwner
         IsReparented = false;
         IsStyleChanged = false;
         resource.Closed += Resource_Closed;
+        // Capture while the window is still top-level. Cleanup must not depend on
+        // AppWindow remaining available after the adapter applies WS_CHILD.
+        ownedHandle = resource.Handle;
     }
 
     public void MarkStyleChanged(nint style)
@@ -87,7 +91,7 @@ internal sealed class ExplorerProbeWindowOwner
         }
 
         cleanupRequested = true;
-        var handle = current.Handle;
+        var handle = ownedHandle;
         if (handle != 0 && operations.IsWindow(handle))
         {
             if (!operations.Hide(handle))
@@ -167,6 +171,7 @@ internal sealed class ExplorerProbeWindowOwner
 
         current.Closed -= Resource_Closed;
         resource = null;
+        ownedHandle = 0;
         cleanupRequested = false;
         originalStyle = 0;
         IsReparented = false;
@@ -274,9 +279,16 @@ public sealed class Win32ExplorerTaskbarEmbedAdapter : IExplorerTaskbarEmbedAdap
     /// </summary>
     public static string PrepareControlWindowSurface(nint hwnd)
     {
+        TryPrepareControlWindowSurface(hwnd, out var detail);
+        return detail;
+    }
+
+    internal static bool TryPrepareControlWindowSurface(nint hwnd, out string detail)
+    {
         if (hwnd == 0 || !NativeMethods.IsWindow(hwnd))
         {
-            return "window handle unavailable";
+            detail = "window handle unavailable";
+            return false;
         }
 
         var parts = new List<string> { SuppressFrameDecorations(hwnd, out var frameResult) };
@@ -285,17 +297,17 @@ public sealed class Win32ExplorerTaskbarEmbedAdapter : IExplorerTaskbarEmbedAdap
             CultureInfo.InvariantCulture,
             $"exstyle=0x{exStyle:X8} noredirectionbitmap={((exStyle & NativeMethods.WS_EX_NOREDIRECTIONBITMAP) != 0 ? "yes" : "no")}"));
         parts.Add(string.Create(CultureInfo.InvariantCulture, $"dwm frame=0x{frameResult:X8}"));
-        return string.Join(" ", parts);
+        detail = string.Join(" ", parts);
+        return frameResult >= 0;
     }
 
     /// <summary>
     /// Paints the window's own DC once with a black solid brush. This is the step WinUIEx's
-    /// <c>TransparentTintBackdrop</c> performs and the reason a solid brush keeps its alpha on every
-    /// output: writing to the window's redirection bitmap takes the window out of DirectFlip /
-    /// Multiplane-Overlay promotion, so DWM composites it normally instead of discarding alpha.
+    /// <c>TransparentTintBackdrop</c> performs. Experiments restored alpha on the tested outputs;
+    /// a change in hardware-plane promotion is a hypothesis, not a verified mechanism.
     /// Verified on the maintainer's machine: without this call the solid brush renders opaque
     /// #202020 on the NVIDIA-driven output; with it the same brush is transparent.
-    /// This is a workaround for undocumented promotion behaviour, not a documented contract.
+    /// This is an empirical workaround, not a documented Windows contract.
     /// </summary>
     public static bool PaintWindowSurfaceOnce(nint hwnd, out string detail)
     {
@@ -315,13 +327,22 @@ public sealed class Win32ExplorerTaskbarEmbedAdapter : IExplorerTaskbarEmbedAdap
         var brush = NativeMethods.CreateSolidBrush(0);
         try
         {
+            if (brush == 0)
+            {
+                detail = "CreateSolidBrush failed: " + FormatWin32Error(Marshal.GetLastWin32Error());
+                return false;
+            }
             if (!NativeMethods.GetClientRect(hwnd, out var rect))
             {
                 detail = FormatWin32Error(Marshal.GetLastWin32Error());
                 return false;
             }
 
-            NativeMethods.FillRect(hdc, ref rect, brush);
+            if (NativeMethods.FillRect(hdc, ref rect, brush) == 0)
+            {
+                detail = "FillRect failed: " + FormatWin32Error(Marshal.GetLastWin32Error());
+                return false;
+            }
             detail = string.Create(CultureInfo.InvariantCulture, $"painted {rect.Width}x{rect.Height}");
             return true;
         }
@@ -769,7 +790,7 @@ public sealed class Win32ExplorerTaskbarEmbedAdapter : IExplorerTaskbarEmbedAdap
         }
     }
 
-    private sealed class NativeExplorerWindowOperations : IExplorerWindowOperations
+    internal sealed class NativeExplorerWindowOperations : IExplorerWindowOperations
     {
         public bool IsWindow(nint handle) => NativeMethods.IsWindow(handle);
 
@@ -789,7 +810,10 @@ public sealed class Win32ExplorerTaskbarEmbedAdapter : IExplorerTaskbarEmbedAdap
                 return false;
             }
 
-            return NativeMethods.GetAncestor(handle, NativeMethods.GA_PARENT) == 0;
+            // A window reparented to NULL belongs to the desktop. GA_PARENT returns
+            // that desktop HWND, not NULL, even before WS_CHILD is restored.
+            return NativeMethods.IsWindow(handle) &&
+                NativeMethods.GetAncestor(handle, NativeMethods.GA_PARENT) == NativeMethods.GetDesktopWindow();
         }
 
         public bool RestoreStyle(nint handle, nint style)
@@ -979,6 +1003,9 @@ public sealed class Win32ExplorerTaskbarEmbedAdapter : IExplorerTaskbarEmbedAdap
 
         [DllImport("user32.dll", ExactSpelling = true)]
         public static extern nint GetAncestor(nint hwnd, uint gaFlags);
+
+        [DllImport("user32.dll", ExactSpelling = true)]
+        public static extern nint GetDesktopWindow();
 
         [DllImport("user32.dll", ExactSpelling = true, SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]

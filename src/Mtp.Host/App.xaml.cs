@@ -24,20 +24,25 @@ public partial class App : Application
             new LocalJsonDeclarationSource(declarationPath),
             new LocalComponentDisplayPreferenceStore(preferencePath));
         var displayLoad = controller.Load();
-        MainWindow? ownerWindow = null;
+        var taskbarEnvironment = new Win32TaskbarDockEnvironment();
+        var taskbarDock = new TaskbarDockWindowAdapter(
+            new LocalTaskbarDockPreferenceStore(Path.Combine(AppContext.BaseDirectory, "taskbar-dock-preferences.json")),
+            taskbarEnvironment,
+            () => new WinUiTaskbarDockWindow());
         var dockWindowController = new IndependentDockWindowController(
             controller,
-            new WinUiIndependentDockWindowAdapter(() => ownerWindow is null
-                ? null
-                : DisplayArea.GetFromWindowId(ownerWindow.AppWindow.Id, DisplayAreaFallback.Primary)));
+            taskbarDock);
         var probeController = new ExplorerTaskbarProbeController(
             controller,
             new Win32ExplorerTaskbarEmbedAdapter(() => DisplayArea.FindAll().Count),
             dockWindowController);
         var displayActions = new HostDisplayActionController(controller, dockWindowController, probeController);
-        ownerWindow = new MainWindow(displayLoad, displayActions);
-        window = ownerWindow;
-        window.Activate();
+        window = new MainWindow(displayLoad, displayActions, taskbarDock, taskbarEnvironment);
+        var launchEnvironment = taskbarEnvironment.Capture(taskbarDock.Preferences.TargetDisplayId);
+        if (launchEnvironment.Value?.Visibility == Mtp.Platform.Core.TaskbarVisibility.Allowed)
+            window.Activate();
+        else
+            window.AppWindow.Show(false);
 
         var restoreResult = displayActions.RestoreCurrent();
         foreach (var error in restoreResult.Errors)

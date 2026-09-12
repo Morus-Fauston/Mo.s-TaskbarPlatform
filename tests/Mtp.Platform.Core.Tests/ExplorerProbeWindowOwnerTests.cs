@@ -5,6 +5,36 @@ namespace Mtp.Platform.Core.Tests;
 public sealed class ExplorerProbeWindowOwnerTests
 {
     [Fact]
+    public void HandleCaptureFailureStillRetainsTheWindowForCleanup()
+    {
+        var resource = new RecordingResource([]) { HandleError = new InvalidOperationException("handle") };
+        var owner = new ExplorerProbeWindowOwner(new RecordingOperations([]));
+
+        Assert.Throws<InvalidOperationException>(() => owner.TakeOwnership(resource));
+        Assert.True(owner.HasResource);
+        Assert.True(owner.Cleanup().IsSuccess);
+        Assert.False(owner.HasResource);
+    }
+
+    [Fact]
+    public void CleanupUsesTheOwnedHandleWhenTopLevelWindowAccessIsNoLongerAvailable()
+    {
+        var log = new List<string>();
+        var resource = new RecordingResource(log);
+        var owner = Owned(new RecordingOperations(log), resource);
+        owner.MarkStyleChanged((nint)123);
+        owner.MarkReparented();
+        resource.HandleError = new InvalidOperationException("AppWindow is unavailable for a child window.");
+
+        var result = owner.Cleanup();
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(new[] { "hide", "parent", "style:123", "close" }, log);
+        Assert.False(owner.HasResource);
+        Assert.True(owner.Cleanup().IsSuccess);
+    }
+
+    [Fact]
     public void SuccessfulCleanupRestoresNativeStateBeforeReleasingTheWindow()
     {
         var log = new List<string>();
@@ -176,7 +206,15 @@ public sealed class ExplorerProbeWindowOwnerTests
     {
         public event EventHandler? Closed;
 
-        public nint Handle { get; set; } = (nint)42;
+        private nint handle = (nint)42;
+
+        public Exception? HandleError { get; set; }
+
+        public nint Handle
+        {
+            get => HandleError is null ? handle : throw HandleError;
+            set => handle = value;
+        }
 
         public Exception? CloseError { get; set; }
 
