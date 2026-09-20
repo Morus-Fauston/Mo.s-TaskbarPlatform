@@ -1,5 +1,59 @@
 # Changelog
 
+## v0.1.0-alpha.10 (2026-09-20 22:13)
+
+### 05E 任务栏显隐检测探针实验（实验分支，暂时封存）
+
+- **封存状态**：05E 在独立实验分支执行，第一轮真实观测判定当前候选信号不通过，票据保持待开发，暂时封存。整票不标完成，不接入正式显示路径。
+- **实验目标**：验证“每块屏幕一个透明任务栏子窗口探针，由探针信号驱动该屏独立贴靠窗口显隐”是否成立。探针只代表对应屏幕的任务栏父窗口，不承载 MTP 内容，不要求与组件组同位置或同尺寸。
+- **探针实现**：新增 `TaskbarVisibilityProbe`，为每块屏幕创建真实 `HWND` 子窗口并挂为任务栏子窗口。先隐藏创建，设置 `WS_EX_LAYERED` 且 alpha=0 后再显示，配合 `WS_DISABLED`、`WS_EX_NOACTIVATE`、`WS_EX_TRANSPARENT` 与命中测试共同阻止输入。每屏独立记录任务栏句柄、探针句柄、父级链、`WS_VISIBLE`、矩形、裁剪信号、WinEvent 与窗口消息时序，不把主屏结果复制给副屏。
+- **观测工具**：新增独立工具 `TaskbarVisibilityLab`，直接编译同一适配器源码，提供 observe / baseline / fixture 三种模式、每屏 JSONL 观测、人工标记、定时与停止文件退出及资源记录。工具只作诊断，不改变正式 Host 启动或窗口路径。
+- **首轮观测反例**：维护者确认 F11 全屏后主屏任务栏实际消失，但 `observe-20260919-233608-a843f1` 两屏各 4799 次采样全部为 `VisibleCandidate`，逻辑可见与两种 GDI 裁剪信号全程未变，只有启动时每屏一次候选初始化。因此“逻辑可见 + 矩形 + GDI 裁剪”当前不能用作任务栏实际显隐传感器。
+- **结论边界**：子窗口创建成功与本次负面结论并不矛盾；**不把当前失败扩大为所有可能探针路线均不可行**。候选信号未接入组件显隐，信号确认与真实显隐项保持未勾选。
+- **显示门控**：新增 `ProbeDisplayGate`，只有已验证候选、当前用户显示偏好与新鲜样本同时满足才允许显示，其他情况只暂时抑制该屏并保留组件数据与偏好。其自动化测试不代表已接入产品窗口。
+- **PowerShell 5.1 修复**：现象是 Windows PowerShell 5.1 将无 BOM 的 UTF-8 脚本按系统编码误读，导致中文乱码与语法错误。修复为三个工具脚本改存带 BOM 的 UTF-8，并在目录 `.editorconfig` 中固定该编码；验证脚本改为走与用户相同的 `Run.ps1` 入口，PowerShell 7 同入口回归通过。
+- **绘制消息修复**：进程冒烟发现绘制消息饥饿。根因是只调用 `ValidateRect` 没有清掉内部 `WM_PAINT`，现以 `BeginPaint`/`EndPaint` 完整结束绘制。
+
+### 验证
+
+- **自动化测试**：Release 配置下 `dotnet test Mtp.sln --configuration Release --no-restore` 通过，共 237 个测试成功，0 个失败，0 个跳过。
+- **构建与格式**：Release 构建 0 个警告、0 个错误；`dotnet format Mtp.sln --no-restore --verify-no-changes` 与 `git diff --check` 通过。
+- **新增测试**：Native 与策略新增 17 项测试，覆盖透明 alpha=0、`WS_VISIBLE` 与禁用输入、父链、句柄销毁、重建、断屏与恢复、每屏隔离、读取失效、父级错配、有限事件队列、候选信号与未知状态，以及显示门控的当前偏好与过期样本判断。
+- **进程验证**：`Verify.ps1 -NoBuild` 的 fixture 与 baseline 进程均通过；fixture 79 次采样、baseline 80 次采样，正常退出与清理已确认。该验证只使用自有隐藏父窗口，不是 Explorer 多屏行为验收。
+- **人工验收**：本版本不主张任何人工验收结果。维护者确认的“主屏全屏时任务栏消失”只用于判读候选信号失败，不等于确认其余人工验收项；白点、闪烁、点击与端到端延迟均未取得结论。
+
+### 范围边界
+
+- **实验分支**：本版本在独立实验分支发布，不进入 `main`，不恢复 05D 的组件嵌入，不修改 05A/05B 正式独立窗口路径。
+- **不覆盖**：不实现 Explorer 任务栏内容嵌入，不渲染组件位图，不验证 WinUI 材质透明，不探测或注入其他应用进程。
+- **未验证**：实际未覆盖的显示器排列、DPI 或任务栏配置不得标记为已验证；通过实验只表示信号与延迟达到记录门槛，不形成正式兼容承诺，不替代 D-128。
+
+### 文件变更表
+
+| 文件 | 变更 |
+|:-----|:------|
+| `src/Mtp.Host/TaskbarVisibilityProbe/Win32VisibilityProbe.cs` | **新增** — 每屏探针创建、父级绑定、采样与清理 |
+| `src/Mtp.Host/TaskbarVisibilityProbe/ProbeNative.cs` | **新增** — 探针所需的原生调用封装 |
+| `src/Mtp.Host/TaskbarVisibilityProbe/ProbeVisibilityPolicy.cs` | **新增** — 候选信号与未知状态的纯逻辑判定 |
+| `src/Mtp.Host/TaskbarVisibilityProbe/ProbeDisplayGate.cs` | **新增** — 已验证候选、当前偏好与新鲜样本的显示门控 |
+| `src/Mtp.Host/TaskbarVisibilityProbe/ProbeRecords.cs` | **新增** — 观测样本与事件记录模型 |
+| `tests/Mtp.Platform.Core.Tests/NativeVisibilityProbeTests.cs` | **新增** — 探针原生属性、父链与生命周期测试 |
+| `tests/Mtp.Platform.Core.Tests/VisibilityProbePolicyTests.cs` | **新增** — 候选信号与未知状态策略测试 |
+| `tests/Mtp.Platform.Core.Tests/ProbeDisplayGateTests.cs` | **新增** — 显示门控测试 |
+| `tools/TaskbarVisibilityLab/Program.cs` | **新增** — observe / baseline / fixture 三模式观测程序 |
+| `tools/TaskbarVisibilityLab/TaskbarVisibilityLab.csproj` | **新增** — 直接编译同一适配器源码的工具工程 |
+| `tools/TaskbarVisibilityLab/Run.ps1` | **新增** — 用户启动入口 |
+| `tools/TaskbarVisibilityLab/Verify.ps1` | **新增** — 进程级自动化验证入口 |
+| `tools/TaskbarVisibilityLab/Mark.ps1` | **新增** — 人工观测标记写入 |
+| `tools/TaskbarVisibilityLab/README.md` | **新增** — 启动、记录内容与人工观测说明 |
+| `tools/TaskbarVisibilityLab/.editorconfig` | **新增** — 固定脚本为带 BOM 的 UTF-8 |
+| `Mtp.sln` | **修改** — 新增 tools 解决方案文件夹与 TaskbarVisibilityLab 工程 |
+| `CONTEXT.md` | **修改** — 右侧避让锚点的规格链接更正到现行章节 |
+| `CHANGELOG.md` | **修改** — 记录本版本 |
+| `CHANGELOG.txt` | **修改** — 记录本版本 |
+
+---
+
 ## v0.1.0-alpha.9 (2026-09-12 15:51)
 
 ### 05A 单屏右贴靠任务栏组件
