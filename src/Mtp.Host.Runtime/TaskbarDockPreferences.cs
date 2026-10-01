@@ -1,9 +1,7 @@
 using System.IO;
-using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using System.Threading;
 using Mtp.Platform.Core;
 
 namespace Mtp.Host;
@@ -43,6 +41,7 @@ public sealed class LocalTaskbarDockPreferenceStore(string path) : ITaskbarDockP
                 : Failure("dock_preference_invalid", "任务栏设置无效，未覆盖原文件。");
         }
         catch (FileNotFoundException) { return CoreResult<TaskbarDockPreferences>.Success(new()); }
+        catch (DecoderFallbackException) { return Failure("dock_preference_invalid", "任务栏设置包含非法 UTF-8，未覆盖原文件。"); }
         catch (JsonException) { return Failure("dock_preference_invalid", "任务栏设置格式无效，未覆盖原文件。"); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
         { return Failure("dock_preference_read_failed", "无法读取任务栏设置，保留原文件。"); }
@@ -54,16 +53,10 @@ public sealed class LocalTaskbarDockPreferenceStore(string path) : ITaskbarDockP
     private CoreResult<TaskbarDockPreferences> Commit(Func<TaskbarDockPreferences, TaskbarDockPreferences> change)
     {
         string? temporary = null;
-        Mutex? mutex = null;
-        var owned = false;
         try
         {
             var fullPath = Path.GetFullPath(path);
-            var key = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(fullPath.ToUpperInvariant())));
-            mutex = new Mutex(false, $"Local\\Mtp.Host.TaskbarDock.{key}");
-            try { owned = mutex.WaitOne(TimeSpan.FromSeconds(2)); }
-            catch (AbandonedMutexException) { owned = true; }
-            if (!owned) return Failure("dock_preference_busy", "任务栏设置正在被其他窗口修改，请重试。");
+            using var fileLock = PreferenceFileLock.Acquire(fullPath, TimeSpan.FromSeconds(2));
             var loaded = Load();
             if (!loaded.IsSuccess) return loaded;
             var next = change(loaded.Value!);
@@ -78,12 +71,10 @@ public sealed class LocalTaskbarDockPreferenceStore(string path) : ITaskbarDockP
             else File.Move(temporary, fullPath);
             return CoreResult<TaskbarDockPreferences>.Success(next);
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException or WaitHandleCannotBeOpenedException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
         { return Failure("dock_preference_write_failed", "任务栏设置保存失败，保留原值与当前窗口。"); }
         finally
         {
-            if (owned) mutex!.ReleaseMutex();
-            mutex?.Dispose();
             if (temporary is not null)
             {
                 try { File.Delete(temporary); }

@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
-using Windows.Graphics;
+using Mtp.Platform.Core;
 
 namespace Mtp.Host;
 
@@ -10,6 +10,8 @@ namespace Mtp.Host;
 /// One observed step of the Explorer taskbar embed probe.
 /// </summary>
 public sealed record ExplorerTaskbarProbeStep(string Name, bool Succeeded, string? Detail);
+
+public readonly record struct ProbePixelSize(int Width, int Height);
 
 /// <summary>
 /// The reproducible experiment record produced by a successful probe run.
@@ -22,12 +24,12 @@ public sealed record ExplorerTaskbarProbeReport(
     string ProcessArchitecture,
     int DisplayCount,
     uint TaskbarDpi,
-    SizeInt32 TaskbarClientSize,
-    RectInt32 TaskbarScreenRect,
+    ProbePixelSize TaskbarClientSize,
+    PixelRect TaskbarScreenRect,
     int? TrayLeftEdgeClientX,
     string AnchorKind,
-    RectInt32 EmbeddedClientRect,
-    RectInt32 EmbeddedScreenRect,
+    PixelRect EmbeddedClientRect,
+    PixelRect EmbeddedScreenRect,
     IReadOnlyList<ExplorerTaskbarProbeStep> Steps)
 {
     public static readonly IReadOnlyList<string> UnverifiedScope =
@@ -114,6 +116,6 @@ public static class ExplorerTaskbarProbeReportFormatter
         return builder.ToString();
     }
 
-    private static string FormatRect(RectInt32 rect) =>
+    private static string FormatRect(PixelRect rect) =>
         string.Create(CultureInfo.InvariantCulture, $"({rect.X},{rect.Y}) {rect.Width}x{rect.Height}");
 }

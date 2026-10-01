@@ -7,6 +7,8 @@ namespace Mtp.Host;
 
 internal static class BoundedUtf8File
 {
+    private static readonly UTF8Encoding strictUtf8 = new(false, true);
+
     public static bool TryRead(string path, int maximumBytes, out string content)
     {
         using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
@@ -29,7 +31,7 @@ internal static class BoundedUtf8File
             return false;
         }
 
-        content = Encoding.UTF8.GetString(bytes, 0, total);
+        content = strictUtf8.GetString(bytes, 0, total);
         if (content.Length > 0 && content[0] == '\uFEFF')
         {
             content = content[1..];
@@ -81,6 +83,11 @@ public sealed class LocalJsonDeclarationSource : IDeclarationSource
             }
 
             return CoreResult<string>.Success(json);
+        }
+        catch (DecoderFallbackException)
+        {
+            return CoreResult<string>.Failure(
+                new StructuredError("unsupported_structure", "The local declaration file contains invalid UTF-8.", Path));
         }
         catch (UnauthorizedAccessException)
         {

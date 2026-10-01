@@ -19,14 +19,14 @@ public partial class App : Application
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
         var declarationPath = Path.Combine(AppContext.BaseDirectory, "declaration.json");
-        var preferencePath = Path.Combine(AppContext.BaseDirectory, "display-preferences.json");
+        var preferences = HostPreferenceStorage.Initialize(AppContext.BaseDirectory);
         var controller = new HostDisplayController(
             new LocalJsonDeclarationSource(declarationPath),
-            new LocalComponentDisplayPreferenceStore(preferencePath));
+            preferences.DisplayStore);
         var displayLoad = controller.Load();
         var taskbarEnvironment = new Win32TaskbarDockEnvironment();
         var taskbarDock = new TaskbarDockWindowAdapter(
-            new LocalTaskbarDockPreferenceStore(Path.Combine(AppContext.BaseDirectory, "taskbar-dock-preferences.json")),
+            preferences.DockStore,
             taskbarEnvironment,
             () => new WinUiTaskbarDockWindow());
         var dockWindowController = new IndependentDockWindowController(

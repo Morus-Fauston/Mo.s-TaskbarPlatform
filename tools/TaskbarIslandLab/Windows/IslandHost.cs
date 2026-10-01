@@ -157,7 +157,19 @@ internal sealed class IslandHost
     {
         try
         {
-            set(options.Material switch { "acrylic" => new DesktopAcrylicBackdrop(), "mica" => new MicaBackdrop(), _ => null });
+            if (options.Material == "acrylic")
+            {
+                // Explorer is not ours. Do not change its root HWND to enable material.
+                if (options.Mode == "explorer")
+                    record("host-backdrop-unverified", new { reason = "external-parent-not-modified", appearance = "pending-human" });
+                else
+                {
+                    var root = options.Mode == "owned" ? parent : host;
+                    var result = NativeWindows.EnableHostBackdrop(root);
+                    record("host-backdrop-initialized", new { hwnd = $"0x{root:X}", hresult = $"0x{result:X8}", ownedTopLevel = true, appearance = "pending-human" });
+                }
+            }
+            set(options.Material switch { "acrylic" => new NonActivatingAcrylicBackdrop(record), "mica" => new MicaBackdrop(), _ => null });
             record("material-api", new { requested = options.Material, options.Alpha, result = "assigned", appearance = "pending-human", note = options.Material == "mica" ? "Mica is opaque, not a transparency pass." : "API assignment is not visual evidence." });
         }
         catch (Exception error)

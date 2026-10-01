@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
@@ -22,11 +22,19 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Mtp.Platform.Core\Mtp.Platform.Core.csproj" />
     <ProjectReference Include="..\..\src\Mtp.Contracts\Mtp.Contracts.csproj" />
-    <ProjectReference Include="..\..\src\Mtp.Host\Mtp.Host.csproj" />
+    <ProjectReference Include="../../src/Mtp.Host.Runtime/Mtp.Host.Runtime.csproj" />
   </ItemGroup>
 
   <ItemGroup>
     <None Include="..\..\src\Mtp.Host\MainWindow.xaml" Link="MainWindow.xaml" CopyToOutputDirectory="PreserveNewest" />
+    <ProjectReference Include="../Mtp.PreferenceStore.ProcessProbe/Mtp.PreferenceStore.ProcessProbe.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
+
+  <Target Name="CopyPreferenceProbe" AfterTargets="Build">
+    <ItemGroup>
+      <PreferenceProbeFiles Include="../Mtp.PreferenceStore.ProcessProbe/bin/$(Configuration)/net10.0/*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(PreferenceProbeFiles)" DestinationFolder="$(OutDir)PreferenceProbe" />
+  </Target>
 
 </Project>

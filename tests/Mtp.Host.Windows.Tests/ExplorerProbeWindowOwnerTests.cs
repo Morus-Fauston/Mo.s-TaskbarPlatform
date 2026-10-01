@@ -4,6 +4,45 @@ namespace Mtp.Platform.Core.Tests;
 
 public sealed class ExplorerProbeWindowOwnerTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void DestroyedNativeWindowReleasesOwnershipDespiteCloseException(bool destroyedDuringClose)
+    {
+        var operations = new RecordingOperations([]) { WindowExists = destroyedDuringClose };
+        var resource = new RecordingResource([])
+        {
+            CloseError = new InvalidOperationException("WinUI window is already destroyed"),
+            BeforeClose = () => operations.WindowExists = false,
+        };
+        var owner = Owned(operations, resource);
+        owner.MarkReparented();
+        var releases = 0;
+        owner.Released += (_, _) => releases++;
+
+        Assert.True(owner.Cleanup().IsSuccess);
+        Assert.False(owner.HasResource);
+        Assert.False(owner.IsCleanupPending);
+        Assert.Equal(1, releases);
+        Assert.True(owner.Cleanup().IsSuccess);
+        var next = new RecordingResource([]);
+        owner.TakeOwnership(next);
+        resource.RaiseClosed();
+        Assert.True(owner.HasResource);
+        Assert.Equal(1, releases);
+        next.RaiseClosed();
+        Assert.Equal(2, releases);
+    }
+
+    [Fact]
+    public void ZeroHandleWithCloseExceptionAndNoConfirmationRetainsOwnership()
+    {
+        var resource = new RecordingResource([]) { Handle = 0, CloseError = new InvalidOperationException("close") };
+        var owner = Owned(new RecordingOperations([]) { WindowExists = false }, resource);
+        Assert.Equal("explorer_probe_close_failed", owner.Cleanup().Error?.Code);
+        Assert.True(owner.IsCleanupPending);
+    }
+
     [Fact]
     public void HandleCaptureFailureStillRetainsTheWindowForCleanup()
     {
@@ -181,7 +220,9 @@ public sealed class ExplorerProbeWindowOwnerTests
 
         public bool RestoreStyleResult { get; set; } = true;
 
-        public bool IsWindow(nint handle) => true;
+        public bool WindowExists { get; set; } = true;
+
+        public bool IsWindow(nint handle) => WindowExists;
 
         public bool Hide(nint handle)
         {
@@ -218,11 +259,14 @@ public sealed class ExplorerProbeWindowOwnerTests
 
         public Exception? CloseError { get; set; }
 
+        public Action? BeforeClose { get; set; }
+
         public bool RaiseClosedOnClose { get; set; } = true;
 
         public void Close()
         {
             log.Add("close");
+            BeforeClose?.Invoke();
             if (CloseError is not null)
             {
                 throw CloseError;

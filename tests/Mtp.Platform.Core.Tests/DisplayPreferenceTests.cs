@@ -5,6 +5,18 @@ namespace Mtp.Platform.Core.Tests;
 
 public sealed class DisplayPreferenceTests
 {
+    [Theory]
+    [InlineData(-1)]
+    [InlineData(4)]
+    [InlineData(int.MaxValue)]
+    public void PreferenceLoadResultRejectsUndefinedState(int state)
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => new ComponentDisplayPreferenceLoadResult(
+            new ComponentDisplayPreferences(),
+            new StructuredError("invalid", "Invalid preference"),
+            (ComponentDisplayPreferenceLoadState)state));
+    }
+
     [Fact]
     public void NewComponentsDefaultToHiddenAndCanBeShownAndSavedSeparately()
     {
@@ -432,6 +444,7 @@ public sealed class DisplayPreferenceTests
 
     private static void Delete(string path)
     {
+        File.Delete(path + ".lock");
         if (File.Exists(path))
         {
             File.Delete(path);

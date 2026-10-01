@@ -378,12 +378,12 @@ public sealed class HostDisplayActionTests
                 "X64",
                 1,
                 96,
-                new Windows.Graphics.SizeInt32(1920, 48),
-                new Windows.Graphics.RectInt32(0, 1032, 1920, 48),
+                new ProbePixelSize(1920, 48),
+                new PixelRect(0, 1032, 1920, 48),
                 1600,
-                ExplorerTaskbarProbePlacement.TrayNotifyAnchor,
-                new Windows.Graphics.RectInt32(1352, 4, 240, 40),
-                new Windows.Graphics.RectInt32(1352, 1036, 240, 40),
+                "tray_notify_window",
+                new PixelRect(1352, 4, 240, 40),
+                new PixelRect(1352, 1036, 240, 40),
                 new[] { new ExplorerTaskbarProbeStep("find_taskbar", true, null) }));
         }
 

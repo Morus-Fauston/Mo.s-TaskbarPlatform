@@ -2,11 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using System.Threading;
 using Mtp.Platform.Core;
 
 namespace Mtp.Host;
@@ -101,6 +99,11 @@ public sealed class ComponentDisplayPreferenceLoadResult
         ComponentDisplayPreferenceLoadState state)
     {
         Preferences = preferences ?? throw new ArgumentNullException(nameof(preferences));
+        if (!Enum.IsDefined(state))
+        {
+            throw new ArgumentOutOfRangeException(nameof(state));
+        }
+
         if ((state == ComponentDisplayPreferenceLoadState.Loaded) != (error is null))
         {
             throw new ArgumentException("A loaded preference result cannot contain an error, and every non-loaded result must contain one.", nameof(error));
@@ -172,26 +175,9 @@ public sealed class LocalComponentDisplayPreferenceStore : IComponentDisplayPref
             return PreferenceWriteFailure();
         }
 
-        var mutexName = $"Local\\Mtp.Host.DisplayPreferences.{Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(fullPath.ToUpperInvariant())))}";
-        Mutex? mutex = null;
-        var ownsMutex = false;
         try
         {
-            mutex = new Mutex(initiallyOwned: false, mutexName);
-            try
-            {
-                ownsMutex = mutex.WaitOne(TimeSpan.FromSeconds(5));
-            }
-            catch (AbandonedMutexException)
-            {
-                ownsMutex = true;
-            }
-
-            if (!ownsMutex)
-            {
-                return PreferenceWriteFailure();
-            }
-
+            using var fileLock = PreferenceFileLock.Acquire(fullPath, TimeSpan.FromSeconds(5));
             var latest = Load();
             if (latest.State == ComponentDisplayPreferenceLoadState.Unavailable)
             {
@@ -207,19 +193,6 @@ public sealed class LocalComponentDisplayPreferenceStore : IComponentDisplayPref
         catch (IOException)
         {
             return PreferenceWriteFailure();
-        }
-        catch (WaitHandleCannotBeOpenedException)
-        {
-            return PreferenceWriteFailure();
-        }
-        finally
-        {
-            if (ownsMutex)
-            {
-                mutex!.ReleaseMutex();
-            }
-
-            mutex?.Dispose();
         }
     }
 
@@ -295,6 +268,10 @@ public sealed class LocalComponentDisplayPreferenceStore : IComponentDisplayPref
             {
                 return InvalidPreference("Display preference identities must be unique.");
             }
+        }
+        catch (DecoderFallbackException)
+        {
+            return InvalidPreference("The display preference file contains invalid UTF-8.");
         }
         catch (JsonException)
         {

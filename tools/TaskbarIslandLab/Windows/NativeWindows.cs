@@ -52,6 +52,15 @@ internal static class NativeWindows
     }
 
     internal static bool IsOurs(nint hwnd) => GetWindowThreadProcessId(hwnd, out var pid) == GetCurrentThreadId() && pid == Environment.ProcessId;
+    internal static int EnableHostBackdrop(nint hwnd)
+    {
+        if (hwnd == 0 || !IsOurs(hwnd) || (GetWindowLongPtrW(hwnd, -16).ToInt64() & Child) != 0)
+            throw new InvalidOperationException("Host backdrop requires this UI thread's own top-level window.");
+        var enabled = 1;
+        var result = DwmSetWindowAttribute(hwnd, 17, ref enabled, sizeof(int)); // DWMWA_USE_HOSTBACKDROPBRUSH
+        Marshal.ThrowExceptionForHR(result);
+        return result;
+    }
     internal static int ProcessDpiAwareness()
     {
         Marshal.ThrowExceptionForHR(GetProcessDpiAwareness(0, out var awareness));
@@ -183,6 +192,7 @@ internal static class NativeWindows
     private delegate bool EnumProc(nint hwnd, nint param);
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern ushort RegisterClassExW(ref WindowClass value);
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern nint CreateWindowExW(uint exStyle, string className, string title, uint style, int x, int y, int width, int height, nint parent, nint menu, nint instance, nint param);
+    [DllImport("dwmapi.dll")] private static extern int DwmSetWindowAttribute(nint hwnd, int attribute, ref int value, int size);
     [DllImport("user32.dll")] private static extern nint DefWindowProcW(nint hwnd, uint msg, nuint wparam, nint lparam);
     [DllImport("user32.dll", SetLastError = true)] private static extern bool DestroyWindow(nint hwnd);
     [DllImport("user32.dll")] internal static extern bool IsWindow(nint hwnd);

@@ -21,6 +21,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="../Mtp.Host.Runtime/Mtp.Host.Runtime.csproj" />
     <ProjectReference Include="..\Mtp.Platform.Core\Mtp.Platform.Core.csproj" />
     <ProjectReference Include="..\Mtp.Contracts\Mtp.Contracts.csproj" />
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.4.0" />

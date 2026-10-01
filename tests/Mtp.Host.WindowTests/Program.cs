@@ -19,7 +19,7 @@ internal static class Program
 public sealed partial class WindowTestApplication : Application
 {
     private static readonly string LogPath = Path.Combine(AppContext.BaseDirectory, "window-tests.log");
-    private readonly Type dockType = typeof(HostComponentDisplayModel).Assembly.GetType("Mtp.Host.WinUiTaskbarDockWindow", throwOnError: true)!;
+    private readonly Type dockType = typeof(WinUiIndependentDockWindowAdapter).Assembly.GetType("Mtp.Host.WinUiTaskbarDockWindow", throwOnError: true)!;
     private readonly HostComponentDisplayModel component = HostComponentDisplayModel.From(
         new Component(new StableIdentity(new StableId("frame-test")), CapabilityState.Available));
     private object? dock;
@@ -27,7 +27,7 @@ public sealed partial class WindowTestApplication : Application
     private DispatcherTimer? timer;
     private int stage;
     private int samples;
-    private readonly Type monitorType = typeof(HostComponentDisplayModel).Assembly.GetType("Mtp.Host.TaskbarEnvironmentMonitor", throwOnError: true)!;
+    private readonly Type monitorType = typeof(WinUiIndependentDockWindowAdapter).Assembly.GetType("Mtp.Host.TaskbarEnvironmentMonitor", throwOnError: true)!;
     private object? monitor;
     private nint eventWindow;
     private int eventCount;

@@ -205,6 +205,13 @@ public sealed partial class LabApplication : Application
         {
             case 0:
                 Require(host.Loaded && host.HasExpectedTree, "real WinUI content tree loaded");
+                foreach (var target in new nint[] { 0, host.HostHandle })
+                {
+                    var rejected = false;
+                    try { NativeWindows.EnableHostBackdrop(target); }
+                    catch (InvalidOperationException) { rejected = true; }
+                    Require(rejected, "host backdrop rejects null or child window before native write");
+                }
                 Require(host.ContentWidth == 260 && host.ContentHeight == 56, "260 x 56 DIP root layout");
                 AssertNativeLayout(260, 56);
                 Require(host.CheckHealth() == null, "initial parent/bridge/DPI identity");

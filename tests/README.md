@@ -1,0 +1,26 @@
+# 测试层与证据边界
+
+## 纯规则与文件/进程边界
+
+~~~powershell
+dotnet test tests/Mtp.Platform.Core.Tests/Mtp.Platform.Core.Tests.csproj -c Release
+~~~
+
+目标为普通 net10.0，仅引用 Core、Contracts、Host.Runtime，不构建 WinUI。覆盖声明校验、状态协调、显示与贴靠策略、偏好文件和两个独立 .NET 进程并发写入。进程夹具只写测试创建的临时目录。架构测试阻止 Windows TFM/WinUI 依赖重新进入该层。此轮在 Windows 执行，不将目标框架可移植性写成已经在 Linux/macOS 实跑。
+
+## Windows 适配器
+
+~~~powershell
+dotnet test tests/Mtp.Host.Windows.Tests/Mtp.Host.Windows.Tests.csproj -c Release
+~~~
+
+仅 Windows：自有隐藏 HWND、适配器失败、Explorer 探针资源所有权、显示器采集、原生事件和目录 junction 锁。不会重启或改写 Explorer，不代表任务栏嵌入人工验收。
+
+## WinUI 进程与实验工具
+
+- [WinUI Window Regression](Mtp.Host.WindowTests/README.md)：真实 WinUI 离屏窗口的 frame、焦点和生命周期自动化；与可见外观人工验收分开。
+- [TaskbarIslandLab](../tools/TaskbarIslandLab/README.md)：独立工具逻辑、owned/verify、配对采样；不进入正式 Host 路径。
+- 全量主线：dotnet test Mtp.sln -c Release；dotnet build Mtp.sln -c Release。
+- 格式检查：先 dotnet build Mtp.sln -c Debug，再 dotnet format Mtp.sln --verify-no-changes --no-restore，保证 WinUI 设计时引用元数据存在。
+
+真实启动、外观、点击热区、任务栏、多屏、DPI、自动隐藏与 Explorer 重启由维护者执行和确认；自动化通过不能勾选这些人工项。

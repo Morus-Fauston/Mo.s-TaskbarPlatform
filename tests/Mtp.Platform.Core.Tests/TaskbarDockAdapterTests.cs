@@ -5,6 +5,16 @@ namespace Mtp.Platform.Core.Tests;
 
 public sealed class TaskbarDockAdapterTests
 {
+    private sealed class UnusedProbeAdapter : IExplorerTaskbarEmbedAdapter
+    {
+        public event EventHandler? Lost { add { } remove { } }
+        public event EventHandler? Detached { add { } remove { } }
+        public ExplorerTaskbarProbeLifecycle Lifecycle => ExplorerTaskbarProbeLifecycle.Detached;
+        public CoreResult<ExplorerTaskbarProbeReport> TryEmbed(HostComponentDisplayModel component, ExplorerTaskbarProbeRequest request) =>
+            throw new InvalidOperationException("This display test must not invoke the Explorer probe.");
+        public CoreResult<bool> Detach() => CoreResult<bool>.Success(true);
+    }
+
     [Theory]
     [InlineData(TaskbarVisibility.FullScreen)]
     [InlineData(TaskbarVisibility.TaskbarHidden)]
@@ -122,7 +132,7 @@ public sealed class TaskbarDockAdapterTests
             return window;
         });
         var dock = new IndependentDockWindowController(display, adapter);
-        var probe = new ExplorerTaskbarProbeController(display, new Win32ExplorerTaskbarEmbedAdapter(() => 1), dock);
+        var probe = new ExplorerTaskbarProbeController(display, new UnusedProbeAdapter(), dock);
         using var actions = new HostDisplayActionController(display, dock, probe);
         Assert.True(actions.SetVisibility(identity, true).IsSuccess);
         Assert.True(dock.State.IsOpen);

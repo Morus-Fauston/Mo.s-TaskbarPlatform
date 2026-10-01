@@ -15,6 +15,11 @@ namespace Mtp.Host;
 public sealed class DeclarationValidator
 {
     public const int MaximumJsonSizeInBytes = 1024 * 1024;
+    public const int MaximumIdLength = 256;
+    public const int MaximumFeatureGroups = 64;
+    public const int MaximumEntriesPerKind = 128;
+    public const int MaximumActionSlots = 32;
+    public const int MaximumNodes = 4096;
 
     private static readonly JsonSerializerOptions jsonOptions = new()
     {
@@ -37,6 +42,12 @@ public sealed class DeclarationValidator
         if (declaration.FeatureGroups is null || declaration.FeatureGroups.Count == 0)
         {
             return Failure("required_entry_missing", "At least one feature group is required.", "featureGroups");
+        }
+
+        var remainingNodes = MaximumNodes - 1;
+        if (!ConsumeNodes(declaration.FeatureGroups.Count, MaximumFeatureGroups, ref remainingNodes))
+        {
+            return BudgetFailure("featureGroups");
         }
 
         var applicationIdentity = new StableIdentity(applicationId);
@@ -71,6 +82,12 @@ public sealed class DeclarationValidator
                     featurePath);
             }
 
+            if (!ConsumeNodes(feature.Components.Count, MaximumEntriesPerKind, ref remainingNodes) ||
+                !ConsumeNodes(feature.TaskbarFlyouts.Count, MaximumEntriesPerKind, ref remainingNodes))
+            {
+                return BudgetFailure(featurePath);
+            }
+
             var featureIdentity = applicationIdentity.CreateChild(featureGroupId);
             var components = new List<Component>(feature.Components.Count);
             var entryIds = new HashSet<StableId>();
@@ -98,6 +115,7 @@ public sealed class DeclarationValidator
                     component.ActionSlots,
                     featureIdentity.CreateChild(componentId),
                     $"{componentPath}.actionSlots",
+                    ref remainingNodes,
                     out var actionSlots,
                     out var actionError))
                 {
@@ -135,6 +153,7 @@ public sealed class DeclarationValidator
                     flyout.ActionSlots,
                     flyoutIdentity,
                     $"{flyoutPath}.actionSlots",
+                    ref remainingNodes,
                     out var actionSlots,
                     out var actionError))
                 {
@@ -188,6 +207,13 @@ public sealed class DeclarationValidator
         out StableId id,
         out StructuredError? error)
     {
+        if (value?.Length > MaximumIdLength)
+        {
+            id = default;
+            error = new StructuredError("declaration_budget_exceeded", "A declaration ID exceeds the length limit.", path);
+            return false;
+        }
+
         try
         {
             id = new StableId(value!);
@@ -206,6 +232,7 @@ public sealed class DeclarationValidator
         IReadOnlyList<ActionSlotDeclaration>? declarations,
         StableIdentity parent,
         string path,
+        ref int remainingNodes,
         out IReadOnlyList<ActionSlot> actionSlots,
         out StructuredError? error)
     {
@@ -213,6 +240,13 @@ public sealed class DeclarationValidator
         {
             actionSlots = Array.Empty<ActionSlot>();
             error = new StructuredError("required_entry_missing", "At least one action slot is required.", path);
+            return false;
+        }
+
+        if (!ConsumeNodes(declarations.Count, MaximumActionSlots, ref remainingNodes))
+        {
+            actionSlots = Array.Empty<ActionSlot>();
+            error = BudgetFailure(path).Error;
             return false;
         }
 
@@ -249,6 +283,20 @@ public sealed class DeclarationValidator
         error = null;
         return true;
     }
+
+    private static bool ConsumeNodes(int count, int collectionLimit, ref int remainingNodes)
+    {
+        if (count < 0 || count > collectionLimit || count > remainingNodes)
+        {
+            return false;
+        }
+
+        remainingNodes -= count;
+        return true;
+    }
+
+    private static CoreResult<ValidatedApplicationDeclaration> BudgetFailure(string path) =>
+        Failure("declaration_budget_exceeded", "The declaration exceeds its collection or total node budget.", path);
 
     private static CoreResult<ValidatedApplicationDeclaration> Failure(string code, string message, string? path) =>
         CoreResult<ValidatedApplicationDeclaration>.Failure(new StructuredError(code, message, path));

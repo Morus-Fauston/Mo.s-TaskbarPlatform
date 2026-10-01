@@ -6,6 +6,21 @@ namespace Mtp.Platform.Core.Tests;
 
 public sealed class ExplorerProbeNativeCleanupTests
 {
+    [Fact]
+    public void DestroyedNativeHandleDoesNotLeaveAnUnclosableOwnedResource()
+    {
+        using var child = new HiddenWindow();
+        var owner = new ExplorerProbeWindowOwner(new Win32ExplorerTaskbarEmbedAdapter.NativeExplorerWindowOperations());
+        owner.TakeOwnership(child);
+        child.Dispose();
+        child.CloseError = new InvalidOperationException("Native window was destroyed before WinUI Closed");
+        Assert.False(Native.IsWindow(child.Handle));
+        var result = owner.Cleanup();
+        Assert.True(result.IsSuccess, result.Error?.ToString());
+        Assert.False(owner.HasResource);
+        Assert.False(owner.IsCleanupPending);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

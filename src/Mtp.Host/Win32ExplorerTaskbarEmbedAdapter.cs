@@ -126,6 +126,12 @@ internal sealed class ExplorerProbeWindowOwner
         }
         catch (Exception exception)
         {
+            if (!ReferenceEquals(resource, current) || (handle != 0 && !operations.IsWindow(handle)))
+            {
+                ReleaseIfCurrent(current);
+                return CoreResult<bool>.Success(true);
+            }
+
             return CleanupFailure(
                 "explorer_probe_close_failed",
                 "The probe window could not be closed.",
@@ -593,12 +599,12 @@ public sealed class Win32ExplorerTaskbarEmbedAdapter : IExplorerTaskbarEmbedAdap
             RuntimeInformation.ProcessArchitecture.ToString(),
             ReadDisplayCount(),
             dpi,
-            taskbarClientSize,
-            taskbarScreenRect,
+            new ProbePixelSize(taskbarClientSize.Width, taskbarClientSize.Height),
+            new PixelRect(taskbarScreenRect.X, taskbarScreenRect.Y, taskbarScreenRect.Width, taskbarScreenRect.Height),
             trayLeftEdgeClientX,
             target.AnchorKind,
-            target.ClientRect,
-            embeddedScreenRect,
+            new PixelRect(target.ClientRect.X, target.ClientRect.Y, target.ClientRect.Width, target.ClientRect.Height),
+            new PixelRect(embeddedScreenRect.X, embeddedScreenRect.Y, embeddedScreenRect.Width, embeddedScreenRect.Height),
             steps.ToArray());
         return CoreResult<ExplorerTaskbarProbeReport>.Success(report);
     }

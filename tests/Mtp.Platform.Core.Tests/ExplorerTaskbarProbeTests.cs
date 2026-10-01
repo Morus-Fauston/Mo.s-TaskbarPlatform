@@ -2,7 +2,6 @@ using System;
 using System.Linq;
 using Mtp.Host;
 using Mtp.Platform.Core;
-using Windows.Graphics;
 
 namespace Mtp.Platform.Core.Tests;
 
@@ -394,12 +393,12 @@ public sealed class ExplorerTaskbarProbeTests
             "X64",
             1,
             96,
-            new SizeInt32(1920, 48),
-            new RectInt32(0, 1032, 1920, 48),
+            new ProbePixelSize(1920, 48),
+            new PixelRect(0, 1032, 1920, 48),
             1600,
-            ExplorerTaskbarProbePlacement.TrayNotifyAnchor,
-            new RectInt32(1352, 4, 240, 40),
-            new RectInt32(1352, 1036, 240, 40),
+            "tray_notify_window",
+            new PixelRect(1352, 4, 240, 40),
+            new PixelRect(1352, 1036, 240, 40),
             new[] { new ExplorerTaskbarProbeStep("find_taskbar", true, null) });
 
         private static ProbeHarness Create(
