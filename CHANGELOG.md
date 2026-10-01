@@ -1,5 +1,69 @@
 # Changelog
 
+## v0.1.0-alpha.10 (2026-10-01 20:20)
+
+### 05F WinUI 内容岛任务栏承载最小验证
+
+- **验证目标**：确认“显式自建 Win32 宿主并直接承载 WinUI 内容岛，能在保持原生呈现与低开销的同时取得所需的任务栏同步”这一路线成立。窗口关系为 MTP 自有父级或显式选择的 Explorer 任务栏 HWND → 同线程创建的 Win32 宿主 H → `DesktopChildSiteBridge` 子 HWND → `DesktopWindowXamlSource` 承载的真实 XAML 树。普通 WinUI `Window` 内部同样使用 DWXS，本次改变的是外层宿主与初始化路径。
+- **实现落点**：新增 `TaskbarIslandLab`，分 `Logic`（纯逻辑）、`Windows`（宿主适配器）、`Tests`（专属测试）三层。所有 HWND、Win32 调用、窗口父链与 UIA 诊断留在 Windows 适配器内，不向 Core、Contracts 或接入应用暴露窗口对象。默认入口只创建本进程自有父窗口，不枚举或绑定 Explorer、不抢前台。
+- **原生渲染链路**：内容走 WinUI 原生渲染，不含逐帧 `RenderTargetBitmap` / `GetPixels` / `UpdateLayeredWindow`、截图读回或整窗位图复制。诊断截图只作独立取证，不参与显示链路或性能计时。
+- **配对性能测量**：提供 `Measure-Pairs.ps1`，以 `empty` / `top-level` / `owned` 三种模式在 0 / 1 / 30 / 60 Hz 下串行采样，记录请求更新数与实际内容更新数、阶段时长、进程 CPU 单核与整机口径、私有内存、工作集与线程句柄变化。30 Hz 可见动态阶段实际运行 600 秒，实际更新约 18,170 次；Explorer 父级三次独立采样单核口径 6.34%–6.74%，整机约 0.26%–0.28%（24 逻辑处理器）。GPU、唤醒/上下文切换与真实呈现帧率按工具契约记为未测。
+- **Popup 定位修复**：现象是高于 56 DIP 内容岛的 Popup 在右下屏边只露出一部分。根因是固定偏移 `(200,44)` 与默认根边界约束共同造成裁剪。修复为保留原生 Popup、解除其根边界约束，并以 `+1` 为锚点优先向上弹出。修复前同一最终回归断言在屏边失败，修复后 owned/verify 28/28 通过。
+- **脚本入口修复**：现象是 `Check-ProcessBoundaries.ps1` 对 Windows PowerShell 子进程读出错误退出码，把非法参数场景记为脚本检查失败。根因是启动子进程的方式。修复为 `ProcessStartInfo` + `Process.Start`，`Run.ps1` 同类入口一并修正；脚本 BOM 与 JSON UTF-8 读取同时补齐。故意把副本退出码改为 99 后，脚本正确报告 414/415 与退出 1。
+- **交付材料**：新增 `人工验收手册.md`、中文菜单 `Demo.ps1` 与双击入口 `Start-Demo.cmd`，每轮自动新建证据目录并复制人工观察表。Explorer 目标仍须显式选择屏幕与父级，重启仍由人执行；工具不自动选择 Explorer、不重启外壳、不标记人工验收完成。
+
+### 验证
+
+- **自动化测试**：Release 配置下 `dotnet test Mtp.sln --configuration Release --no-restore` 通过，共 220 个测试成功，0 个失败，0 个跳过；`TaskbarIslandLab.Tests` 14 个测试全部通过。
+- **构建与格式**：Release 构建 0 个警告、0 个错误；主解决方案与工具 / Logic / Tests 四项 `dotnet format --verify-no-changes` 通过，`git diff --check` 通过。
+- **真实自有窗口集成**：`Run.ps1` 自有父级夹具通过，19 条断言全部成功，12 条清理记录均为 `Closed` 且错误数组为空，host/bridge/ownedParent 均不再存活。覆盖 XAML 树加载、布局与客户区尺寸、宿主/bridge/DPI 身份、隐藏恢复、尺寸变更、关闭后拒绝更新、过期回调隔离、父关系丢失、父级先销毁、显式重建，以及 host/source/attach 三处初始化中断清理。
+- **配对证据回读**：`Verify-PairedEvidence.ps1` 对固定配对矩阵回读 415 项检查全部通过，覆盖 14 次运行、70 个阶段；该检查验证证据一致性，不是单元测试数或性能合格判断。
+- **人工验收**：输入/焦点/键盘、主题、全屏、自动隐藏反向等项已确认通过；透明色刷 alpha 1 / 0.5 / 0 三档在笔记本内屏确认不透、半透、全透；Popup 完整显示、按钮关闭、点外关闭与退出无残留复验通过；Explorer 重建取得安全失效与显式新建日志。自动化清单 8/8。
+
+### 未通过、后置与未覆盖
+
+- **材质未通过**：Acrylic 在当前实验下视觉未通过。多轮对照（激活配置、去蓝色背景、Thin/低浓度）均未恢复可见效果，不能把激活策略当成已确认完整根因；Acrylic / Mica 固体底问题列为后续待修复事项，本轮停止参数试错。该结论不修改正式材质契约。
+- **已知低优先级限制**：任务栏背景可透出，但 FluentFlyout 在重叠区域时隐时现；FFO 位于 MTP 上方时透明可实现，降为低优先级，不探测或修改第三方进程。
+- **待人工保留项**：真实隐藏成本补采暂缓，现有隐藏阶段数据为工具侧采样，不替代人工隐藏成本验收；长期内存与句柄变化、GPU / 唤醒 / 呈现 FPS、外接 4K / 跨屏 / 混合 DPI、UIA 详细取证均保留为未覆盖。内存调查发现 GC 保留提交容量与 ComWrappers 容量增长，未发现窗口或内容对象数量累积，不写成零泄漏。
+- **未覆盖范围**：本版本只代表已测单屏场景；多屏组合、混合 DPI、其他 Windows / GPU、独占全屏及 HDR 按实际覆盖填写，不得标记为已验证。
+
+### 范围边界
+
+- **不启用旧实验**：不合并或重新启用 `experiment/taskbar-embed` 与 `codex/05e-taskbar-visibility-probe` 两条已封存分支，不修改其历史结论。
+- **单切片**：只做一个选定屏幕、底部任务栏、一个 `260 × 56 DIP` 控件组；不交付多组件布局、多屏正式适配、完整设置壳、业务服务、SDK/Broker 或真实系统动作。
+- **不规避**：不改用 WPF、自绘产品 UI 或新的渲染进程规避失败，不通过改变整个 Host 的 DPI 感知模式掩盖跨进程重置。
+
+### 文件变更表
+
+| 文件 | 变更 |
+|:-----|:------|
+| `tools/TaskbarIslandLab/Program.cs` | **新增** — 实验入口与模式 / 场景 / 参数分发 |
+| `tools/TaskbarIslandLab/Windows/IslandHost.cs` | **新增** — 同线程宿主的 DWXS 生命周期、bridge 布局与清理 |
+| `tools/TaskbarIslandLab/Windows/NativeWindows.cs` | **新增** — 原生窗口与父链调用 |
+| `tools/TaskbarIslandLab/Logic/IslandLifetime.cs` | **新增** — 实例生命周期与失效判定纯逻辑 |
+| `tools/TaskbarIslandLab/Logic/LabOptions.cs` | **新增** — 运行选项与参数校验纯逻辑 |
+| `tools/TaskbarIslandLab/Logic/Measurement.cs` | **新增** — 阶段计时与更新计数纯逻辑 |
+| `tools/TaskbarIslandLab/LabContent.xaml` / `.cs` | **新增** — 真实 WinUI 控件树与期望结构断言 |
+| `tools/TaskbarIslandLab/App.xaml` / `app.manifest` | **新增** — 应用定义与清单 |
+| `tools/TaskbarIslandLab/RunLog.cs` / `ResourceSampler.cs` | **新增** — 事件日志与资源采样 |
+| `tools/TaskbarIslandLab/Tests/LifetimeTests.cs` | **新增** — 生命周期与清理失败保留所有权测试 |
+| `tools/TaskbarIslandLab/Tests/MeasurementTests.cs` | **新增** — 阶段计时与计数测试 |
+| `tools/TaskbarIslandLab/Tests/OptionsTests.cs` | **新增** — 参数校验测试 |
+| `tools/TaskbarIslandLab/Tests/TaskbarIslandLab.Tests.csproj` | **新增** — 工具专属测试工程 |
+| `tools/TaskbarIslandLab/Run.ps1` / `Stop.ps1` / `Demo.ps1` / `Start-Demo.cmd` | **新增** — 运行、停止与中文演示入口 |
+| `tools/TaskbarIslandLab/Measure-Pairs.ps1` / `Summarize.ps1` | **新增** — 配对采样与汇总 |
+| `tools/TaskbarIslandLab/Tests/Check-ProcessBoundaries.ps1` / `Verify-PairedEvidence.ps1` | **新增** — 进程边界与配对证据回读验收脚本 |
+| `tools/TaskbarIslandLab/TaskbarIslandLab.csproj` | **新增** — 实验工具工程 |
+| `tools/TaskbarIslandLab/Backdrop.html` | **新增** — 透明/不透明对照背景 |
+| `tools/TaskbarIslandLab/README.md` | **新增** — 构建、运行、参数与证据边界说明 |
+| `tools/TaskbarIslandLab/人工验收手册.md` | **新增** — 逐项操作、判定、失败取证与回传格式 |
+| `tools/TaskbarIslandLab/observations.template.md` | **新增** — 人工观察记录模板 |
+| `CONTEXT.md` | **修改** — 新增「Windows 原生性」术语 |
+| `CHANGELOG.md` | **修改** — 记录本版本 |
+| `CHANGELOG.txt` | **修改** — 记录本版本 |
+
+---
+
 ## v0.1.0-alpha.9 (2026-09-12 15:51)
 
 ### 05A 单屏右贴靠任务栏组件

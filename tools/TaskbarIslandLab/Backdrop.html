@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<title>05F 动态背景诊断夹具</title>
+<style>
+html,body{margin:0;height:100%;overflow:hidden;background:#101010;color:white;font:20px system-ui}
+.stripe{position:absolute;inset:-100% -100%;background:repeating-linear-gradient(90deg,#e53935 0 160px,#00897b 160px 320px,#1e88e5 320px 480px,#fdd835 480px 640px);animation:shift 8s linear infinite}
+@keyframes shift{to{transform:translateX(640px)}}
+p{position:relative;margin:40px;background:#000c;display:inline-block;padding:20px}
+</style>
+<div class="stripe"></div>
+<p>05F 人工透明正反例背景 · F11 全屏 / 恢复<br>先确认 alpha=1 不透明，再比较 0 / 0.5。不要在性能采样时运行本动画。</p>
+</html>

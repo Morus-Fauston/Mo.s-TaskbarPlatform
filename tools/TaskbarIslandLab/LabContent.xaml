@@ -1,0 +1,23 @@
+<UserControl x:Class="TaskbarIslandLab.LabContent"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Width="260" Height="56">
+  <Grid x:Name="Surface" Padding="4,0" RowSpacing="0">
+    <Grid.RowDefinitions><RowDefinition Height="32"/><RowDefinition Height="24"/></Grid.RowDefinitions>
+    <Grid ColumnSpacing="4">
+      <Grid.ColumnDefinitions><ColumnDefinition Width="72"/><ColumnDefinition Width="70"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+      <TextBlock x:Name="Counter" Text="0" VerticalAlignment="Center" AutomationProperties.Name="实验计数" />
+      <Button x:Name="ActionButton" Grid.Column="1" Content="+1" Padding="8,0" MinHeight="28" Click="Increment" AutomationProperties.Name="增加本地计数">
+        <Button.ContextFlyout><MenuFlyout><MenuFlyoutItem Text="切换最小 Popup" Click="TogglePopup"/><MenuFlyoutItem Text="关闭实验" Click="RequestStop"/></MenuFlyout></Button.ContextFlyout>
+      </Button>
+      <ToggleSwitch x:Name="Switch" Grid.Column="2" MinWidth="0" OffContent="" OnContent="" Toggled="Toggled" AutomationProperties.Name="本地开关"/>
+    </Grid>
+    <Slider x:Name="ValueSlider" Grid.Row="1" Minimum="0" Maximum="100" Value="25" MinHeight="20" Margin="0,-8,0,-8" AutomationProperties.Name="本地滑块" ValueChanged="SliderChanged"/>
+    <Popup x:Name="ProbePopup" IsLightDismissEnabled="True" ShouldConstrainToRootBounds="False"
+        PlacementTarget="{x:Bind ActionButton}" DesiredPlacement="Top">
+      <Border Background="{ThemeResource AcrylicBackgroundFillColorDefaultBrush}" Padding="12" BorderThickness="1" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}">
+        <StackPanel><TextBlock x:Name="PopupLabel" Text="Popup 越界与焦点夹具"/><Button x:Name="PopupCloseButton" Content="关闭 Popup" Click="TogglePopup"/></StackPanel>
+      </Border>
+    </Popup>
+  </Grid>
+</UserControl>
