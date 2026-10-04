@@ -1,9 +1,49 @@
 using Mtp.Host;
+using System.Reflection;
+using System.Runtime.InteropServices;
 
 namespace Mtp.Platform.Core.Tests;
 
 public sealed class TaskbarEnvironmentMonitorTests
 {
+    [Fact]
+    public void ForegroundLocationChangesDoNotRefreshTaskbarOrConsole()
+    {
+        var foreground = GetForegroundWindow();
+        Assert.NotEqual(0, foreground);
+        var queue = new Queue<Action>();
+        var refreshes = 0;
+        using var monitor = new TaskbarEnvironmentMonitor(action => { queue.Enqueue(action); return true; }, () => refreshes++, () => 0);
+        var onEvent = typeof(TaskbarEnvironmentMonitor).GetMethod("OnEvent", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        for (var i = 0; i < 1000; i++)
+        {
+            onEvent.Invoke(monitor, [nint.Zero, 0x800Bu, foreground, 0, 0, 0u, 0u]);
+            while (queue.TryDequeue(out var action)) action();
+        }
+        Assert.Equal(0, refreshes);
+    }
+
+    [Theory]
+    [InlineData(3u)]
+    [InlineData(0x8002u)]
+    [InlineData(0x8003u)]
+    [InlineData(0x800Bu)]
+    public void TaskbarEventsStillRefresh(uint kind)
+    {
+        var queue = new Queue<Action>();
+        var refreshes = 0;
+        nint taskbar = 123;
+        using var monitor = new TaskbarEnvironmentMonitor(action => { queue.Enqueue(action); return true; }, () => refreshes++, () => taskbar);
+        var onEvent = typeof(TaskbarEnvironmentMonitor).GetMethod("OnEvent", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        onEvent.Invoke(monitor, [nint.Zero, kind, taskbar, 0, 0, 0u, 0u]);
+        Assert.Single(queue);
+        queue.Dequeue()();
+        Assert.Equal(1, refreshes);
+    }
+
+    [DllImport("user32.dll")]
+    private static extern nint GetForegroundWindow();
+
     [Fact]
     public void BurstsCoalesceAndQueuedWorkReadsCurrentStateThenStopsAfterShutdown()
     {

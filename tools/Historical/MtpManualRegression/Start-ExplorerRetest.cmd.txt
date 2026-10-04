@@ -1,0 +1,4 @@
+@echo off
+setlocal
+call "%~dp0Start-ManualRegression.cmd" -ExplorerOnly -SkipAutomatedTests -SkipContentIsland %*
+exit /b %ERRORLEVEL%

@@ -4,6 +4,28 @@ namespace Mtp.Platform.Core.Tests;
 
 public sealed class ExplorerProbeWindowOwnerTests
 {
+    [Fact]
+    public void DestroyedHandleIsReleasedWithoutCallingIntoDeadWinUiWindow()
+    {
+        var log = new List<string>();
+        var resource = new RecordingResource(log)
+        {
+            CloseError = new InvalidOperationException("Calling WinUI Close here can cause an uncatchable native access violation."),
+        };
+        var owner = Owned(new RecordingOperations(log) { WindowExists = false }, resource);
+        owner.MarkReparented();
+        var releases = 0;
+        owner.Released += (_, _) => releases++;
+
+        Assert.True(owner.Cleanup().IsSuccess);
+        Assert.Empty(log);
+        Assert.False(owner.HasResource);
+        Assert.False(owner.IsCleanupPending);
+        Assert.Equal(1, releases);
+        Assert.True(owner.Cleanup().IsSuccess);
+        Assert.Equal(1, releases);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

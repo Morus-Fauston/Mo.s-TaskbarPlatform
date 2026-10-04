@@ -1,5 +1,85 @@
 # Changelog
 
+## v0.2.0 (2026-10-05 00:42)
+
+### 二期期末收口与正式内容岛承载迁移
+
+- **06 期末收口**：二期期末验收票据 06 于 2026-10-05 由维护者确认收口，原话“没啥问题。二期赶紧收口吧。”；11 项 Checklist 全部完成，票据登记 `completed`。首轮（2026-10-04）阶段结论为不通过并保留 4 项，本次是维护者接受遗留与证据边界后的阶段收口，不是 E1 修复复验。
+- **E1 未修复保留**：现象是普通 Acrylic 案例的事件日志写入失败；本轮未修复，作为已知遗留留档，维护者接受其不阻塞二期收口。不得将日志缺失或原失败验证写成修复通过，后续排查入口见二期遗留清单。
+- **声明契约口径修正**：本票原流程要求“无效声明重启后仍保留最后有效声明”，与 02 已验收的冷启动行为冲突；按 02 原契约更正为“运行中拒绝坏声明保留当前有效快照，坏文件冷启动显示结构化错误、不显示半成品”，且不新增跨重启声明缓存。
+- **接受范围**：按“没啥问题”的总体反馈接受当前 Host 使用结果，不再以补交逐项记录作为结票前置；未回传的具体操作、次数与环境不推定已实测。已完成 Acrylic 直接确认与旧票人工记录保留。
+- **不自动进入三期**：二期按上述边界完成，不等于全部缺陷消失或全环境兼容；三期仍须单独确认范围并授权建票与开工。
+
+### 05M Host 测试平台重构与内容岛正式迁移
+
+- **正式承载路线落地**：将声明显示链路接入实际内容岛宿主，采用自建 Win32 宿主 + WinUI 内容岛，不再经过旧独立贴靠窗口与 Explorer 探针控制器。无法嵌入时报错且不回退独立贴靠。
+- **Host 主窗口改造**：`MainWindow` 只保留导航、绑定与轻量事件转发；显示协调、测试场景、会话状态、采样与证据导出按职责分离，新增 `HostTestController`、`HostConsoleController`、`HostEvidenceIdentity`、`DisplaySelectionBinding` 与 `Islands/` 内容岛宿主层。
+- **过期入口清理**：移除与无回退规则冲突的“停止探针并恢复独立贴靠”等正式控制台入口与回退装配；旧“模拟任务栏不可用”统一为明确的测试会话失败注入并提供清除操作。
+- **生产代码退役**：独立贴靠窗口、Explorer 嵌入探针与透明绘制实现移出生产；保留价值部分迁入 `tests/Mtp.Host.Legacy.Runtime` 与 `tests/Mtp.Host.Legacy.Windows` 作为历史夹具，`Mtp.sln` 一并调整对应装配。
+- **测试平台入口**：提供启动测试、观察结果、停止测试与导出逐项记录的操作入口。测试夹具可显示本地计数、按钮、开关、滑块和 Popup，仅为开发期夹具，不代表 SDK/Broker、业务动作、公开控件模板或完整浮窗体系。
+- **独立内容岛预览**：追加宿主内显式可拖动内容岛预览，复用 Host 内容与宿主，支持真实控件、参数应用、系统标题栏拖动、与案例互斥及退出清理，供在不同背景上观察透明样式；不作为失败回退。
+- **同一宿主路径**：测试与正常最小组件使用同一 Host 宿主和生命周期服务，不复制“仅供测试”的内容岛冒充实际路径；独立实验 exe 不作为 Host 显示依赖。
+- **渲染与边界**：内容由 WinUI 原生渲染，不引入逐帧位图读回和整窗复制；HWND、dispatcher、Explorer 与原生资源留在 Windows 适配器，Runtime/Core/Contracts 保持原有边界。
+
+### 工具与历史归档
+
+- **TransparencyLab 归档**：`tools/TransparencyLab` 整体迁入 `tools/Historical/TransparencyLab`，不再作为当前工具入口。
+- **手工回归启动器归档**：旧人工回归启动脚本迁入 `tools/Historical/MtpManualRegression`，正文保留为 `.txt`。
+- **历史入口说明**：新增 `tools/README.md` 与 `tools/Historical/README.md`，明确历史工具只作追溯、不作当前执行入口。
+- **TaskbarIslandLab 调整**：更新 `README.md`、`Demo.ps1`、`Run.ps1`、配对证据回读脚本与人工验收手册，保持独立性能对照定位。
+
+### 文档与决策
+
+- **AGENTS.md**：新增任务栏组件正式承载路线条款、第三至第五期连续执行例外、测试与验证补充，以及票据正文与证据目录约定。
+- **CONTEXT.md**：更新术语与承载路线，随内容岛正式路线同步。
+- **决策落点**：记录正式承载路线、当前 Host 测试平台与补验入口、三至五期连续执行三项决策。
+
+### 文件变更表
+
+| 文件 | 变更 |
+|:-----|:------|
+| `README.md` | **新增** — 仓库根入口说明 |
+| `AGENTS.md` | 增正式承载路线、三至五期连续执行例外、测试与验证补充、票据证据目录约定 |
+| `CONTEXT.md` | 同步术语与内容岛正式承载路线 |
+| `Mtp.sln` | 调整工程装配：移除生产探针与独立贴靠窗口，加入 Host.Runtime 分层与 Legacy 夹具 |
+| `src/Mtp.Host.Runtime/HostTestConfiguration.cs` | **新增** — 测试会话配置 |
+| `src/Mtp.Host.Runtime/HostTestRun.cs` | **新增** — 测试运行与阶段状态 |
+| `src/Mtp.Host.Runtime/IslandDisplaySession.cs` | **新增** — 内容岛显示会话 |
+| `src/Mtp.Host.Runtime/TaskbarDockEnvironment.cs` | **新增** — 任务栏停靠环境纯规则 |
+| `src/Mtp.Host.Runtime/`（删除 6 个 + 修改 csproj） | **删除** — 旧探针、独立贴靠与透明绘制生产实现退役 |
+| `src/Mtp.Host/App.xaml.cs` | 装配内容岛主路径，替代旧探针/贴靠控制器 |
+| `src/Mtp.Host/MainWindow.xaml`、`MainWindow.xaml.cs` | 改为普通 WinUI 测试控制台，只保留导航、绑定与轻量事件转发 |
+| `src/Mtp.Host/HostTestController.cs`、`HostConsoleController.cs` | **新增** — 测试场景、会话状态与操作入口 |
+| `src/Mtp.Host/HostEvidenceIdentity.cs`、`DisplaySelectionBinding.cs` | **新增** — 证据身份标识与目标显示器绑定 |
+| `src/Mtp.Host/Islands/`（7 个） | **新增** — 内容岛宿主、内容、显示适配器、生命周期、预览窗口、原生窗口与无激活 Acrylic 背景 |
+| `src/Mtp.Host/`（删除 10 个 .cs/.xaml） | **删除** — 探针与独立贴靠窗口从生产移除 |
+| `tests/Mtp.Host.Legacy.Runtime/`（7 个） | **新增** — 历史探针与独立贴靠纯逻辑夹具 |
+| `tests/Mtp.Host.Legacy.Windows/`（11 个） | **新增** — 历史探针与独立贴靠 Windows 夹具 |
+| `tests/Mtp.Host.WindowTests/`（新增 9 个、修改 4 个） | 新增控制台、内容岛、预览、显示器拖动回归与证据校验入口 |
+| `tests/Mtp.Host.Windows.Tests/`（新增 1 个、修改 4 个） | 新增内容岛原生测试，调整探针资源与环境监测测试 |
+| `tests/Mtp.Platform.Core.Tests/`（新增 2 个、修改 csproj） | 新增 Host 测试运行与内容岛显示策略纯规则测试 |
+| `tests/README.md` | 更新测试层与证据边界说明 |
+| `tools/Historical/**`（19 个）、`tools/README.md` | **新增** — TransparencyLab 与旧手工回归启动器归档，明确历史工具定位 |
+| `tools/TransparencyLab/**`（13 个） | **删除** — 整体迁入 `tools/Historical/TransparencyLab` |
+| `tools/.gitignore`、`tools/TaskbarIslandLab/**`（6 个） | 更新忽略规则与独立对照工具入口 |
+
+### 验证
+
+- `dotnet build Mtp.sln -c Release --no-restore`：0 警告、0 错误。
+- `dotnet test Mtp.sln -c Release --no-restore`：纯规则 204/204、Windows 71/71，通过且无跳过。
+- `TaskbarIslandLab.Tests`：14/14 通过。
+- `dotnet build Mtp.sln -c Debug --no-restore` 后 `dotnet format Mtp.sln --verify-no-changes`、`git diff --check` 均通过。
+
+### 验收边界
+
+- 内容岛路线已采纳，但不据此视为实现验收通过；05M 的实际结果与未覆盖项以票据为准。
+- 05D、05E 两条实验线保持封存为独立分支，不合并、不重新启用，不修改其历史结论。
+- E1（普通 Acrylic 案例事件日志写入失败）保留为未修复遗留，本次收口接受其不阻塞二期。
+- 多屏、混合 DPI、其他 Windows/GPU、独占全屏/HDR、长期资源稳定性、外部 UIA 与 Explorer 重启的自动化覆盖仍待人工或专用环境确认，不得标记为已验证。
+- 三期范围与实施授权独立确认，本版本不自动启动三期。
+
+---
+
 ## v0.1.0-alpha.11 (2026-10-02 02:53)
 
 ### 二期 06 验收前最后一轮遗留问题修复

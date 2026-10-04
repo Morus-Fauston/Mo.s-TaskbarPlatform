@@ -1,0 +1,220 @@
+﻿param(
+    [switch]$SkipAutomatedTests,
+    [switch]$SkipContentIsland,
+    [switch]$ExplorerOnly,
+    [switch]$CheckLauncher
+)
+
+if ($CheckLauncher) {
+    Write-Output 'MTP_LAUNCH_REACHED'
+    Write-Output '中文启动检查通过'
+    exit 0
+}
+
+$ErrorActionPreference = 'Continue'
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+Set-Location -LiteralPath $repoRoot
+$stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+$evidenceRoot = Join-Path $repoRoot ".scratch\二期开发\verification\manual-run-$stamp"
+$backupRoot = Join-Path $evidenceRoot 'preference-backup'
+$reportPath = Join-Path $evidenceRoot '人工回归报告.md'
+$hostExe = Join-Path $repoRoot 'src\Mtp.Host\bin\Release\net10.0-windows10.0.26100.0\Mtp.Host.exe'
+$hostDir = Split-Path -Parent $hostExe
+$preferenceDir = Join-Path $env:LOCALAPPDATA 'Mo.s-TaskbarPlatform'
+$demoCmd = Join-Path $repoRoot 'tools\TaskbarIslandLab\Start-Demo.cmd'
+$results = [ordered]@{}
+$notes = [ordered]@{}
+
+New-Item -ItemType Directory -Force -Path $evidenceRoot, $backupRoot | Out-Null
+
+function Add-ReportLine([string]$line = '') {
+    Add-Content -LiteralPath $reportPath -Value $line -Encoding UTF8
+}
+
+function Ask-Result([string]$id, [string]$question) {
+    while ($true) {
+        Write-Host ''
+        Write-Host $question -ForegroundColor Cyan
+        Write-Host '  [P] 通过   [F] 失败   [U] 未测/无法判断' -ForegroundColor DarkGray
+        $answer = (Read-Host '输入 P、F 或 U').Trim().ToUpperInvariant()
+        if ($answer -in @('P','F','U')) {
+            $results[$id] = switch ($answer) { 'P' { '通过' } 'F' { '失败' } default { '未测' } }
+            $notes[$id] = Read-Host '补充说明（可直接回车）'
+            return
+        }
+        Write-Host '请输入 P、F 或 U。' -ForegroundColor Yellow
+    }
+}
+
+function Invoke-LoggedCommand([string]$name, [string]$filePath, [string[]]$arguments) {
+    $log = Join-Path $evidenceRoot "$name.log"
+    Write-Host "正在执行 $name ..." -ForegroundColor Yellow
+    & $filePath @arguments *> $log
+    $exitCode = $LASTEXITCODE
+    $script:results["自动化_$name"] = if ($exitCode -eq 0) { '通过' } else { "失败（退出码 $exitCode）" }
+    Add-ReportLine "- $name：$($script:results["自动化_$name"])；日志：$log"
+}
+
+@'
+# MTP 二期 05G–05L 一键人工回归报告
+
+本报告由 `tools/MtpManualRegression/Start-ManualRegression.cmd` 生成。人工结果只记录维护者实际操作；脚本不会代替 Explorer 重启、视觉判断、多屏观察或内容岛体验。
+
+'@ | Set-Content -LiteralPath $reportPath -Encoding UTF8
+Add-ReportLine "- 开始时间：$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz')"
+Add-ReportLine "- 仓库：$repoRoot"
+Add-ReportLine "- 证据目录：$evidenceRoot"
+Add-ReportLine ''
+
+Write-Host '=== MTP 二期 05G–05L 一键回归 ===' -ForegroundColor Green
+Write-Host "报告会保存到：$reportPath" -ForegroundColor DarkGray
+Write-Host '先关闭正在运行的 MTP Host；不要删除或修改真实偏好。' -ForegroundColor Yellow
+Read-Host '准备好后按 Enter 开始'
+
+$oldHost = @(Get-Process -Name 'Mtp.Host' -ErrorAction SilentlyContinue)
+Add-ReportLine "- 启动前 Mtp.Host 进程数：$($oldHost.Count)"
+while ($oldHost.Count -gt 0) {
+    Write-Host '检测到 Mtp.Host 仍在运行。请先关闭它。' -ForegroundColor Red
+    Read-Host '关闭后按 Enter 继续'
+    $oldHost = @(Get-Process -Name 'Mtp.Host' -ErrorAction SilentlyContinue)
+}
+
+if (Test-Path -LiteralPath $preferenceDir) {
+    foreach ($name in @('display-preferences.json','taskbar-dock-preferences.json')) {
+        $source = Join-Path $preferenceDir $name
+        if (Test-Path -LiteralPath $source) {
+            Copy-Item -LiteralPath $source -Destination (Join-Path $backupRoot $name) -Force
+            Add-ReportLine "- 已备份每用户偏好：$source"
+        } else {
+            Add-ReportLine "- 每用户偏好不存在：$source"
+        }
+    }
+} else {
+    Add-ReportLine "- 每用户偏好目录不存在：$preferenceDir"
+}
+
+if (-not (Test-Path -LiteralPath $hostExe)) {
+    Write-Host '找不到 Release Host，先执行 Release 构建。' -ForegroundColor Yellow
+    if (Get-Command dotnet -ErrorAction SilentlyContinue) {
+        Invoke-LoggedCommand 'release-build' 'dotnet' @('build','Mtp.sln','-c','Release','--no-restore','/m:1','/nr:false')
+    } else {
+        $results['自动化_release-build'] = '未测（找不到 dotnet）'
+        Add-ReportLine '- release-build：未测（找不到 dotnet）'
+    }
+}
+
+if (-not $SkipAutomatedTests) {
+    if (Get-Command dotnet -ErrorAction SilentlyContinue) {
+        Invoke-LoggedCommand 'solution-tests' 'dotnet' @('test','Mtp.sln','-c','Release','--no-restore','/m:1','/nr:false')
+        $toolProject = Join-Path $repoRoot 'tools\TaskbarIslandLab\Tests\TaskbarIslandLab.Tests.csproj'
+        if (Test-Path -LiteralPath $toolProject) {
+            Invoke-LoggedCommand 'content-island-tests' 'dotnet' @('test',$toolProject,'-c','Release','--no-restore','/m:1','/nr:false')
+        }
+    } else {
+        $results['自动化_solution-tests'] = '未测（找不到 dotnet）'
+        Add-ReportLine '- solution-tests：未测（找不到 dotnet）'
+    }
+} else {
+    Add-ReportLine '- 自动化测试：按参数跳过'
+}
+
+if (-not $ExplorerOnly) {
+    Write-Host ''
+    Write-Host '05G 只需处置自动化已验证的输入边界，不需要破坏真实偏好文件。' -ForegroundColor DarkGray
+    Ask-Result '05G-输入边界' '接受非法 UTF-8/未知枚举拒绝、声明预算和最后有效快照的现有证据吗？'
+}
+
+if (-not (Test-Path -LiteralPath $hostExe)) {
+    Write-Host "仍找不到 Host：$hostExe" -ForegroundColor Red
+    Add-ReportLine '- Host 启动：未测（Release Host 不存在）'
+} else {
+    $hostItem = Get-Item -LiteralPath $hostExe
+    Add-ReportLine "- Host：$hostExe"
+    Add-ReportLine "- Host 修改时间：$($hostItem.LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss'))"
+    Add-ReportLine ('- Host DLL SHA-256：' + (Get-FileHash -LiteralPath (Join-Path $hostDir 'Mtp.Host.dll') -Algorithm SHA256).Hash)
+    Write-Host '正在启动 Release Host。' -ForegroundColor Green
+    $hostProcess = Start-Process -FilePath $hostExe -WorkingDirectory $hostDir -PassThru
+    Start-Sleep -Milliseconds 1200
+    Add-ReportLine "- Host 启动后进程状态：$((Get-Process -Id $hostProcess.Id -ErrorAction SilentlyContinue) -ne $null)"
+
+    Write-Host ''
+    Write-Host '现在按提示操作 Host 界面。脚本只负责记录你的判断。' -ForegroundColor Cyan
+    if (-not $ExplorerOnly) {
+        Write-Host '1) 先确认“显示组件”、目标显示器、间距；切换主屏/副屏再切回。' -ForegroundColor White
+        Read-Host '完成后按 Enter'
+        Ask-Result '05I-05J-Host显隐切屏' 'Host 显示、隐藏、目标显示器切换是否正常且没有崩溃？'
+        Ask-Result '05J-测试分层' '接受 Runtime 纯规则与 Windows 窗口测试分层，以及现有自动化证据吗？'
+    }
+
+    Write-Host ''
+    Write-Host '开启“显示组件”，选择此前能嵌入的主屏，取消“模拟任务栏不可用（失败注入）”。' -ForegroundColor White
+    Write-Host '2) 展开“实验探针”，点击“运行 Explorer 嵌入探针”。' -ForegroundColor White
+    Ask-Result '05H-首次嵌入' '首次探针是否已成功建立？失败或未测时将跳过重启步骤。'
+    if ($results['05H-首次嵌入'] -eq '通过') {
+        Write-Host '3) 保存工作，按 Ctrl+Shift+Esc，在任务管理器中重启“Windows 资源管理器”，等待任务栏回来。' -ForegroundColor White
+        Write-Host '4) 回到 Host，再点击一次“运行 Explorer 嵌入探针”。' -ForegroundColor White
+        Read-Host '完成后按 Enter'
+        Ask-Result '05H-再次嵌入' '旧探针是否无残留，且再次嵌入成功、Host 没有崩溃？'
+        if ($results['05H-再次嵌入'] -eq '通过') {
+            Write-Host '5) 点击“停止探针，恢复独立贴靠”。' -ForegroundColor White
+            Ask-Result '05H-停止恢复' '停止后是否恢复独立贴靠，且没有残留窗口、点击热区或 CleanupPending？'
+        }
+    }
+
+    if (-not $ExplorerOnly) {
+        Write-Host ''
+        Write-Host '5) 如条件允许，把整个 Release 输出目录复制到 C:\Program Files\MTP-Manual-Check。' -ForegroundColor White
+        Write-Host '6) 用普通用户运行复制目录内的 Mtp.Host.exe，确认无 UAC 提权且偏好仍写入每用户目录。' -ForegroundColor White
+        Write-Host '无法准备受保护目录时选择“未测”。' -ForegroundColor White
+        Read-Host '完成后按 Enter'
+        Ask-Result '05I-受保护目录' '普通用户从不可写程序目录启动、保存偏好并重启恢复是否正常？'
+    }
+
+    Write-Host ''
+    if ($ExplorerOnly) {
+        Write-Host '最后正常关闭 Host，观察是否有崩溃或窗口残留。' -ForegroundColor White
+        Ask-Result '05H-退出' 'Host 是否正常退出，没有崩溃或残留窗口？'
+    } else {
+        Write-Host '现在可以关闭 Host；脚本不会强制终止它。' -ForegroundColor DarkGray
+        Read-Host '关闭或保留 Host 后按 Enter'
+    }
+}
+
+if (-not $ExplorerOnly -and -not $SkipContentIsland -and (Test-Path -LiteralPath $demoCmd)) {
+    Write-Host ''
+    Write-Host '可选：启动独立内容岛实验工具。它不属于主程序，只用于 05K/05L 的实验观察。' -ForegroundColor Cyan
+    $runLab = (Read-Host '启动内容岛实验？输入 Y 启动，其他键跳过').Trim().ToUpperInvariant()
+    if ($runLab -eq 'Y') {
+        Start-Process -FilePath $demoCmd -WorkingDirectory (Split-Path -Parent $demoCmd)
+        Write-Host '请在内容岛实验菜单中操作；结束后回到此窗口。' -ForegroundColor Yellow
+        Read-Host '完成实验后按 Enter'
+        Ask-Result '05K-05L-内容岛实验' '内容岛实验中，材质/Popup/键盘焦点/空白点击/外屏等你实际检查的项目是否符合预期？'
+    } else {
+        $results['05K-05L-内容岛实验'] = '未测'
+        $notes['05K-05L-内容岛实验'] = '本轮跳过独立内容岛实验'
+    }
+} elseif (-not $ExplorerOnly) {
+    $results['05K-05L-内容岛实验'] = '未测'
+    $notes['05K-05L-内容岛实验'] = '未找到实验工具或按参数跳过'
+}
+
+Add-ReportLine '## 结果'
+foreach ($key in $results.Keys) {
+    $note = $notes[$key]
+    if ([string]::IsNullOrWhiteSpace($note)) { $note = '无补充说明' }
+    Add-ReportLine "- **$key**：$($results[$key])；$note"
+}
+Add-ReportLine ''
+Add-ReportLine '## 偏好备份'
+Add-ReportLine "- 备份目录：$backupRoot"
+Add-ReportLine '- 原始偏好未被脚本修改；请勿把备份中的私人 JSON 提交到仓库。'
+Add-ReportLine ''
+Add-ReportLine '## 解释边界'
+Add-ReportLine '- 副屏独立贴靠是当前已知降级，不能写成副屏内容岛嵌入通过。'
+Add-ReportLine '- 独立内容岛实验工具尚未接入主程序；实验结果不能写成主程序已采用内容岛方案。'
+Add-ReportLine '- 05G/05H/05I/05J/05K/05L 的票据状态仍由维护者依据 Checklist 和本报告处置。'
+
+Write-Host ''
+Write-Host "完成。报告：$reportPath" -ForegroundColor Green
+Write-Host '把报告中的“结果”部分复制给我即可。' -ForegroundColor Cyan
+Start-Process notepad.exe -ArgumentList $reportPath

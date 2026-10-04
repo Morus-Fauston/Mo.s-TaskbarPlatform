@@ -19,6 +19,7 @@ public sealed class ExplorerProbeNativeCleanupTests
         Assert.True(result.IsSuccess, result.Error?.ToString());
         Assert.False(owner.HasResource);
         Assert.False(owner.IsCleanupPending);
+        Assert.Equal(0, child.CloseCalls);
     }
 
     [Theory]

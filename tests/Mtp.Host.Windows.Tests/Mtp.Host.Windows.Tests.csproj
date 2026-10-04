@@ -12,5 +12,6 @@
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
     <Using Include="Xunit" />
     <ProjectReference Include="../../src/Mtp.Host/Mtp.Host.csproj" />
+    <ProjectReference Include="../Mtp.Host.Legacy.Windows/Mtp.Host.Legacy.Windows.csproj" />
   </ItemGroup>
 </Project>

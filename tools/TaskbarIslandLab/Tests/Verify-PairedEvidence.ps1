@@ -1,5 +1,5 @@
 ﻿param(
-    [string]$PairedDirectory = '.scratch/二期开发/verification/05F/current-paired-run',
+    [string]$PairedDirectory = '.scratch/二期开发/evidence/05F/current-paired-run',
     [Parameter(Mandatory = $true)][string]$OutputDirectory
 )
 $ErrorActionPreference = 'Stop'

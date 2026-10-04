@@ -120,6 +120,15 @@ internal sealed class ExplorerProbeWindowOwner
             }
         }
 
+        // Destroying the foreign parent can destroy the native WinUI window without Closed.
+        // Calling Window.Close afterwards may cause a native access violation, not a catchable
+        // managed exception. Recheck after native restoration as well as before entering WinUI.
+        if (!ReferenceEquals(resource, current) || (handle != 0 && !operations.IsWindow(handle)))
+        {
+            ReleaseIfCurrent(current);
+            return CoreResult<bool>.Success(true);
+        }
+
         try
         {
             current.Close();
@@ -775,7 +784,10 @@ public sealed class Win32ExplorerTaskbarEmbedAdapter : IExplorerTaskbarEmbedAdap
 
     private sealed class ExplorerProbeWindowResource : IExplorerProbeWindowResource
     {
+        private static readonly DestroySubclassProc DestroyCallback = ObserveDestroy;
         private readonly ExplorerTaskbarProbeWindow window;
+        private bool closing;
+        private nint destroySubscription;
 
         public ExplorerProbeWindowResource(ExplorerTaskbarProbeWindow window)
         {
@@ -785,9 +797,72 @@ public sealed class Win32ExplorerTaskbarEmbedAdapter : IExplorerTaskbarEmbedAdap
 
         public event EventHandler? Closed;
 
-        public nint Handle => window.WindowHandle;
+        public nint Handle
+        {
+            get
+            {
+                var handle = window.WindowHandle;
+                if (destroySubscription == 0)
+                {
+                    // TakeOwnership has already retained this resource before reading Handle.
+                    // Root the callback state until WM_NCDESTROY, including reentrant Closed.
+                    var state = GCHandle.Alloc(this);
+                    destroySubscription = GCHandle.ToIntPtr(state);
+                    if (!SetWindowSubclass(handle, DestroyCallback, 1, (nuint)destroySubscription))
+                    {
+                        state.Free();
+                        destroySubscription = 0;
+                        throw new InvalidOperationException("The probe destruction observer could not be installed.");
+                    }
+                }
 
-        public void Close() => window.Close();
+                return handle;
+            }
+        }
+
+        public void Close()
+        {
+            if (closing) return;
+            closing = true;
+            try { window.Close(); }
+            finally { closing = false; }
+        }
+
+        private static nint ObserveDestroy(nint handle, uint message, nuint wParam, nint lParam, nuint id, nuint data)
+        {
+            var state = GCHandle.FromIntPtr((nint)data);
+            var resource = (ExplorerProbeWindowResource)state.Target!;
+            if (message == 0x0002) // WM_DESTROY, before WinUI tears down its native object.
+            {
+                try { resource.Close(); }
+                catch (Exception)
+                {
+                    // Never unwind a managed exception through the native callback. The owner
+                    // still retains the resource and will confirm native destruction on cleanup.
+                }
+            }
+            else if (message == 0x0082) // WM_NCDESTROY: no later messages can use this state.
+            {
+                _ = RemoveWindowSubclass(handle, DestroyCallback, id);
+                resource.destroySubscription = 0;
+                state.Free();
+            }
+
+            return DefSubclassProc(handle, message, wParam, lParam);
+        }
+
+        private delegate nint DestroySubclassProc(nint handle, uint message, nuint wParam, nint lParam, nuint id, nuint data);
+
+        [DllImport("comctl32.dll", ExactSpelling = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool SetWindowSubclass(nint handle, DestroySubclassProc callback, nuint id, nuint data);
+
+        [DllImport("comctl32.dll", ExactSpelling = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool RemoveWindowSubclass(nint handle, DestroySubclassProc callback, nuint id);
+
+        [DllImport("comctl32.dll", ExactSpelling = true)]
+        private static extern nint DefSubclassProc(nint handle, uint message, nuint wParam, nint lParam);
 
         private void Window_Closed(object sender, WindowEventArgs args)
         {

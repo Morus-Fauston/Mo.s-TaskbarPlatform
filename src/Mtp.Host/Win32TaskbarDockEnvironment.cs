@@ -103,6 +103,34 @@ internal sealed class Win32TaskbarDockEnvironment(TimeProvider? clock = null) : 
         }
     }
 
+    // Native parent/child visibility owns hiding. Do not use the old full-screen policy
+    // to imitate taskbar visibility with a separate window.
+    internal CoreResult<TaskbarDockEnvironmentSnapshot> CaptureIsland(string? displayId)
+    {
+        try
+        {
+            var displays = GetDisplays();
+            var display = displays.FirstOrDefault(d => d.Id == displayId) ?? displays.First(d => d.IsPrimary);
+            var taskbar = FindTaskbar(display);
+            ObservedTaskbar = taskbar;
+            if (taskbar == 0) return Failure("island_taskbar_missing", "任务栏尚未恢复，等待新的任务栏。");
+            Islands.NativeWindows.ValidateExplorerTarget(taskbar, display.Id);
+            Native.GetWindowThreadProcessId(taskbar, out var pid);
+            using var process = Process.GetProcessById((int)pid);
+            var identity = $"{taskbar}:{pid}:{process.StartTime.ToUniversalTime().Ticks}";
+            var tray = Native.FindWindowExW(taskbar, 0, "TrayNotifyWnd", null);
+            if (!Native.GetWindowRect(taskbar, out var rect)) return Failure("island_bounds_missing", "任务栏矩形不可用。");
+            PixelRect? anchor = tray != 0 && Native.GetWindowRect(tray, out var trayRect) ? trayRect.ToPixelRect() : null;
+            var dpi = Native.GetDpiForWindow(taskbar);
+            var geometry = new TaskbarDockGeometry(display.Id, display.Bounds, rect.ToPixelRect(), anchor, dpi);
+            var warning = displayId is not null && display.Id != displayId
+                ? new StructuredError("island_display_missing", "目标屏幕暂时不可用，尝试主屏幕内容岛；保留原屏幕偏好。") : null;
+            return CoreResult<TaskbarDockEnvironmentSnapshot>.Success(new(display.Id, display.Bounds, display.WorkArea,
+                dpi, identity, geometry, warning, TaskbarVisibility.Allowed));
+        }
+        catch (Exception error) { return Failure("island_environment_unavailable", "任务栏环境不可用：" + error.Message); }
+    }
+
     private static nint FindTaskbar(TaskbarDockDisplay display)
     {
         // These are experimental Explorer class names, not a public Windows extension contract.

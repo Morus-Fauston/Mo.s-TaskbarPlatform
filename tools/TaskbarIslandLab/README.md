@@ -21,7 +21,7 @@ dotnet build tools/TaskbarIslandLab/Logic/TaskbarIslandLab.Logic.csproj --config
 dotnet format tools/TaskbarIslandLab/TaskbarIslandLab.csproj --no-restore --verify-no-changes
 dotnet format tools/TaskbarIslandLab/Logic/TaskbarIslandLab.Logic.csproj --no-restore --verify-no-changes
 dotnet format tools/TaskbarIslandLab/Tests/TaskbarIslandLab.Tests.csproj --no-restore --verify-no-changes
-& tools/TaskbarIslandLab/Run.ps1 -OutputDirectory '.scratch/二期开发/verification/05F/owned-check'
+& tools/TaskbarIslandLab/Run.ps1 -OutputDirectory '.scratch/二期开发/evidence/05F/owned-check'
 ```
 
 默认运行 `owned / verify`：只创建本进程父窗口与本线程 Win32 H，经 H 初始化 DWXS；不枚举或绑定 Explorer。使用非激活显示请求，自动检查前台 HWND 是否被自身显示步骤改变。正常约数秒完成，内部超时默认 45 秒；外部 watchdog 另给启动和退出时间。自有窗口会短暂显示；这属于自动化夹具，不是 Agent 进行人工视觉验收。
@@ -42,8 +42,8 @@ git diff --check
 验收脚本位于本工具的 Tests 目录，兼容 Windows PowerShell 5.1 与 PowerShell 7。Debug Logic 构建用于满足 dotnet format 的默认设计时依赖。以下命令从仓库根目录执行，每次换用新输出目录：
 
 ~~~powershell
-& tools/TaskbarIslandLab/Tests/Check-ProcessBoundaries.ps1 -OutputDirectory '.scratch/二期开发/verification/05F/process-check'
-& tools/TaskbarIslandLab/Tests/Verify-PairedEvidence.ps1 -PairedDirectory '.scratch/二期开发/verification/05F/current-paired-run' -OutputDirectory '.scratch/二期开发/verification/05F/paired-readback'
+& tools/TaskbarIslandLab/Tests/Check-ProcessBoundaries.ps1 -OutputDirectory '.scratch/二期开发/evidence/05F/process-check'
+& tools/TaskbarIslandLab/Tests/Verify-PairedEvidence.ps1 -PairedDirectory '.scratch/二期开发/evidence/05F/current-paired-run' -OutputDirectory '.scratch/二期开发/evidence/05F/paired-readback'
 ~~~
 
 前者检查非法参数退出码、Stop.ps1 清理和 Run.ps1 的成功/失败入口；后者回读 2026-09-28 的固定配对矩阵（none、alpha 0.5、144 DPI、14 次运行），不会重新启动性能采样，也不修改原数据。415 项检查是证据一致性检查，不是单元测试数或性能合格判断。旧的临时脚本及失败输出保留为历史证据，后续使用上述入口。
@@ -69,7 +69,7 @@ git diff --check
 停止只针对指定实验目录：
 
 ```powershell
-& tools/TaskbarIslandLab/Stop.ps1 -OutputDirectory '.scratch/二期开发/verification/05F/owned-check'
+& tools/TaskbarIslandLab/Stop.ps1 -OutputDirectory '.scratch/二期开发/evidence/05F/owned-check'
 ```
 
 该命令写入 `stop.request`，应用约 250 ms 内检查并清理。也可右键 `+1` 按钮，选择“关闭实验”。正常顺序：失效化回调 → 关闭 Popup/Flyout/动画 → 清理内容与事件 → Dispose DWXS（其内部拥有并关闭 bridge）→ 销毁 H → 销毁自有父窗口。Explorer 从不被销毁、关闭或重启。
@@ -88,12 +88,12 @@ git diff --check
 
 ## 性能采样
 
-2026-10-01 Popup 定位修复：原固定右下偏移及根边界裁剪已改为以 +1 为锚点、优先向上、允许越出内容岛的原生 Popup。默认 owned/verify 增加屏边布局、关闭按钮调用、隐藏及原生窗口清理回归；修复前后记录见 [Popup 修复验证](../../.scratch/二期开发/verification/05F/popup-fix-20261001/验证记录.md)。维护者已确认本次 Popup 完整显示、按钮及点外关闭、任务栏隐藏和退出无残留，见 [人工复验](../../.scratch/二期开发/verification/05F/manual-20261001-201348-796/人工观察记录.md)。人工验收手册 C 节保留后续复验步骤，无需本次重复操作。修复后新二进制未重跑长时性能，旧性能证据保留原身份。
+2026-10-01 Popup 定位修复：原固定右下偏移及根边界裁剪已改为以 +1 为锚点、优先向上、允许越出内容岛的原生 Popup。默认 owned/verify 增加屏边布局、关闭按钮调用、隐藏及原生窗口清理回归；修复前后记录见 [Popup 修复验证](../../.scratch/二期开发/evidence/05F/popup-fix-20261001/验证记录.md)。维护者已确认本次 Popup 完整显示、按钮及点外关闭、任务栏隐藏和退出无残留，见 [人工复验](../../.scratch/二期开发/evidence/05F/manual-20261001-201348-796/人工观察记录.md)。人工验收手册 C 节保留后续复验步骤，无需本次重复操作。修复后新二进制未重跑长时性能，旧性能证据保留原身份。
 
 先用同一环境、无高频日志、无屏幕录制跑自有父级与顶级窗口。长时配对工具依次启动独立进程，不同时运行两种承载，也不会启动 Explorer 实例：
 
 ```powershell
-& tools/TaskbarIslandLab/Measure-Pairs.ps1 -OutputDirectory '.scratch/二期开发/verification/05F/paired-run'
+& tools/TaskbarIslandLab/Measure-Pairs.ps1 -OutputDirectory '.scratch/二期开发/evidence/05F/paired-run'
 ```
 
 脚本覆盖 empty、top-level、owned 的静态/1/30/60 Hz；30 Hz 的 top-level、owned **可见动态阶段各至少 600 秒**。其他可见阶段默认 20 秒，可用 `-ShortSeconds 5` 做最小基线；隐藏阶段默认 20 秒，最少 2 秒。empty 的短阶段是关闭实验内容的调度/进程基线，时间长度与长时配对不同，必须保留这一差异。短阶段不用于证明长期资源稳定。
@@ -103,9 +103,9 @@ git diff --check
 单独运行与汇总：
 
 ```powershell
-& tools/TaskbarIslandLab/Run.ps1 -Mode owned -Scenario measure -Hz 30 -VisibleSeconds 600 -HiddenSeconds 20 -OutputDirectory '.scratch/二期开发/verification/05F/owned-30'
-& tools/TaskbarIslandLab/Run.ps1 -Mode top-level -Scenario measure -Hz 30 -VisibleSeconds 600 -HiddenSeconds 20 -OutputDirectory '.scratch/二期开发/verification/05F/window-30'
-& tools/TaskbarIslandLab/Summarize.ps1 -InputDirectory '.scratch/二期开发/verification/05F/paired-run'
+& tools/TaskbarIslandLab/Run.ps1 -Mode owned -Scenario measure -Hz 30 -VisibleSeconds 600 -HiddenSeconds 20 -OutputDirectory '.scratch/二期开发/evidence/05F/owned-30'
+& tools/TaskbarIslandLab/Run.ps1 -Mode top-level -Scenario measure -Hz 30 -VisibleSeconds 600 -HiddenSeconds 20 -OutputDirectory '.scratch/二期开发/evidence/05F/window-30'
+& tools/TaskbarIslandLab/Summarize.ps1 -InputDirectory '.scratch/二期开发/evidence/05F/paired-run'
 ```
 
 `events.jsonl` 保留每秒的资源快照；`summary.json` 分阶段汇总；`phases.csv` 供比较。计时器的请求数与 UI 线程实际更新数分别记录，繁忙时合并待执行更新，不伪造帧数。呈现帧率未测，不能用请求频率或文字更新数代替。
@@ -121,8 +121,8 @@ GPU 使用/引擎、DWM/Explorer 增量、唤醒/上下文切换未启用可靠�
 以下命令由维护者执行。第一步仅列出当前任务栏候选，不绑定：
 
 ```powershell
-& tools/TaskbarIslandLab/Run.ps1 -Mode explorer -Scenario list-targets -OutputDirectory '.scratch/二期开发/verification/05F/targets'
-Get-Content -LiteralPath '.scratch/二期开发/verification/05F/targets/targets.json'
+& tools/TaskbarIslandLab/Run.ps1 -Mode explorer -Scenario list-targets -OutputDirectory '.scratch/二期开发/evidence/05F/targets'
+Get-Content -LiteralPath '.scratch/二期开发/evidence/05F/targets/targets.json'
 ```
 
 从 `targets.json` 选择**一个**底部任务栏，复制 `monitor` 和 `window.hwnd`。下面的 `0x123456` 必须替换为实际值：
@@ -130,7 +130,7 @@ Get-Content -LiteralPath '.scratch/二期开发/verification/05F/targets/targets
 ```powershell
 $targetMonitor = '\\.\DISPLAY1'
 $targetParent = '0x123456'
-& tools/TaskbarIslandLab/Run.ps1 -Mode explorer -Scenario manual -Monitor $targetMonitor -ParentHwnd $targetParent -Material none -Alpha 0.5 -X 80 -TimeoutSeconds 1800 -OutputDirectory '.scratch/二期开发/verification/05F/explorer-manual'
+& tools/TaskbarIslandLab/Run.ps1 -Mode explorer -Scenario manual -Monitor $targetMonitor -ParentHwnd $targetParent -Material none -Alpha 0.5 -X 80 -TimeoutSeconds 1800 -OutputDirectory '.scratch/二期开发/evidence/05F/explorer-manual'
 ```
 
 启动前会校验 HWND 存活、类名、Explorer 进程、对应屏幕及底部任务栏。H 先以隐藏的本线程 Win32 窗口创建，用 H 初始化 DWXS，再调整 H 的子窗口样式并绑定所选父级；DWXS 从不直接以 Explorer HWND 初始化。记录进程/线程、父链、样式、DPI awareness 及实际尺寸。初始化时 H 保持隐藏，避免桥创建中途直接显示。
@@ -154,9 +154,9 @@ $targetParent = '0x123456'
 9. **Explorer 性能**：只有核心视觉/行为成立后，使用相同参数运行以下人工采样。观察 `events.jsonl` 的 `phase-begin`；进入隐藏阶段时由人类操作任务栏隐藏，恢复阶段时恢复。Explorer 模式从不修改父级显隐，阶段名是操作提示，不是可见性事实。记录人类操作时间与偏差；若未按阶段操作，该阶段不能充作隐藏成本证据。
 
 ```powershell
-& tools/TaskbarIslandLab/Run.ps1 -Mode explorer -Scenario measure -Monitor $targetMonitor -ParentHwnd $targetParent -Material none -Alpha 0.5 -Hz 30 -VisibleSeconds 600 -HiddenSeconds 20 -OutputDirectory '.scratch/二期开发/verification/05F/explorer-30'
+& tools/TaskbarIslandLab/Run.ps1 -Mode explorer -Scenario measure -Monitor $targetMonitor -ParentHwnd $targetParent -Material none -Alpha 0.5 -Hz 30 -VisibleSeconds 600 -HiddenSeconds 20 -OutputDirectory '.scratch/二期开发/evidence/05F/explorer-30'
 # 在另一终端查看阶段，或通过 Stop.ps1 请求退出：
-Get-Content -LiteralPath '.scratch/二期开发/verification/05F/explorer-30/events.jsonl' -Wait
+Get-Content -LiteralPath '.scratch/二期开发/evidence/05F/explorer-30/events.jsonl' -Wait
 ```
 
 10. **维护者结论**：共同审核原生性与成本，给出继续、否决或另行立项的结论。未测多屏、混合 DPI、其他 Windows/GPU、HDR 和独占全屏等保留未知。本工具不实现 1/4/8 组件、多屏压力、正式恢复策略或新渲染进程。
@@ -171,4 +171,4 @@ Get-Content -LiteralPath '.scratch/二期开发/verification/05F/explorer-30/eve
 - `Program.cs`：应用生命周期、自动化夹具、请求与实际更新计数、采样及输出。
 - `Tests/`：工具专属纯逻辑测试，不改平台核心的领域契约。
 
-原始日志保存在 `.scratch/二期开发/verification/05F/`。2026-10-01 结论快照：维护者批准按当前笔记本单屏最小验证通过收口，允许继续评估内容岛路线；未采纳为正式任务栏承载路线，也未认定完整常驻性能达标。材质、性能补测、UIA 详细取证及外屏覆盖保留，FFO 重叠和透明空白不穿透点击为低优先级限制，见 [05F 保留项](../../Docs/待办与预案/二期遗留问题与风险清单.md#05f-单屏验证收口保留项2026-10-01)。单票当前状态与范围调整的唯一来源为 [05F 票据](../../.scratch/二期开发/issues/05F-WinUI内容岛任务栏承载最小验证.md)。未来新环境或新改动的人工验收须单独记录，不预填本轮通过结论。
+原始日志保存在 `.scratch/二期开发/evidence/05F/`。2026-10-01 结论快照：维护者批准按当前笔记本单屏最小验证通过收口，允许继续评估内容岛路线；未采纳为正式任务栏承载路线，也未认定完整常驻性能达标。材质、性能补测、UIA 详细取证及外屏覆盖保留，FFO 重叠和透明空白不穿透点击为低优先级限制，见 [05F 保留项](../../Docs/待办与预案/二期遗留问题与风险清单.md#05f-单屏验证收口保留项2026-10-01)。单票当前状态与范围调整的唯一来源为 [05F 票据](../../.scratch/二期开发/issues/05F-WinUI内容岛任务栏承载最小验证.md)。未来新环境或新改动的人工验收须单独记录，不预填本轮通过结论。

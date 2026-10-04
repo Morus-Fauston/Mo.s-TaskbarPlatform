@@ -18,7 +18,7 @@ public sealed record LabOptions
     public int X { get; init; } = 80;
     public int Y { get; init; } = 80;
     public bool Diagnostics { get; init; }
-    public string Output { get; init; } = Path.GetFullPath(".scratch/二期开发/verification/05F/run-" + DateTime.UtcNow.ToString("yyyyMMdd-HHmmss-fff", CultureInfo.InvariantCulture));
+    public string Output { get; init; } = Path.GetFullPath(".scratch/二期开发/evidence/05F/run-" + DateTime.UtcNow.ToString("yyyyMMdd-HHmmss-fff", CultureInfo.InvariantCulture));
     public string StopFile => Path.Combine(Output, "stop.request");
     public double MeasureSeconds => 5 + 10 + VisibleSeconds + HiddenSeconds + 10;
 

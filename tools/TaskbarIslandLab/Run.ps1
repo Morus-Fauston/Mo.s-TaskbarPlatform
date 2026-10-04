@@ -25,7 +25,7 @@ if ($Build) {
 }
 if (-not (Test-Path -LiteralPath $exe)) { throw 'Build the Release executable first or pass -Build.' }
 if (-not $OutputDirectory) {
-    $OutputDirectory = Join-Path $PSScriptRoot ('..\..\.scratch\二期开发\verification\05F\run-' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff'))
+    $OutputDirectory = Join-Path $PSScriptRoot ('..\..\.scratch\二期开发\evidence\05F\run-' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff'))
 }
 $outputPath = [IO.Path]::GetFullPath($OutputDirectory)
 if (Test-Path -LiteralPath (Join-Path $outputPath 'events.jsonl')) { throw 'Use a fresh output directory; evidence is not overwritten.' }

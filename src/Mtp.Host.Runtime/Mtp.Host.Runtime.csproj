@@ -9,7 +9,10 @@
     <ProjectReference Include="../Mtp.Platform.Core/Mtp.Platform.Core.csproj" />
     <ProjectReference Include="../Mtp.Contracts/Mtp.Contracts.csproj" />
     <InternalsVisibleTo Include="Mtp.Host" />
+    <InternalsVisibleTo Include="Mtp.Host.Legacy.Runtime" />
+    <InternalsVisibleTo Include="Mtp.Host.Legacy.Windows" />
     <InternalsVisibleTo Include="Mtp.Platform.Core.Tests" />
     <InternalsVisibleTo Include="Mtp.Host.Windows.Tests" />
+    <InternalsVisibleTo Include="Mtp.Host.WindowTests" />
   </ItemGroup>
 </Project>

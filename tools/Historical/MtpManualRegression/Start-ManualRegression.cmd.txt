@@ -1,0 +1,9 @@
+@echo off
+setlocal
+cd /d "%~dp0\..\.."
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0Run-MtpManualRegression.ps1" %*
+set "exitCode=%ERRORLEVEL%"
+echo.
+if not "%exitCode%"=="0" echo Regression launcher exit code: %exitCode%
+pause
+exit /b %exitCode%

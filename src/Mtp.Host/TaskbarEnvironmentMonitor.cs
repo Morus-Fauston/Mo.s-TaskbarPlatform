@@ -46,8 +46,10 @@ internal sealed class TaskbarEnvironmentMonitor : IDisposable
         if (stopped) return;
         try
         {
+            // Moving an ordinary foreground window does not change island placement.
+            // Refreshing the whole console for every drag event blocks its UI thread.
             if (kind == 3 || (objectId == 0 && childId == 0 && window != 0 &&
-                (window == taskbar() || window == Win32TaskbarVisibility.ForegroundWindow)))
+                (window == taskbar() || kind != 0x800B && window == Win32TaskbarVisibility.ForegroundWindow)))
                 RequestRefresh();
         }
         catch (Exception exception)

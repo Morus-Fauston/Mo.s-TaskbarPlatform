@@ -4,3 +4,6 @@
 *.log
 *.tmp
 *.user
+
+# Historical screenshots are private evidence, not source assets.
+/Historical/TransparencyLab/shots/

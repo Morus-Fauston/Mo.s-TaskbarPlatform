@@ -1,538 +1,145 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using Microsoft.UI.Xaml.Controls.Primitives;
-using Microsoft.UI.Windowing;
-using System.Linq;
-using System.Text;
-using Mtp.Platform.Core;
 
 namespace Mtp.Host;
 
-/// <summary>
-/// The ordinary Host window for the minimum display baseline.
-/// </summary>
+/// <summary>Navigation, rendering and event forwarding only.</summary>
 public sealed partial class MainWindow : Window
 {
-    private readonly HostDisplayActionController displayActions;
-    private readonly TopLevelControlWindowOwner topLevelControlWindowOwner = new();
-    private HostComponentDisplayModel? selectedComponent;
-    private ExplorerTaskbarProbeWindow? topLevelControlWindow;
-    private bool applyingVisibility;
-    private readonly TaskbarDockWindowAdapter taskbarDock;
-    private readonly Win32TaskbarDockEnvironment taskbarEnvironment;
-    private readonly DispatcherTimer dockTimer = new() { Interval = TimeSpan.FromMilliseconds(250) };
-    private readonly TaskbarEnvironmentMonitor environmentMonitor;
-    private int settingsRefreshTicks;
-    private bool stoppingDock;
-    private bool applyingDockSettings;
-    private string displayListKey = string.Empty;
-
-    internal MainWindow(
-        HostDisplayLoadResult displayLoad,
-        HostDisplayActionController displayActions,
-        TaskbarDockWindowAdapter taskbarDock,
-        Win32TaskbarDockEnvironment taskbarEnvironment)
+    private readonly HostConsoleController controller;
+    private readonly DisplaySelectionBinding displaySelection;
+    private bool rendering;
+    internal MainWindow(HostConsoleController controller, Func<IReadOnlyList<TaskbarDockDisplay>> displays)
     {
-        ArgumentNullException.ThrowIfNull(displayLoad);
-        this.displayActions = displayActions ?? throw new ArgumentNullException(nameof(displayActions));
-        this.taskbarDock = taskbarDock;
-        this.taskbarEnvironment = taskbarEnvironment;
+        this.controller = controller;
         InitializeComponent();
-        AppWindow.Closing += MainWindow_Closing;
-        this.displayActions.ProbeStateChanged += DisplayActions_ProbeStateChanged;
-
-        AppWindow.Resize(new Windows.Graphics.SizeInt32(600, 720));
-        environmentMonitor = new(action => DispatcherQueue.TryEnqueue(() => action()), RefreshDockPresentation,
-            () => taskbarEnvironment.ObservedTaskbar);
-        taskbarDock.StateChanged += TaskbarDock_StateChanged;
-        RefreshDockSettings();
-        dockTimer.Tick += DockTimer_Tick;
-        dockTimer.Start();
-
-        selectedComponent = displayLoad.Components.FirstOrDefault();
-        if (selectedComponent is not null)
+        displaySelection = new(TargetDisplayCombo, RightGapInput, controller, displays, DispatcherQueue);
+        foreach (var dimension in HostTestRun.Dimensions) DimensionCombo.Items.Add(dimension);
+        DimensionCombo.SelectedIndex = 0;
+        AppWindow.Changed += ConstrainSize;
+        AppWindow.Resize(new Windows.Graphics.SizeInt32(1000, 960));
+        controller.Changed += Render;
+        Closed += (_, _) =>
         {
-            ApplyDisplay(selectedComponent);
-            VisibilityToggle.IsEnabled = true;
-            applyingVisibility = true;
-            VisibilityToggle.IsOn = selectedComponent.IsVisible;
-            applyingVisibility = false;
-        }
-        else
+            AppWindow.Changed -= ConstrainSize;
+            controller.Shutdown();
+            controller.Changed -= Render;
+            displaySelection.Stop();
+        };
+        AppWindow.Closing += (_, args) =>
         {
-            var fallback = new Component(
-                new StableIdentity(new StableId("mtp"))
-                    .CreateChild(new StableId("declaration-error")),
-                CapabilityState.Failed(displayLoad.DeclarationError?.Message ?? "声明未加载。"));
-            ApplyDisplay(HostComponentDisplayModel.From(fallback));
-        }
-
-        UpdateProbeButtons();
-
-        materialCapabilities = ExplorerTaskbarProbeWindow.ProbeCapabilities();
-        PopulateMaterialCombo();
-
-        ShowHostErrors(displayLoad.Errors);
+            if (!controller.Shutdown()) { args.Cancel = true; Render(); }
+            else { controller.Changed -= Render; displaySelection.Stop(); }
+        };
+        Render();
     }
 
-    private void DockTimer_Tick(object? sender, object args)
+    private void ConstrainSize(Microsoft.UI.Windowing.AppWindow sender, Microsoft.UI.Windowing.AppWindowChangedEventArgs args)
     {
-        environmentMonitor.RequestRefresh();
-        if (++settingsRefreshTicks % 4 == 0) RefreshDockSettings();
+        if (!args.DidSizeChange) return;
+        var scale = Islands.NativeWindows.GetDpiForWindow(WinRT.Interop.WindowNative.GetWindowHandle(this)) / 96d;
+        var width = Math.Max(sender.Size.Width, (int)Math.Ceiling(520 * scale));
+        var height = Math.Max(sender.Size.Height, (int)Math.Ceiling(540 * scale));
+        if (width != sender.Size.Width || height != sender.Size.Height) sender.Resize(new(width, height));
     }
-
-    private void RefreshDockPresentation()
+    private void Render()
     {
-        if (stoppingDock) return;
-        if (taskbarDock.IsOpen || taskbarDock.NeedsWindowRecovery)
-            displayActions.RestoreCurrent();
-    }
-
-    private void TaskbarDock_StateChanged(object? sender, EventArgs args) => UpdateDockStatus();
-
-    private void RefreshDockSettings()
-    {
-        applyingDockSettings = true;
+        rendering = true;
         try
         {
-            var displays = taskbarEnvironment.GetDisplays();
-            var key = string.Join("|", displays.Select(item => $"{item.Id}:{item.IsPrimary}")) + ":" + taskbarDock.Preferences.TargetDisplayId;
-            if (key != displayListKey || TargetDisplayCombo.Items.Count == 0)
+            VisibilityToggle.IsEnabled = controller.Component is not null;
+            VisibilityToggle.IsOn = controller.Component?.IsVisible == true;
+            ComponentText.Text = controller.Component is { } component ? $"{component.Text} · {component.StatusLabel}" : "没有有效声明组件";
+            IdentityText.Text = controller.Component is { } declared ? string.Join(" / ", declared.Identity.Segments.Select(s => s.Value)) : "无有效声明";
+            var state = controller.Session.State switch
             {
-                displayListKey = key;
-                TargetDisplayCombo.Items.Clear();
-                TargetDisplayCombo.Items.Add(new ComboBoxItem { Content = "主显示器（自动）", Tag = null });
-                foreach (var display in displays)
-                    TargetDisplayCombo.Items.Add(new ComboBoxItem { Content = $"{display.Id}{(display.IsPrimary ? "（主显示器）" : string.Empty)}", Tag = display.Id });
-                var preferred = taskbarDock.Preferences.TargetDisplayId;
-                if (preferred is not null && !displays.Any(item => item.Id == preferred))
-                    TargetDisplayCombo.Items.Add(new ComboBoxItem { Content = $"{preferred}（暂时不可用）", Tag = preferred });
-                TargetDisplayCombo.SelectedItem = TargetDisplayCombo.Items.Cast<ComboBoxItem>().First(item => Equals(item.Tag, preferred));
-            }
-            RightGapInput.Value = taskbarDock.Preferences.RightGapDip;
-            UpdateDockStatus();
-        }
-        catch (Exception exception)
-        {
-            DockStatusText.Text = $"显示器列表暂时不可用：{exception.GetType().Name}";
-        }
-        finally { applyingDockSettings = false; }
-    }
-
-    private void UpdateDockStatus()
-    {
-        var errors = new[] { taskbarDock.PreferenceError, taskbarDock.PresentationError, taskbarDock.VisualError, environmentMonitor?.Error }
-            .Where(error => error is not null).Distinct().Select(error => FormatError(error!));
-        DockStatusText.Text = string.Join(Environment.NewLine, new[] { taskbarDock.Status }.Concat(errors));
-    }
-
-    private void TargetDisplayCombo_SelectionChanged(object sender, SelectionChangedEventArgs args)
-    {
-        if (applyingDockSettings || TargetDisplayCombo.SelectedItem is not ComboBoxItem selected) return;
-        taskbarDock.SetDisplay(selected.Tag as string);
-        displayListKey = string.Empty;
-        RefreshDockSettings();
-    }
-
-    private void RightGapInput_ValueChanged(NumberBox sender, NumberBoxValueChangedEventArgs args)
-    {
-        if (applyingDockSettings || DockStatusText is null || taskbarDock is null) return;
-        if (double.IsFinite(args.NewValue) && args.NewValue == Math.Truncate(args.NewValue))
-            taskbarDock.SetGap((int)args.NewValue);
-        else ShowHostError(new("dock_gap_invalid", "右侧避让距离必须是 0 到 64 的整数。"));
-        RefreshDockSettings();
-    }
-
-    private void SimulateFailureCheck_Changed(object sender, RoutedEventArgs args)
-    {
-        taskbarEnvironment.SimulateUnavailable = SimulateFailureCheck.IsChecked == true;
-        taskbarDock.Refresh();
-    }
-
-    private void ApplyDisplay(HostComponentDisplayModel display)
-    {
-        ComponentText.Text = display.Text;
-        IdentityText.Text = $"声明组件：{string.Join(" / ", display.Identity.Segments.Select(segment => segment.Value))}";
-        StatusText.Text = display.StatusLabel;
-        ComponentCard.Visibility = display.IsVisible ? Visibility.Visible : Visibility.Collapsed;
-    }
-
-    private void VisibilityToggle_Toggled(object sender, RoutedEventArgs args)
-    {
-        if (applyingVisibility || selectedComponent is null)
-        {
-            return;
-        }
-
-        var result = displayActions.SetVisibility(selectedComponent.Identity, VisibilityToggle.IsOn);
-        if (result.Component is not null)
-        {
-            selectedComponent = result.Component;
-            ApplyDisplay(selectedComponent);
-        }
-
-        applyingVisibility = true;
-        VisibilityToggle.IsOn = selectedComponent?.IsVisible == true;
-        applyingVisibility = false;
-        ShowHostErrors(result.Errors);
-        UpdateProbeButtons();
-    }
-
-    private void RunProbeButton_Click(object sender, RoutedEventArgs args)
-    {
-        if (selectedComponent is null)
-        {
-            return;
-        }
-
-        var outcome = displayActions.RunProbe(
-            selectedComponent,
-            new ExplorerTaskbarProbeRequest(SimulateFailureCheck.IsChecked == true, SelectedTransparencyMode));
-        ShowProbeOutcome(outcome);
-        UpdateProbeButtons();
-    }
-
-    private void StopProbeButton_Click(object sender, RoutedEventArgs args)
-    {
-        var result = displayActions.DetachProbe();
-        if (!result.IsSuccess)
-        {
-            ShowHostError(result.Error!);
-        }
-        else
-        {
-            ProbeStatusText.Text = "探针已停止，已恢复独立贴靠窗口。";
-            ProbeStatusText.Visibility = Visibility.Visible;
-        }
-
-        UpdateProbeButtons();
-    }
-
-    /// <summary>
-    /// Control experiment for the transparency question: the same probe window shown as a top-level
-    /// window, never reparented. Clicking again closes it.
-    /// </summary>
-    private void TopLevelControlButton_Click(object sender, RoutedEventArgs args)
-    {
-        if (topLevelControlWindow is not null)
-        {
-            var closeResult = CloseTopLevelControlWindow();
-            if (!closeResult.IsSuccess)
-            {
-                ShowHostError(closeResult.Error!);
-            }
-
-            return;
-        }
-
-        var display = selectedComponent ?? HostComponentDisplayModel.From(new Component(
-            new StableIdentity(new StableId("mtp")).CreateChild(new StableId("transparency-control")),
-            CapabilityState.Available));
-        var controlWindow = new ExplorerTaskbarProbeWindow();
-        topLevelControlWindowOwner.TakeOwnership(new ExplorerTopLevelControlWindowResource(controlWindow));
-        topLevelControlWindow = controlWindow;
-        controlWindow.Closed += TopLevelControlWindow_Closed;
-        try
-        {
-            controlWindow.InitializeView(display);
-            controlWindow.PrepareHidden(new Windows.Graphics.SizeInt32(360, 60), useToolWindowPresenter: false);
-            controlWindow.PrepareAsTopLevelControl();
-            var position = AppWindow.Position;
-            controlWindow.ShowAt(new Windows.Graphics.PointInt32(position.X + 24, position.Y + AppWindow.Size.Height - 90));
-        }
-        catch (Exception exception)
-        {
-            var errors = new List<StructuredError>
-            {
-                new("top_level_control_window_show_failed", "The diagnostic top-level window could not be shown.", exception.GetType().Name),
+                IslandDisplayState.Hidden => "组件已关闭",
+                IslandDisplayState.Embedded => "内容岛已嵌入",
+                IslandDisplayState.WaitingForTaskbar => "等待任务栏定位条件",
+                IslandDisplayState.Failed => "嵌入失败，可重试",
+                IslandDisplayState.CleanupPending => "清理待重试",
+                _ => "Host 已关闭"
             };
-            var cleanup = CloseTopLevelControlWindow();
-            if (!cleanup.IsSuccess)
-            {
-                errors.Add(cleanup.Error!);
-            }
-
-            ShowHostErrors(errors);
-            return;
+            DockStatusText.Text = $"{state} · {controller.TargetSummary}";
+            TargetDetails.Text = controller.Target;
+            displaySelection?.Refresh();
+            var tests = controller.Tests;
+            var active = tests.IsRunning;
+            var preview = controller.Preview;
+            StartCaseButton.IsEnabled = OpenControlsButton.IsEnabled = !active && !preview.IsOpen && VisibilityToggle.IsOn;
+            OpenPreviewButton.IsEnabled = !active && controller.Component is not null;
+            OpenPreviewButton.Content = preview.IsOpen ? "应用到预览" : "打开独立预览";
+            ClosePreviewButton.IsEnabled = preview.IsOpen;
+            PreviewControlsToggle.IsEnabled = !active;
+            PreviewPopupButton.IsEnabled = preview.IsAlive && preview.Configuration?.Controls == true;
+            PreviewStatusText.Text = preview.Status;
+            StopCaseButton.IsEnabled = active;
+            MaterialCombo.IsEnabled = ThemeCombo.IsEnabled = LoadCombo.IsEnabled = DurationCombo.IsEnabled = !active;
+            AlphaCombo.IsEnabled = !active && MaterialCombo.SelectedIndex == 0;
+            StartSamplingButton.IsEnabled = active && !tests.IsSampling && controller.Session.State == IslandDisplayState.Embedded;
+            StopSamplingButton.IsEnabled = tests.IsSampling;
+            MarkHiddenButton.IsEnabled = MarkRestoredButton.IsEnabled = tests.IsSampling;
+            OpenPopupButton.IsEnabled = active && tests.Configuration.Controls && controller.Session.State == IslandDisplayState.Embedded && !controller.PopupOpen;
+            ClosePopupButton.IsEnabled = controller.PopupOpen;
+            RecordResultButton.IsEnabled = active;
+            ExportButton.IsEnabled = tests.LastRun is not null;
+            ClearSimulationButton.IsEnabled = controller.SimulateUnavailable;
+            SimulateButton.IsEnabled = !controller.SimulateUnavailable;
+            RetryButton.IsEnabled = VisibilityToggle.IsOn;
+            MaterialStatusText.Text = controller.MaterialStatus;
+            CaseStatusText.Text = tests.Status + (active ? $" · {tests.Run!.Configuration.CaseId} · {tests.Run.ElapsedSeconds:F0} 秒" : "");
+            ActionHint.Text = preview.IsOpen ? "独立预览已打开：拖动它的标题栏，改参数后应用；关闭预览后可开始任务栏案例。"
+                : active ? "案例互斥运行；先记录结果，再停止。"
+                : VisibilityToggle.IsOn ? "先开始案例，再采样或记录结果。" : "先打开显示组件，再开始案例或重试。";
+            var samples = tests.LastRun?.Samples;
+            SamplingText.Text = samples is { Count: > 0 } ? DescribeSamples(samples) : "尚无采样。";
+            EvidenceText.Text = tests.EvidenceDirectory + "\n" + controller.Notice;
+            HistoryText.Text = string.Join("\n\n", tests.History.Reverse().Select(run =>
+                $"{run.StartedAt:HH:mm:ss} · {run.Configuration.CaseId} · {run.Outcome}\n" +
+                string.Join("；", run.Results.Where(r => r.Value.At is not null).Select(r => $"{r.Key}: {r.Value.Status}（{r.Value.Note}）")) +
+                $"\n{run.DirectoryPath}"));
+            ErrorText.Text = string.Join("\n", controller.Errors.Concat(new[] { tests.LastError, displaySelection?.Error }.Where(e => e is not null)));
         }
-
-        TopLevelControlButton.Content = "关闭透明顶级对照窗口";
-
-        // The material dropdown is the single source of truth for this window. The transparency mode
-        // dropdown only feeds the embed probe request, so the two controls cannot fight over the surface.
-        var frameDetail = Win32ExplorerTaskbarEmbedAdapter.PrepareControlWindowSurface(controlWindow.WindowHandle);
-        controlStatusBase = $"顶级对照窗口已显示（未嵌入任务栏）。窗口表面：{frameDetail}；backdrop_state：{controlWindow.DescribeBackdropState()}。材质由「材质」下拉框控制，可实时切换对比。";
-        controlWindow.AppWindow.Changed += TopLevelControlWindow_Changed;
-        ApplyMaterialToControlWindow();
-        UpdateControlDisplayEnvironment(controlWindow);
+        finally { rendering = false; }
     }
-
-    private string controlStatusBase = string.Empty;
-
-    /// <summary>
-    /// The display environment is re-read whenever the control window moves, so the maintainer can drag it
-    /// between monitors and read the monitor line for the screen it is actually on.
-    /// </summary>
-    private void TopLevelControlWindow_Changed(Microsoft.UI.Windowing.AppWindow sender, Microsoft.UI.Windowing.AppWindowChangedEventArgs args)
+    private static string DescribeSamples(IReadOnlyList<HostResourceSample> samples)
     {
-        if (args.DidPositionChange && topLevelControlWindow is not null)
-        {
-            UpdateControlDisplayEnvironment(topLevelControlWindow);
-        }
+        var last = samples[^1];
+        var cpu = samples.Count > 1 ? 100 * (last.CpuSeconds - samples[^2].CpuSeconds) / (last.Seconds - samples[^2].Seconds) : 0;
+        return $"{last.Seconds:F1} 秒 · CPU 单核等效 {cpu:F2}% / 整机 {cpu / Environment.ProcessorCount:F2}%\n私有内存 {last.PrivateBytes / 1048576d:F1} MiB · 工作集 {last.WorkingSetBytes / 1048576d:F1} MiB · 句柄 {last.Handles} · 线程 {last.Threads}\n已更新内容 {last.Updates} 次；不是呈现 FPS。";
     }
-
-    private void UpdateControlDisplayEnvironment(ExplorerTaskbarProbeWindow controlWindow)
+    private HostTestConfiguration Selection(bool controls) => new(
+        new[] { "none", "acrylic", "mica" }[MaterialCombo.SelectedIndex],
+        MaterialCombo.SelectedIndex == 0 ? new[] { 0d, 0.5d, 1d }[AlphaCombo.SelectedIndex] : 1,
+        new[] { "system", "light", "dark" }[ThemeCombo.SelectedIndex],
+        new[] { 0, 1, 30, 60 }[LoadCombo.SelectedIndex], DurationCombo.SelectedIndex == 0 ? 30 : 1800, controls);
+    private void Navigation_SelectionChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
     {
-        ProbeStatusText.Text = $"{controlStatusBase}\n当前所在显示器：{Win32ExplorerTaskbarEmbedAdapter.DescribeDisplayEnvironment(controlWindow.WindowHandle)}";
-        ProbeStatusText.Visibility = Visibility.Visible;
+        if (HostingPanel is null || args.SelectedItem is not NavigationViewItem item) return;
+        var panels = new[] { HostingPanel, MaterialPanel, SamplingPanel, EvidencePanel };
+        for (var i = 0; i < panels.Length; i++) panels[i].Visibility = item.Tag?.ToString() == i.ToString() ? Visibility.Visible : Visibility.Collapsed;
     }
-
-    private ProbeTransparencyMode SelectedTransparencyMode => TransparencyModeCombo.SelectedIndex switch
-    {
-        1 => ProbeTransparencyMode.TintDiagnostic,
-        2 => ProbeTransparencyMode.AcrylicController,
-        3 => ProbeTransparencyMode.NearTransparentBackdrop,
-        4 => ProbeTransparencyMode.SolidPaint,
-        _ => ProbeTransparencyMode.Backdrop,
-    };
-
-    /// <summary>Material dropdown entries, filled from the core selection order so the UI cannot drift from it.</summary>
-    private void PopulateMaterialCombo()
-    {
-        MaterialCombo.Items.Clear();
-        foreach (var kind in MaterialResolver.SelectionOrder)
-        {
-            // The translucency hint is part of the label because Mica is opaque by design; without it
-            // the maintainer reasonably expects the opacity slider to make the window see-through.
-            MaterialCombo.Items.Add($"{MaterialResolver.Describe(kind)}（{(MaterialResolver.IsTranslucent(kind) ? "可透" : "不透")}）");
-        }
-
-        MaterialCombo.SelectedIndex = MaterialResolver.SelectionOrder.ToList().IndexOf(MaterialKind.Acrylic);
-        UpdateMaterialStatus();
-    }
-
-    private MaterialSpec SelectedMaterialSpec => new(
-        MaterialCombo.SelectedIndex >= 0 && MaterialCombo.SelectedIndex < MaterialResolver.SelectionOrder.Count
-            ? MaterialResolver.SelectionOrder[MaterialCombo.SelectedIndex]
-            : MaterialKind.Acrylic,
-        MaterialOpacitySlider.Value);
-
-    /// <summary>
-    /// Shows the requested material, the material that is actually available on this build and the
-    /// downgrade reason, so a fallback is never silent.
-    /// </summary>
-    private void UpdateMaterialStatus()
-    {
-        if (MaterialCombo.SelectedIndex < 0)
-        {
-            MaterialStatusText.Text = string.Empty;
-            return;
-        }
-
-        var resolution = MaterialResolver.Resolve(SelectedMaterialSpec, materialCapabilities);
-        var translucency = MaterialResolver.IsTranslucent(resolution.Effective.Kind)
-            ? "可透出后面内容"
-            : "不透出后面内容";
-        MaterialStatusText.Text = resolution.WasDowngraded
-            ? $"当前材质：{MaterialResolver.Describe(resolution.Effective.Kind)}（不透明度 {resolution.Effective.Opacity:F2}）｜{translucency}｜{MaterialResolver.DescribeOpacityMeaning(resolution.Effective.Kind)}｜{resolution.DowngradeReason}"
-            : $"当前材质：{MaterialResolver.Describe(resolution.Effective.Kind)}（不透明度 {resolution.Effective.Opacity:F2}）｜{translucency}｜{MaterialResolver.DescribeOpacityMeaning(resolution.Effective.Kind)}";
-    }
-
-    private MaterialCapabilities materialCapabilities = MaterialCapabilities.SolidOnly;
-
-    private void MaterialCombo_SelectionChanged(object sender, SelectionChangedEventArgs args)
-    {
-        UpdateMaterialStatus();
-        ApplyMaterialToControlWindow();
-    }
-
-    private void MaterialOpacitySlider_ValueChanged(object sender, RangeBaseValueChangedEventArgs args)
-    {
-        if (MaterialStatusText is not null)
-        {
-            UpdateMaterialStatus();
-            ApplyMaterialToControlWindow();
-        }
-    }
-
-    /// <summary>
-    /// Applies the selected material to the open top-level control window so the maintainer can compare
-    /// materials on one window without reopening it. Resolution and downgrade happen here, in Host code;
-    /// the window only renders the effective value it is handed. Solid additionally needs one GDI paint
-    /// on the window DC, which is performed through the adapter boundary.
-    /// </summary>
-    private void ApplyMaterialToControlWindow()
-    {
-        if (topLevelControlWindow is null || MaterialCombo.SelectedIndex < 0)
-        {
-            return;
-        }
-
-        var resolution = MaterialResolver.Resolve(SelectedMaterialSpec, materialCapabilities);
-        var applied = topLevelControlWindow.TryApplyMaterial(resolution.Effective, out var detail);
-        var downgrade = resolution.WasDowngraded ? $"{resolution.DowngradeReason} " : string.Empty;
-        var meaning = MaterialResolver.DescribeOpacityMeaning(resolution.Effective.Kind);
-        ProbeStatusText.Text = $"{controlStatusBase}\n材质：{MaterialResolver.Describe(resolution.Effective.Kind)}（不透明度 {resolution.Effective.Opacity:F2}）｜{meaning}｜{downgrade}{(applied ? detail : $"应用失败：{detail}")}";
-        ProbeStatusText.Visibility = Visibility.Visible;
-
-        // Solid mode owes one GDI paint on the window DC. Defer it to a low-priority queue item so the
-        // XAML framework has already connected the brush; painting before that still works on this machine
-        // but the ordering matches WinUIEx, which paints inside OnTargetConnected.
-        if (applied && topLevelControlWindow.RequiresSurfacePaint)
-        {
-            var target = topLevelControlWindow;
-            var baseText = ProbeStatusText.Text;
-            var requested = SelectedMaterialSpec;
-            var queued = target.DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
-            {
-                if (!ReferenceEquals(topLevelControlWindow, target) || SelectedMaterialSpec != requested ||
-                    !target.RequiresSurfacePaint || !target.IsBackdropConnected) return;
-                var painted = Win32ExplorerTaskbarEmbedAdapter.PaintWindowSurfaceOnce(target.WindowHandle, out var paintResult);
-                if (painted) target.MarkSurfacePainted();
-                ProbeStatusText.Text = $"{baseText}\n透明表面绘制：{(painted ? paintResult : $"失败：{paintResult}")}";
-                ProbeStatusText.Visibility = Visibility.Visible;
-            });
-            if (!queued) ShowHostError(new("control_surface_queue_failed", "对照窗口透明表面绘制未能进入队列。"));
-        }
-    }
-
-    private void TopLevelControlWindow_Closed(object sender, WindowEventArgs args)
-    {
-        if (sender is not ExplorerTaskbarProbeWindow closed || !ReferenceEquals(topLevelControlWindow, closed))
-        {
-            return;
-        }
-
-        closed.Closed -= TopLevelControlWindow_Closed;
-        try
-        {
-            closed.AppWindow.Changed -= TopLevelControlWindow_Changed;
-        }
-        catch (Exception)
-        {
-            // The AppWindow may already be gone after Closed.
-        }
-
-        topLevelControlWindow = null;
-        TopLevelControlButton.Content = "显示透明顶级对照窗口";
-    }
-
-    private CoreResult<bool> CloseTopLevelControlWindow()
-    {
-        return topLevelControlWindowOwner.Close();
-    }
-
-    private void DisplayActions_ProbeStateChanged(object? sender, EventArgs args)
-    {
-        var state = displayActions.ProbeState;
-        if (!state.IsEmbedded && state.Error is not null)
-        {
-            var builder = new StringBuilder();
-            builder.AppendLine(ExplorerTaskbarProbeOutcome.FallbackMessage);
-            builder.AppendLine(FormatError(state.Error));
-            if (state.FallbackError is not null)
-            {
-                builder.AppendLine($"独立贴靠窗口恢复失败：{FormatError(state.FallbackError)}");
-            }
-
-            ProbeStatusText.Text = builder.ToString().TrimEnd();
-            ProbeStatusText.Visibility = Visibility.Visible;
-        }
-
-        UpdateProbeButtons();
-    }
-
-    private void ShowProbeOutcome(ExplorerTaskbarProbeOutcome outcome)
-    {
-        if (outcome.Report is not null)
-        {
-            ProbeStatusText.Text = ExplorerTaskbarProbeReportFormatter.Format(outcome.Report);
-            if (outcome.Error is not null)
-            {
-                ProbeStatusText.Text += $"{Environment.NewLine}独立贴靠窗口关闭失败：{FormatError(outcome.Error)}";
-            }
-        }
-        else
-        {
-            var builder = new StringBuilder();
-            builder.AppendLine(ExplorerTaskbarProbeOutcome.FallbackMessage);
-            if (outcome.Error is not null)
-            {
-                builder.AppendLine(FormatError(outcome.Error));
-            }
-
-            if (outcome.FallbackError is not null)
-            {
-                builder.AppendLine($"独立贴靠窗口恢复失败：{FormatError(outcome.FallbackError)}");
-            }
-
-            ProbeStatusText.Text = builder.ToString().TrimEnd();
-        }
-
-        ProbeStatusText.Visibility = Visibility.Visible;
-    }
-
-    private void UpdateProbeButtons()
-    {
-        var canProbe = selectedComponent is { IsVisible: true };
-        var probeState = displayActions.ProbeState;
-        RunProbeButton.IsEnabled = canProbe;
-        StopProbeButton.IsEnabled = probeState.IsEmbedded || probeState.IsRecoveryPending;
-        StopProbeButton.Content = probeState.IsRecoveryPending
-            ? "重试恢复独立贴靠"
-            : "停止探针，恢复独立贴靠";
-    }
-
-    public void ShowHostError(StructuredError error)
-    {
-        ArgumentNullException.ThrowIfNull(error);
-        ErrorText.Text = FormatError(error);
-        ErrorText.Visibility = Visibility.Visible;
-    }
-
-    private void ShowHostErrors(IReadOnlyList<StructuredError> errors)
-    {
-        ErrorText.Text = string.Join(Environment.NewLine, errors.Select(FormatError));
-        ErrorText.Visibility = errors.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
-    }
-
-    private void MainWindow_Closing(AppWindow sender, AppWindowClosingEventArgs args)
-    {
-        var errors = new List<StructuredError>();
-        var controlWindowClose = CloseTopLevelControlWindow();
-        if (!controlWindowClose.IsSuccess)
-        {
-            args.Cancel = true;
-            ShowHostError(controlWindowClose.Error!);
-            return;
-        }
-
-        var shutdown = displayActions.Shutdown();
-        errors.AddRange(shutdown.Errors);
-        if (errors.Count > 0)
-        {
-            args.Cancel = true;
-            ShowHostErrors(errors);
-            return;
-        }
-
-        stoppingDock = true;
-        if (!environmentMonitor.TryStop())
-        {
-            args.Cancel = true;
-            ShowHostError(environmentMonitor.Error!);
-            return;
-        }
-        AppWindow.Closing -= MainWindow_Closing;
-        dockTimer.Stop();
-        dockTimer.Tick -= DockTimer_Tick;
-        taskbarDock.StateChanged -= TaskbarDock_StateChanged;
-        displayActions.ProbeStateChanged -= DisplayActions_ProbeStateChanged;
-        displayActions.Dispose();
-    }
-
-    private static string FormatError(StructuredError error) =>
-        string.IsNullOrWhiteSpace(error.Path)
-            ? $"{error.Code}: {error.Message}"
-            : $"{error.Code}: {error.Message} ({error.Path})";
+    private void VisibilityToggle_Toggled(object sender, RoutedEventArgs args) { if (!rendering) controller.Execute(() => controller.SetVisibility(VisibilityToggle.IsOn)); }
+    private void TargetDisplayCombo_SelectionChanged(object sender, SelectionChangedEventArgs args) => displaySelection?.SelectionChanged();
+    private void RightGapInput_ValueChanged(NumberBox sender, NumberBoxValueChangedEventArgs args) => displaySelection?.GapChanged(args.NewValue);
+    private void Material_Changed(object sender, SelectionChangedEventArgs args) { if (AlphaCombo is not null) AlphaCombo.IsEnabled = MaterialCombo.SelectedIndex == 0 && !controller.Tests.IsRunning; }
+    private void Retry_Click(object sender, RoutedEventArgs args) => controller.Execute(controller.Retry);
+    private void Simulate_Click(object sender, RoutedEventArgs args) => controller.Execute(() => controller.SetSimulation(true));
+    private void ClearSimulation_Click(object sender, RoutedEventArgs args) => controller.Execute(() => controller.SetSimulation(false));
+    private void StartCase_Click(object sender, RoutedEventArgs args) => controller.Execute(() => controller.Tests.Start(Selection(false)));
+    private void OpenControls_Click(object sender, RoutedEventArgs args) => controller.Execute(() => controller.Tests.Start(Selection(true)));
+    private void OpenPreview_Click(object sender, RoutedEventArgs args) => controller.Execute(() => controller.OpenPreview(
+        WinRT.Interop.WindowNative.GetWindowHandle(this), Selection(PreviewControlsToggle.IsChecked == true)));
+    private void ClosePreview_Click(object sender, RoutedEventArgs args) => controller.Execute(controller.Preview.Close);
+    private void PreviewPopup_Click(object sender, RoutedEventArgs args) => controller.Execute(() => controller.Preview.SetPopup(true));
+    private void StopCase_Click(object sender, RoutedEventArgs args) => controller.Execute(() => controller.Tests.Stop());
+    private void OpenPopup_Click(object sender, RoutedEventArgs args) => controller.Execute(() => controller.Tests.SetPopup(true));
+    private void ClosePopup_Click(object sender, RoutedEventArgs args) => controller.Execute(() => controller.Tests.SetPopup(false));
+    private void StartSampling_Click(object sender, RoutedEventArgs args) => controller.Execute(controller.Tests.StartSampling);
+    private void StopSampling_Click(object sender, RoutedEventArgs args) => controller.Execute(controller.Tests.StopSampling);
+    private void MarkHidden_Click(object sender, RoutedEventArgs args) => controller.Execute(() => controller.Tests.MarkVisibility(true));
+    private void MarkRestored_Click(object sender, RoutedEventArgs args) => controller.Execute(() => controller.Tests.MarkVisibility(false));
+    private void RecordResult_Click(object sender, RoutedEventArgs args) => controller.Execute(() => controller.Tests.RecordResult((string)DimensionCombo.SelectedItem, new[] { "passed", "failed", "untested" }[ResultCombo.SelectedIndex], ResultNote.Text));
+    private void Export_Click(object sender, RoutedEventArgs args) => controller.Execute(controller.Export);
+    private void OpenEvidence_Click(object sender, RoutedEventArgs args) => controller.Execute(controller.OpenEvidence);
 }

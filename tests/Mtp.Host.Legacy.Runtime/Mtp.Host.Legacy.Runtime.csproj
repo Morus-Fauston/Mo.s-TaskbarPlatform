@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/Mtp.Host.Runtime/Mtp.Host.Runtime.csproj" />
+    <InternalsVisibleTo Include="Mtp.Host.Legacy.Windows" />
+    <InternalsVisibleTo Include="Mtp.Platform.Core.Tests" />
+    <InternalsVisibleTo Include="Mtp.Host.Windows.Tests" />
+    <InternalsVisibleTo Include="Mtp.Host.WindowTests" />
+  </ItemGroup>
+</Project>

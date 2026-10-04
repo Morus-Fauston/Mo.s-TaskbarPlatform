@@ -23,6 +23,7 @@
     <ProjectReference Include="..\..\src\Mtp.Platform.Core\Mtp.Platform.Core.csproj" />
     <ProjectReference Include="..\..\src\Mtp.Contracts\Mtp.Contracts.csproj" />
     <ProjectReference Include="../../src/Mtp.Host.Runtime/Mtp.Host.Runtime.csproj" />
+    <ProjectReference Include="../Mtp.Host.Legacy.Runtime/Mtp.Host.Legacy.Runtime.csproj" />
   </ItemGroup>
 
   <ItemGroup>

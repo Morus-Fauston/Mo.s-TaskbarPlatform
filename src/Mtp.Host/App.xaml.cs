@@ -1,53 +1,24 @@
 using Microsoft.UI.Xaml;
-using Microsoft.UI.Windowing;
+using Mtp.Host.Islands;
 using System.IO;
 
 namespace Mtp.Host;
 
-/// <summary>
-/// Starts the ordinary WinUI window used by the first Host display slice.
-/// </summary>
 public partial class App : Application
 {
     private MainWindow? window;
-
-    public App()
-    {
-        InitializeComponent();
-    }
-
+    public App() => InitializeComponent();
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
-        var declarationPath = Path.Combine(AppContext.BaseDirectory, "declaration.json");
         var preferences = HostPreferenceStorage.Initialize(AppContext.BaseDirectory);
-        var controller = new HostDisplayController(
-            new LocalJsonDeclarationSource(declarationPath),
-            preferences.DisplayStore);
-        var displayLoad = controller.Load();
-        var taskbarEnvironment = new Win32TaskbarDockEnvironment();
-        var taskbarDock = new TaskbarDockWindowAdapter(
-            preferences.DockStore,
-            taskbarEnvironment,
-            () => new WinUiTaskbarDockWindow());
-        var dockWindowController = new IndependentDockWindowController(
-            controller,
-            taskbarDock);
-        var probeController = new ExplorerTaskbarProbeController(
-            controller,
-            new Win32ExplorerTaskbarEmbedAdapter(() => DisplayArea.FindAll().Count),
-            dockWindowController);
-        var displayActions = new HostDisplayActionController(controller, dockWindowController, probeController);
-        window = new MainWindow(displayLoad, displayActions, taskbarDock, taskbarEnvironment);
-        var launchEnvironment = taskbarEnvironment.Capture(taskbarDock.Preferences.TargetDisplayId);
-        if (launchEnvironment.Value?.Visibility == Mtp.Platform.Core.TaskbarVisibility.Allowed)
-            window.Activate();
-        else
-            window.AppWindow.Show(false);
-
-        var restoreResult = displayActions.RestoreCurrent();
-        foreach (var error in restoreResult.Errors)
-        {
-            window.ShowHostError(error);
-        }
+        var display = new HostDisplayController(new LocalJsonDeclarationSource(Path.Combine(AppContext.BaseDirectory, "declaration.json")), preferences.DisplayStore);
+        var loaded = display.Load();
+        var environment = new Win32TaskbarDockEnvironment();
+        var evidence = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MTP", "HostEvidence");
+        var console = new HostConsoleController(display, loaded, preferences.DockStore,
+            preferences => IslandDisplayAdapter.CaptureExplorer(environment, preferences), evidence, environment);
+        window = new MainWindow(console, environment.GetDisplays);
+        window.Activate();
+        console.Refresh();
     }
 }

@@ -1,0 +1,59 @@
+﻿param([string]$LauncherPath = (Join-Path $PSScriptRoot 'Start-ManualRegression.cmd'))
+$ErrorActionPreference = 'Stop'
+
+function Invoke-Launcher([string]$path, [string]$arguments) {
+    $info = New-Object Diagnostics.ProcessStartInfo
+    $info.FileName = $env:ComSpec
+    $info.Arguments = '/d /c ""' + $path + '" ' + $arguments + ' < nul"'
+    $info.UseShellExecute = $false
+    $info.CreateNoWindow = $true
+    $info.RedirectStandardOutput = $true
+    $info.RedirectStandardError = $true
+    $process = [Diagnostics.Process]::Start($info)
+    $outTask = $process.StandardOutput.ReadToEndAsync()
+    $errTask = $process.StandardError.ReadToEndAsync()
+    if (-not $process.WaitForExit(15000)) {
+        $process.Kill()
+        throw 'Launcher timed out.'
+    }
+    $result = [pscustomobject]@{ Code = $process.ExitCode; Output = $outTask.Result; Error = $errTask.Result }
+    $process.Dispose()
+    return $result
+}
+
+# Use a harmless payload to verify forwarding and failure propagation through cmd.exe.
+$fixtureRoot = Join-Path $env:TEMP ('MTP launcher test ' + [guid]::NewGuid().ToString('N'))
+$fixtureDir = Join-Path $fixtureRoot 'tools\MtpManualRegression'
+New-Item -ItemType Directory -Path $fixtureDir -Force | Out-Null
+$fixtureLauncher = Join-Path $fixtureDir 'Start-ManualRegression.cmd'
+Copy-Item -LiteralPath $LauncherPath -Destination $fixtureLauncher
+Set-Content -LiteralPath (Join-Path $fixtureDir 'Run-MtpManualRegression.ps1') -Encoding UTF8 -Value @'
+param([switch]$CheckLauncher, [switch]$ExplorerOnly, [switch]$SkipAutomatedTests, [switch]$SkipContentIsland)
+if (-not $CheckLauncher) { exit 24 }
+Write-Output 'MTP_FIXTURE_REACHED'
+if ($ExplorerOnly -and $SkipAutomatedTests -and $SkipContentIsland) { Write-Output 'MTP_EXPLORER_ONLY' }
+exit 23
+'@
+$fixtureResult = Invoke-Launcher $fixtureLauncher '-CheckLauncher'
+if ($fixtureResult.Code -ne 23 -or $fixtureResult.Output -notmatch 'MTP_FIXTURE_REACHED') {
+    throw ('Launcher did not reach payload or preserve exit code: ' + ($fixtureResult | ConvertTo-Json -Compress))
+}
+
+# The real payload's early check exits before backup, tests, UI or human-result recording.
+$actualResult = Invoke-Launcher $LauncherPath '-CheckLauncher'
+if ($actualResult.Code -ne 0 -or $actualResult.Output -notmatch 'MTP_LAUNCH_REACHED' -or $actualResult.Error) {
+    throw ('Actual Windows PowerShell payload failed: ' + ($actualResult | ConvertTo-Json -Compress))
+}
+Write-Output 'PASS: cmd payload, argument forwarding, exit code 23, actual PowerShell 5.1 payload.'
+$retestLauncher = Join-Path $PSScriptRoot 'Start-ExplorerRetest.cmd'
+Copy-Item -LiteralPath $retestLauncher -Destination $fixtureDir
+$retestFixture = Invoke-Launcher (Join-Path $fixtureDir 'Start-ExplorerRetest.cmd') '-CheckLauncher'
+if ($retestFixture.Code -ne 23 -or $retestFixture.Output -notmatch 'MTP_EXPLORER_ONLY') {
+    throw 'Explorer retest wrapper did not forward the scope switches and failure exit code.'
+}
+$retestActual = Invoke-Launcher $retestLauncher '-CheckLauncher'
+if ($retestActual.Code -ne 0 -or $retestActual.Output -notmatch 'MTP_LAUNCH_REACHED' -or $retestActual.Error) {
+    throw ('Actual Explorer retest wrapper failed: ' + ($retestActual | ConvertTo-Json -Compress))
+}
+Write-Output 'PASS: Explorer-only wrapper and actual startup (no UI or human results).'
+Write-Output ('Harmless fixture retained: ' + $fixtureRoot)

@@ -14,7 +14,7 @@ if (-not (Test-Path -LiteralPath $exe)) {
     throw '请先执行：dotnet build tools/TaskbarIslandLab/TaskbarIslandLab.csproj --configuration Release'
 }
 if (-not $OutputDirectory) {
-    $OutputDirectory = Join-Path $repo ('.scratch/二期开发/verification/05F/manual-' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff'))
+    $OutputDirectory = Join-Path $repo ('.scratch/二期开发/evidence/05F/manual-' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff'))
 }
 $sessionPath = [IO.Path]::GetFullPath($OutputDirectory)
 if (Test-Path -LiteralPath $sessionPath) { throw '输出目录已存在；请换一个新目录。' }

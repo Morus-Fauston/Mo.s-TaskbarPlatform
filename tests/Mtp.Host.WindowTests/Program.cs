@@ -12,7 +12,12 @@ internal static class Program
     {
         Environment.ExitCode = 1;
         WinRT.ComWrappersSupport.InitializeComWrappers();
-        Application.Start(_ => new WindowTestApplication());
+        Application.Start(_ =>
+        {
+            SynchronizationContext.SetSynchronizationContext(new Microsoft.UI.Dispatching.DispatcherQueueSynchronizationContext(
+                Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread()));
+            new WindowTestApplication();
+        });
     }
 }
 
@@ -27,7 +32,7 @@ public sealed partial class WindowTestApplication : Application
     private DispatcherTimer? timer;
     private int stage;
     private int samples;
-    private readonly Type monitorType = typeof(WinUiIndependentDockWindowAdapter).Assembly.GetType("Mtp.Host.TaskbarEnvironmentMonitor", throwOnError: true)!;
+    private readonly Type monitorType = typeof(MainWindow).Assembly.GetType("Mtp.Host.TaskbarEnvironmentMonitor", throwOnError: true)!;
     private object? monitor;
     private nint eventWindow;
     private int eventCount;
@@ -61,7 +66,7 @@ public sealed partial class WindowTestApplication : Application
         catch (Exception error) { Finish(error); }
     }
 
-    private void Advance()
+    private async void Advance()
     {
         try
         {
@@ -88,6 +93,13 @@ public sealed partial class WindowTestApplication : Application
                     break;
                 default:
                     if (eventCount != stoppedEventCount) throw new InvalidOperationException("Stopped monitor delivered late refresh.");
+                    timer!.Stop();
+                    await MonitorDragRegression.RunAsync(message => File.AppendAllText(LogPath, message + "\n"));
+                    await PreviewStartupRegression.RunAsync(message => File.AppendAllText(LogPath, message + "\n"));
+                    await ExplorerProbeCleanupRegression.RunAsync(message => File.AppendAllText(LogPath, message + "\n"));
+                    await MainWindowDisplayRegression.RunAsync(message => File.AppendAllText(LogPath, message + "\n"));
+                    await HostConsoleRegression.RunLifetimeAsync(message => File.AppendAllText(LogPath, message + "\n"));
+                    await HostConsoleRegression.RunAsync(message => File.AppendAllText(LogPath, message + "\n"));
                     Finish(null);
                     break;
             }
@@ -167,7 +179,7 @@ public sealed partial class WindowTestApplication : Application
 
     private void RecordEnvironment()
     {
-        var environmentType = dockType.Assembly.GetType("Mtp.Host.Win32TaskbarDockEnvironment", throwOnError: true)!;
+        var environmentType = typeof(MainWindow).Assembly.GetType("Mtp.Host.Win32TaskbarDockEnvironment", throwOnError: true)!;
         var environment = Activator.CreateInstance(environmentType, new object?[] { null });
         var clock = System.Diagnostics.Stopwatch.StartNew();
         var result = environmentType.GetMethod("Capture")!.Invoke(environment, new object?[] { null })!;

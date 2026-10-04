@@ -1,149 +1,119 @@
-<?xml version="1.0" encoding="utf-8"?>
-<Window
-    x:Class="Mtp.Host.MainWindow"
-    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    Title="MTP Host">
-    <Window.SystemBackdrop>
-        <MicaBackdrop />
-    </Window.SystemBackdrop>
-
-    <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
-    <Grid Padding="24">
-        <StackPanel Spacing="16" MaxWidth="640">
-            <TextBlock
-                Text="MTP Host"
-                Style="{StaticResource TitleTextBlockStyle}" />
-
-            <ToggleSwitch
-                x:Name="VisibilityToggle"
-                Header="显示组件"
-                IsOn="False"
-                IsEnabled="False"
-                Toggled="VisibilityToggle_Toggled" />
-
-            <ComboBox x:Name="TargetDisplayCombo" Header="目标显示器" HorizontalAlignment="Stretch"
-                SelectionChanged="TargetDisplayCombo_SelectionChanged" />
-            <NumberBox x:Name="RightGapInput" Header="右侧避让距离（DIP）" Minimum="0" Maximum="64"
-                Value="8" SmallChange="1" LargeChange="8" SpinButtonPlacementMode="Inline"
-                ValueChanged="RightGapInput_ValueChanged" />
-            <TextBlock Text="位置：靠右" />
-            <TextBlock x:Name="DockStatusText" TextWrapping="Wrap" IsTextSelectionEnabled="True" />
-
-            <Expander Header="实验探针" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch">
-            <StackPanel Spacing="8">
-                <StackPanel Spacing="8">
-                    <Button
-                        x:Name="RunProbeButton"
-                        Content="运行 Explorer 嵌入探针"
-                        IsEnabled="False"
-                        Click="RunProbeButton_Click" />
-                    <Button
-                        x:Name="StopProbeButton"
-                        Content="停止探针，恢复独立贴靠"
-                        IsEnabled="False"
-                        Click="StopProbeButton_Click" />
-                </StackPanel>
-                <CheckBox
-                    x:Name="SimulateFailureCheck"
-                    Content="模拟任务栏不可用（失败注入）"
-                    Checked="SimulateFailureCheck_Changed" Unchecked="SimulateFailureCheck_Changed" />
-                <ComboBox
-                    x:Name="MaterialCombo"
-                    Header="顶级对照窗口材质"
-                    SelectionChanged="MaterialCombo_SelectionChanged"
-                    HorizontalAlignment="Stretch" />
-                <Slider
-                    x:Name="MaterialOpacitySlider"
-                    Header="不透明度"
-                    Minimum="0"
-                    Maximum="1"
-                    StepFrequency="0.05"
-                    Value="0.8"
-                    ValueChanged="MaterialOpacitySlider_ValueChanged"
-                    HorizontalAlignment="Stretch" />
-                <TextBlock
-                    x:Name="MaterialStatusText"
-                    Opacity="0.7"
-                    TextWrapping="Wrap" />
-                <ComboBox
-                    x:Name="TransparencyModeCombo"
-                    Header="子窗口探针透明实验模式"
-                    SelectedIndex="2"
-                    HorizontalAlignment="Stretch">
-                    <ComboBoxItem Content="Backdrop：透明 backdrop + DWM 玻璃扩展" />
-                    <ComboBoxItem Content="TintDiagnostic：半透明红 backdrop + DWM 玻璃扩展（截图可见）" />
-                    <ComboBoxItem Content="AcrylicController：薄亚克力控制器 + DWM 玻璃扩展（DeskBox 同路径）" />
-                    <ComboBoxItem Content="NearTransparentBackdrop：alpha=1 近透明 backdrop + DWM 玻璃扩展" />
-                    <ComboBoxItem Content="SolidPaint：纯色色刷 + DWM 玻璃扩展 + 一次 GDI 绘制（修复 alpha 丢失）" />
-                </ComboBox>
-                <Button
-                    x:Name="TopLevelControlButton"
-                    Content="显示透明顶级对照窗口"
-                    Click="TopLevelControlButton_Click" />
-                <TextBlock
-                    Text="探针结果为实验记录，不代表正式兼容"
-                    Opacity="0.7" />
-                <TextBlock
-                    x:Name="ProbeStatusText"
-                    IsTextSelectionEnabled="True"
-                    TextWrapping="Wrap"
-                    Visibility="Collapsed" />
-            </StackPanel>
-            </Expander>
-
-            <Border
-                x:Name="ComponentCard"
-                Padding="16"
-                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                BorderThickness="1"
-                CornerRadius="8">
-                <Grid ColumnSpacing="16">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="Auto" />
-                    </Grid.ColumnDefinitions>
-                    <StackPanel Spacing="6">
-                        <TextBlock
-                            x:Name="ComponentText"
-                            Style="{StaticResource SubtitleTextBlockStyle}"
-                            TextTrimming="CharacterEllipsis" />
-                        <TextBlock
-                            Text="二期 Host 显示基线"
-                            Opacity="0.7" />
-                        <TextBlock
-                            x:Name="IdentityText"
-                            Opacity="0.7"
-                            TextTrimming="CharacterEllipsis" />
-                    </StackPanel>
-
-                    <StackPanel
-                        Grid.Column="1"
-                        HorizontalAlignment="Right"
-                        Orientation="Horizontal"
-                        Spacing="8"
-                        VerticalAlignment="Center">
-                        <Border
-                            x:Name="StatusMarker"
-                            Width="10"
-                            Height="10"
-                            Background="{ThemeResource AccentFillColorDefaultBrush}"
-                            CornerRadius="5" />
-                        <TextBlock
-                            x:Name="StatusText"
-                            VerticalAlignment="Center" />
-                    </StackPanel>
-                </Grid>
-            </Border>
-
-            <TextBlock
-                x:Name="ErrorText"
-                Foreground="{ThemeResource SystemFillColorCriticalBrush}"
-                IsTextSelectionEnabled="True"
-                TextWrapping="WrapWholeWords"
-                Visibility="Collapsed" />
-        </StackPanel>
+<Window x:Class="Mtp.Host.MainWindow"
+ xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+ xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="MTP Host · 测试平台">
+ <Window.SystemBackdrop><MicaBackdrop /></Window.SystemBackdrop>
+ <Grid RowSpacing="12" Padding="20">
+  <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+  <StackPanel Spacing="4">
+   <TextBlock Text="Host 测试平台" Style="{StaticResource TitleTextBlockStyle}"/>
+   <TextBlock x:Name="ComponentText" TextWrapping="Wrap"/>
+   <TextBlock x:Name="DockStatusText" TextWrapping="Wrap" IsTextSelectionEnabled="True"/>
+  </StackPanel>
+  <NavigationView x:Name="Navigation" Grid.Row="1" PaneDisplayMode="Top" IsSettingsVisible="False" IsBackButtonVisible="Collapsed"
+                  SelectionChanged="Navigation_SelectionChanged">
+   <NavigationView.MenuItems>
+    <NavigationViewItem Content="承载与恢复" Tag="0" IsSelected="True"/>
+    <NavigationViewItem Content="材质与交互" Tag="1"/>
+    <NavigationViewItem Content="资源采样" Tag="2"/>
+    <NavigationViewItem Content="结果与证据" Tag="3"/>
+   </NavigationView.MenuItems>
+   <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+    <Grid Padding="4,12,4,16">
+     <StackPanel x:Name="HostingPanel" Spacing="12">
+      <TextBlock Text="组件偏好" Style="{StaticResource SubtitleTextBlockStyle}"/>
+      <TextBlock x:Name="IdentityText" TextWrapping="Wrap" IsTextSelectionEnabled="True"/>
+      <TextBlock x:Name="TargetDetails" TextWrapping="Wrap" IsTextSelectionEnabled="True"/>
+      <ToggleSwitch x:Name="VisibilityToggle" Header="显示声明组件（持久偏好）" Toggled="VisibilityToggle_Toggled"/>
+      <ComboBox x:Name="TargetDisplayCombo" Header="目标显示器" HorizontalAlignment="Stretch" SelectionChanged="TargetDisplayCombo_SelectionChanged"/>
+      <NumberBox x:Name="RightGapInput" Header="右侧避让距离（0–64 DIP）" Value="8" Minimum="0" Maximum="64" SpinButtonPlacementMode="Inline" ValueChanged="RightGapInput_ValueChanged"/>
+      <Button x:Name="RetryButton" Content="重试内容岛嵌入" Click="Retry_Click"/>
+      <TextBlock Text="故障注入 · 仅本次会话" Style="{StaticResource SubtitleTextBlockStyle}"/>
+      <StackPanel Orientation="Horizontal" Spacing="8">
+       <Button x:Name="SimulateButton" Content="模拟任务栏不可用" Click="Simulate_Click"/>
+       <Button x:Name="ClearSimulationButton" Content="清除模拟" Click="ClearSimulation_Click"/>
+      </StackPanel>
+      <TextBlock Text="Explorer 重启请由维护者在 Windows 中操作。任务栏恢复后自动尝试嵌入；失败可手动重试。" TextWrapping="Wrap"/>
+     </StackPanel>
+     <StackPanel x:Name="MaterialPanel" Spacing="10" Visibility="Collapsed">
+      <TextBlock Text="当前 Host 内容岛案例" Style="{StaticResource SubtitleTextBlockStyle}"/>
+      <TextBlock Text="只看到“组件 · 可用”是普通声明模式。点“打开测试控件”才会出现按钮、开关和滑块；已有案例先停止。也可直接打开下面的独立预览。" TextWrapping="Wrap"/>
+      <StackPanel Orientation="Horizontal" Spacing="8">
+       <Button x:Name="OpenPreviewButton" Content="打开独立预览" Click="OpenPreview_Click"/>
+       <Button x:Name="ClosePreviewButton" Content="关闭独立预览" Click="ClosePreview_Click"/>
+      </StackPanel>
+      <CheckBox x:Name="PreviewControlsToggle" Content="预览显示测试控件" IsChecked="True"/>
+      <Button x:Name="PreviewPopupButton" Content="打开预览 Popup" Click="PreviewPopup_Click"/>
+      <TextBlock x:Name="PreviewStatusText" TextWrapping="Wrap"/>
+      <TextBlock Text="预览可拖动标题栏。选择下面的材质、alpha 和主题后，点“应用到预览”；取消勾选可只看材质。无需先显示声明组件。" TextWrapping="Wrap"/>
+      <ComboBox x:Name="MaterialCombo" Header="材质" SelectedIndex="0" SelectionChanged="Material_Changed" HorizontalAlignment="Stretch">
+       <x:String>none</x:String><x:String>acrylic</x:String><x:String>mica</x:String>
+      </ComboBox>
+      <ComboBox x:Name="AlphaCombo" Header="none 透明对照 alpha" SelectedIndex="0" HorizontalAlignment="Stretch">
+       <x:String>0</x:String><x:String>0.5</x:String><x:String>1</x:String>
+      </ComboBox>
+      <ComboBox x:Name="ThemeCombo" Header="测试内容主题" SelectedIndex="0" HorizontalAlignment="Stretch">
+       <x:String>跟随系统</x:String><x:String>浅色</x:String><x:String>深色</x:String>
+      </ComboBox>
+      <TextBlock Text="Mica 按不透明材质观察；Acrylic 的系统回退与真实外观分别记录。系统主题、高对比与透明效果由维护者手动切换。" TextWrapping="Wrap"/>
+      <StackPanel Orientation="Horizontal" Spacing="8">
+       <Button x:Name="StartCaseButton" Content="开始文字案例" Click="StartCase_Click"/>
+       <Button x:Name="OpenControlsButton" Content="打开测试控件" Click="OpenControls_Click"/>
+       <Button x:Name="StopCaseButton" Content="停止案例" Click="StopCase_Click"/>
+      </StackPanel>
+      <TextBlock x:Name="MaterialStatusText" TextWrapping="Wrap"/>
+      <StackPanel Orientation="Horizontal" Spacing="8">
+       <Button x:Name="OpenPopupButton" Content="打开 Popup" Click="OpenPopup_Click" ToolTipService.ToolTip="需要运行测试控件案例并成功嵌入。"/>
+       <Button x:Name="ClosePopupButton" Content="关闭 Popup" Click="ClosePopup_Click"/>
+      </StackPanel>
+      <TextBlock Text="测试控件包含计数按钮、开关、滑块。使用 Tab / Shift+Tab 检查遍历与焦点，观察透明空白点击。外部 UIA 检查目标：MtpHostIslandContent；未配置采集器时记未测。" TextWrapping="Wrap" IsTextSelectionEnabled="True"/>
+      <TextBlock Text="预览与任务栏案例互斥，不参与资源采样。空白区域用于观察点击命中，不承诺穿透；实际任务栏外观仍需单独验证。" TextWrapping="Wrap"/>
+     </StackPanel>
+     <StackPanel x:Name="SamplingPanel" Spacing="12" Visibility="Collapsed">
+      <TextBlock Text="当前 Host 资源采样 · 05K" Style="{StaticResource SubtitleTextBlockStyle}"/>
+      <ComboBox x:Name="LoadCombo" Header="案例更新负载（开始案例前选择）" SelectedIndex="0" HorizontalAlignment="Stretch">
+       <x:String>静态</x:String><x:String>1 Hz</x:String><x:String>30 Hz</x:String><x:String>60 Hz</x:String>
+      </ComboBox>
+      <ComboBox x:Name="DurationCombo" Header="采样时长预设（开始案例前选择）" SelectedIndex="0" HorizontalAlignment="Stretch">
+       <x:String>短测 · 30 秒</x:String><x:String>长测 · 30 分钟</x:String>
+      </ComboBox>
+      <TextBlock Text="先在材质与交互页开始案例，再采样。长测仅补趋势，不自动判断泄漏或性能预算。" TextWrapping="Wrap"/>
+      <StackPanel Orientation="Horizontal" Spacing="8">
+       <Button x:Name="StartSamplingButton" Content="开始采样" Click="StartSampling_Click"/>
+       <Button x:Name="StopSamplingButton" Content="停止采样" Click="StopSampling_Click"/>
+      </StackPanel>
+      <StackPanel Orientation="Horizontal" Spacing="8">
+       <Button x:Name="MarkHiddenButton" Content="标记真实隐藏" Click="MarkHidden_Click" ToolTipService.ToolTip="仅在采样期间记录人工观察时点。"/>
+       <Button x:Name="MarkRestoredButton" Content="标记真实恢复" Click="MarkRestored_Click" ToolTipService.ToolTip="仅在采样期间记录人工观察时点。"/>
+      </StackPanel>
+      <TextBlock Text="标记只记录你观察到的时点，不操作任务栏。GPU、唤醒和呈现 FPS 未配置可靠采集器；更新频率不等于 FPS。" TextWrapping="Wrap"/>
+      <TextBlock x:Name="SamplingText" TextWrapping="Wrap" IsTextSelectionEnabled="True"/>
+     </StackPanel>
+     <StackPanel x:Name="EvidencePanel" Spacing="12" Visibility="Collapsed">
+      <TextBlock Text="逐项结果 · 05K / 05L" Style="{StaticResource SubtitleTextBlockStyle}"/>
+      <TextBlock Text="在停止案例之前记录人工观察。每个组合各开一轮；自动观测和人工结论分别保存。" TextWrapping="Wrap"/>
+      <ComboBox x:Name="DimensionCombo" Header="证据维度" HorizontalAlignment="Stretch"/>
+      <ComboBox x:Name="ResultCombo" Header="人工结果" SelectedIndex="2" HorizontalAlignment="Stretch">
+       <x:String>通过</x:String><x:String>失败</x:String><x:String>未测</x:String>
+      </ComboBox>
+      <TextBox x:Name="ResultNote" Header="观察说明 / 未测原因" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="80"/>
+      <Button x:Name="RecordResultButton" Content="记录本项结果" Click="RecordResult_Click"/>
+      <StackPanel Orientation="Horizontal" Spacing="8">
+       <Button x:Name="ExportButton" Content="导出本轮报告" Click="Export_Click"/>
+       <Button x:Name="OpenEvidenceButton" Content="打开证据目录" Click="OpenEvidence_Click"/>
+      </StackPanel>
+      <TextBlock x:Name="EvidenceText" TextWrapping="Wrap" IsTextSelectionEnabled="True"/>
+      <TextBlock Text="本次 Host 的历史结果" Style="{StaticResource SubtitleTextBlockStyle}"/>
+      <TextBlock x:Name="HistoryText" TextWrapping="Wrap" IsTextSelectionEnabled="True"/>
+     </StackPanel>
     </Grid>
-    </ScrollViewer>
+   </ScrollViewer>
+  </NavigationView>
+  <StackPanel Grid.Row="2" Spacing="4">
+   <TextBlock x:Name="CaseStatusText" TextWrapping="Wrap"/>
+   <TextBlock x:Name="ActionHint" TextWrapping="Wrap"/>
+   <Expander Header="历史错误与执行反馈（保留，不随状态刷新清除）" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch">
+    <ScrollViewer MaxHeight="130"><TextBlock x:Name="ErrorText" TextWrapping="WrapWholeWords" IsTextSelectionEnabled="True"/></ScrollViewer>
+   </Expander>
+  </StackPanel>
+ </Grid>
 </Window>
