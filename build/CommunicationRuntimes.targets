@@ -1,0 +1,16 @@
+<Project>
+  <Target Name="CopyCommunicationRuntimes" AfterTargets="Build">
+    <MSBuild Projects="$(MSBuildThisFileDirectory)../src/Mtp.Broker/Mtp.Broker.csproj" Targets="GetTargetPath" Properties="Configuration=$(Configuration);TargetFramework=net10.0">
+      <Output TaskParameter="TargetOutputs" ItemName="_BrokerAssembly" />
+    </MSBuild>
+    <MSBuild Projects="$(MSBuildThisFileDirectory)../samples/Mtp.CounterService/Mtp.CounterService.csproj" Targets="GetTargetPath" Properties="Configuration=$(Configuration);TargetFramework=net10.0">
+      <Output TaskParameter="TargetOutputs" ItemName="_CounterAssembly" />
+    </MSBuild>
+    <ItemGroup>
+      <_BrokerFiles Include="@(_BrokerAssembly);@(_BrokerAssembly->'%(RootDir)%(Directory)Mtp.Broker.deps.json');@(_BrokerAssembly->'%(RootDir)%(Directory)Mtp.Broker.runtimeconfig.json');@(_BrokerAssembly->'%(RootDir)%(Directory)Mtp.Contracts.dll');@(_BrokerAssembly->'%(RootDir)%(Directory)Mtp.Transport.dll')" />
+      <_CounterFiles Include="@(_CounterAssembly);@(_CounterAssembly->'%(RootDir)%(Directory)Mtp.CounterService.deps.json');@(_CounterAssembly->'%(RootDir)%(Directory)Mtp.CounterService.runtimeconfig.json');@(_CounterAssembly->'%(RootDir)%(Directory)Mtp.Contracts.dll');@(_CounterAssembly->'%(RootDir)%(Directory)Mtp.Transport.dll');@(_CounterAssembly->'%(RootDir)%(Directory)Mtp.Sdk.dll')" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_BrokerFiles)" DestinationFolder="$(OutDir)Broker" />
+    <Copy SourceFiles="@(_CounterFiles)" DestinationFolder="$(OutDir)CounterService" />
+  </Target>
+</Project>

@@ -74,6 +74,7 @@ internal sealed class IslandContent : UserControl
         surface.Background = new SolidColorBrush(Color.FromArgb(config.Material == "none" ? (byte)(255 * config.Alpha) : (byte)0, shade, shade, shade));
     }
     public void Update(long value) => label.Text = (value + clicks).ToString(System.Globalization.CultureInfo.InvariantCulture);
+    public void UpdateConfirmed(HostComponentDisplayModel component) => label.Text = component.Text + " · " + component.StatusLabel;
     public void SetPopup(bool open) { popup.IsOpen = open; record("popup-request", open); }
     public void Release() => popup.IsOpen = false;
 }

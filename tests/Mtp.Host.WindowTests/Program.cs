@@ -46,12 +46,18 @@ public sealed partial class WindowTestApplication : Application
         UnhandledException += (_, e) => File.AppendAllText(LogPath, e.Exception + "\n");
     }
 
-    protected override void OnLaunched(LaunchActivatedEventArgs args)
+    protected override async void OnLaunched(LaunchActivatedEventArgs args)
     {
         try
         {
             // Keep the application alive while the last dock is closed and recreated.
             lifetimeWindow = new Window();
+            if (Environment.GetCommandLineArgs().Contains("--broker-only", StringComparer.Ordinal))
+            {
+                await BrokerCounterRegression.RunAsync(message => File.AppendAllText(LogPath, message + "\n"));
+                Finish(null);
+                return;
+            }
             dock = Activator.CreateInstance(dockType, nonPublic: true)!;
             dockType.GetMethod("Hide")!.Invoke(dock, null);
             var initiallyHidden = (nint)(long)dockType.GetProperty("Identity")!.GetValue(dock)!;
@@ -100,6 +106,7 @@ public sealed partial class WindowTestApplication : Application
                     await MainWindowDisplayRegression.RunAsync(message => File.AppendAllText(LogPath, message + "\n"));
                     await HostConsoleRegression.RunLifetimeAsync(message => File.AppendAllText(LogPath, message + "\n"));
                     await HostConsoleRegression.RunAsync(message => File.AppendAllText(LogPath, message + "\n"));
+                    await BrokerCounterRegression.RunAsync(message => File.AppendAllText(LogPath, message + "\n"));
                     Finish(null);
                     break;
             }

@@ -27,6 +27,7 @@ public sealed class HostDisplayController
     private readonly HostDeclarationLoader declarationLoader;
     private readonly ComponentDisplayPreferenceManager preferenceManager;
     private IReadOnlyList<HostComponentDisplayModel> components = Array.Empty<HostComponentDisplayModel>();
+    private BrokerApplicationSnapshot? brokerSnapshot;
 
     public HostDisplayController(
         IDeclarationSource declarationSource,
@@ -37,6 +38,15 @@ public sealed class HostDisplayController
     }
 
     public IReadOnlyList<HostComponentDisplayModel> CurrentComponents => components;
+
+    public void ApplyBrokerSnapshot(BrokerApplicationSnapshot snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        if (snapshot.Declaration is null) return;
+        if (brokerSnapshot is null) preferenceManager.Load();
+        brokerSnapshot = snapshot;
+        components = BuildComponents(snapshot.Declaration);
+    }
 
     public HostDisplayLoadResult Load()
     {
@@ -66,7 +76,8 @@ public sealed class HostDisplayController
     {
         ArgumentNullException.ThrowIfNull(identity);
 
-        var declaredComponent = declarationLoader.SnapshotStore.Current?
+        var declaration = brokerSnapshot?.Declaration ?? declarationLoader.SnapshotStore.Current;
+        var declaredComponent = declaration?
             .FeatureGroups
             .SelectMany(featureGroup => featureGroup.Components)
             .FirstOrDefault(component => component.Identity == identity);
@@ -82,7 +93,7 @@ public sealed class HostDisplayController
             return CoreResult<HostComponentDisplayModel>.Failure(saveResult.Error!);
         }
 
-        components = BuildComponents(declarationLoader.SnapshotStore.Current!);
+        components = BuildComponents(declaration!);
         return CoreResult<HostComponentDisplayModel>.Success(
             components.First(component => component.Identity == identity));
     }
@@ -90,6 +101,21 @@ public sealed class HostDisplayController
     private IReadOnlyList<HostComponentDisplayModel> BuildComponents(ValidatedApplicationDeclaration declaration) =>
         Array.AsReadOnly(declaration.FeatureGroups
             .SelectMany(featureGroup => featureGroup.Components)
-            .Select(component => HostComponentDisplayModel.From(component, preferenceManager.Current.IsVisible(component.Identity)))
+            .Select(component => Project(component))
             .ToArray());
+
+    private HostComponentDisplayModel Project(Component component)
+    {
+        var model = HostComponentDisplayModel.From(component, preferenceManager.Current.IsVisible(component.Identity));
+        if (brokerSnapshot is null) return model;
+        var reading = brokerSnapshot.State?.Components.FirstOrDefault(value =>
+            value.FeatureGroupId == component.Identity.Segments[1].Value && value.ComponentId == component.Identity.LocalId.Value);
+        return model with
+        {
+            Text = reading?.Text ?? "等待服务状态",
+            Status = brokerSnapshot.IsInteractive ? CapabilityStatus.Available : CapabilityStatus.Unavailable,
+            StatusLabel = brokerSnapshot.IsInteractive ? "可用" : "服务未连接" +
+                (brokerSnapshot.LastError is { } error ? " · " + error.Message : "")
+        };
+    }
 }

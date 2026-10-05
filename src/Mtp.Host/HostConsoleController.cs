@@ -16,6 +16,9 @@ internal sealed class HostConsoleController
     private bool closing;
     private bool refreshing;
     private HostTestConfiguration applied = new();
+    private HostBrokerSession? communication;
+    private readonly CancellationTokenSource communicationLifetime = new();
+    private Task? communicationStartup;
     public HostComponentDisplayModel? Component => display.CurrentComponents.FirstOrDefault();
     public TaskbarDockPreferences Preferences { get; private set; }
     public IslandDisplaySession Session { get; }
@@ -58,6 +61,8 @@ internal sealed class HostConsoleController
         refreshing = true;
         try
         {
+            if (communication?.States.GetSnapshot("counter") is { } snapshot) display.ApplyBrokerSnapshot(snapshot);
+            if (communication?.LastError is { } connectionError) AddError(new(connectionError, "平台通信不可用，已保留最后确认读数。"));
             var prepared = adapter.Prepare(Preferences, Component, Tests.Configuration, SimulateUnavailable);
             Session.SetIntent(Component?.IsVisible == true);
             if (!prepared.IsSuccess && Component?.IsVisible == true) AddError(prepared.Error!);
@@ -108,6 +113,41 @@ internal sealed class HostConsoleController
         Refresh();
     }
     public void Retry() { Refresh(); Session.Retry(); Refresh(); }
+    public Task StartCounterAsync(string brokerPath, string counterPath)
+    {
+        if (communicationStartup is not null) return communicationStartup;
+        communicationStartup = StartCounterCoreAsync(brokerPath, counterPath);
+        return communicationStartup;
+    }
+    private async Task StartCounterCoreAsync(string brokerPath, string counterPath)
+    {
+        HostBrokerSession? started = null;
+        try
+        {
+            started = await HostBrokerSession.StartAsync(brokerPath, ["counter"], communicationLifetime.Token).ConfigureAwait(false);
+            communication = started;
+            await started.StartServiceAsync("counter", counterPath, communicationLifetime.Token).ConfigureAwait(false);
+            if (communicationLifetime.IsCancellationRequested)
+            {
+                await started.DisposeAsync().ConfigureAwait(false);
+                communication = null;
+            }
+        }
+        catch (BrokerStartCleanupException error)
+        {
+            communication = error.CleanupOwner;
+            throw;
+        }
+        catch
+        {
+            if (started is not null)
+            {
+                await started.DisposeAsync().ConfigureAwait(false);
+                communication = null;
+            }
+            throw;
+        }
+    }
     public void OpenPreview(nint owner, HostTestConfiguration configuration)
     {
         if (closing) return;
@@ -128,6 +168,18 @@ internal sealed class HostConsoleController
         closing = true;
         timer.Stop();
         var testStopped = true;
+        communicationLifetime.Cancel();
+        try
+        {
+            communicationStartup?.GetAwaiter().GetResult();
+        }
+        catch (Exception error) { AddError(new("communication_start_failed", error.Message)); }
+        try
+        {
+            communication?.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            communication = null;
+        }
+        catch (Exception error) { testStopped = false; AddError(new("communication_shutdown_failed", error.Message)); }
         try { Preview.Close(); }
         catch (Exception error) { testStopped = false; AddError(new("preview_shutdown_failed", error.Message)); }
         try { Tests.Shutdown(); }

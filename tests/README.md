@@ -10,6 +10,17 @@ dotnet test tests/Mtp.Platform.Core.Tests/Mtp.Platform.Core.Tests.csproj -c Rele
 
 目标为普通 net10.0，引用 Core、Contracts、Host.Runtime 及测试专用 Legacy.Runtime，不构建 WinUI。覆盖声明校验、内容岛恢复策略、测试报告、历史贴靠策略、偏好文件和两个独立 .NET 进程并发写入。进程夹具只写测试创建的临时目录。架构测试阻止 Windows TFM/WinUI 依赖重新进入该层。此轮在 Windows 执行，不将目标框架可移植性写成已经在 Linux/macOS 实跑。
 
+## SDK / Broker 真实进程通信
+
+```powershell
+dotnet test tests/Mtp.Transport.Tests/Mtp.Transport.Tests.csproj -c Release
+dotnet test tests/Mtp.Communication.Tests/Mtp.Communication.Tests.csproj -c Release
+```
+
+通信测试构建并复制本配置的 Broker 和 CounterService，不依赖先前 Release 输出。每个用例使用随机当前用户管道与自有独立进程，验证初始声明/确认状态、票据拒绝、坏帧、取消及清理；不修改用户偏好。传输测试覆盖严格 JSON/UTF-8、1 MiB 边界和分段读取。当前切片不包含自动重连或业务动作。
+
+开发期计数器入口：构建 Host 后以 `Mtp.Host.exe --counter-demo` 启动；控制台出现 `counter / main / counter` 后开启该组件显示。默认显示仍关闭，确认读数来自独立服务。退出 Host 清理本次自有进程；嵌入失败保留错误，不建立独立贴靠回退。独立服务不应手工拼接命令行票据。
+
 ## Windows 适配器
 
 ~~~powershell

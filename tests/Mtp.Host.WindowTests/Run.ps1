@@ -1,4 +1,5 @@
 ﻿param(
+    [ValidateSet('all', 'broker')][string]$Scenario = 'all',
     [string]$OutputDirectory = "$PSScriptRoot/bin/window-regression",
     [string]$EvidenceDirectory = "$PSScriptRoot/../../.scratch/二期开发/evidence/HostWindowRegression/run-$(Get-Date -Format 'yyyyMMdd-HHmmss-fff')-$([Guid]::NewGuid().ToString('N').Substring(0, 8))"
 )
@@ -19,6 +20,7 @@ $run = [Diagnostics.Process]::new()
 $run.StartInfo = [Diagnostics.ProcessStartInfo]::new("$outputPath/Mtp.Host.WindowTests.exe")
 $run.StartInfo.UseShellExecute = $false
 $run.StartInfo.WindowStyle = 'Hidden'
+if ($Scenario -eq 'broker') { $run.StartInfo.Arguments = '--broker-only' }
 try {
     if (-not $run.Start()) { throw 'Could not start the WinUI regression process.' }
     if (-not $run.WaitForExit(60000)) {
@@ -47,7 +49,7 @@ finally {
         }
     }
     foreach ($directory in Get-ChildItem -LiteralPath $outputPath -Directory) {
-        if ($directory.Name -notin $previousDirectories -and ($directory.Name -like 'console-*' -or $directory.Name -like 'display-selection-*')) {
+        if ($directory.Name -notin $previousDirectories -and ($directory.Name -like 'console-*' -or $directory.Name -like 'display-selection-*' -or $directory.Name -like 'broker-*')) {
             Copy-Item -LiteralPath $directory.FullName -Destination $evidencePath -Recurse
         }
     }

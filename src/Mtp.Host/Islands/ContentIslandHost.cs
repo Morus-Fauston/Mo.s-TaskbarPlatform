@@ -136,6 +136,7 @@ internal sealed class ContentIslandHost
         lastLocalBounds = local;
     }
     public void Update(long value) { if (IsAlive) content?.Update(value); }
+    public void UpdateConfirmed(HostComponentDisplayModel component) { if (IsAlive) content?.UpdateConfirmed(component); }
     public void Observe() => record("island-observed", new
     {
         IsAlive,

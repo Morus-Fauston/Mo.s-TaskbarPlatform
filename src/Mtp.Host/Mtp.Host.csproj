@@ -22,10 +22,14 @@
 
   <ItemGroup>
     <ProjectReference Include="../Mtp.Host.Runtime/Mtp.Host.Runtime.csproj" />
+    <ProjectReference Include="../Mtp.Broker/Mtp.Broker.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="../../samples/Mtp.CounterService/Mtp.CounterService.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="..\Mtp.Platform.Core\Mtp.Platform.Core.csproj" />
     <ProjectReference Include="..\Mtp.Contracts\Mtp.Contracts.csproj" />
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.4.0" />
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.2270" />
   </ItemGroup>
+
+  <Import Project="../../build/CommunicationRuntimes.targets" />
 
 </Project>

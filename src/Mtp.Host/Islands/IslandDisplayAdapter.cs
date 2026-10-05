@@ -77,6 +77,7 @@ internal sealed class IslandDisplayAdapter : IIslandSessionAdapter
         if (placementCurrent) host!.Move(bounds);
         else host!.SetPopup(false);
         host.CloseTransientIfParentHidden();
+        if (!config.Controls && component is not null) host.UpdateConfirmed(component);
     }
     public void Update(long value) => host?.Update(value);
     public void Observe() => host?.Observe();

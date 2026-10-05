@@ -20,5 +20,16 @@ public partial class App : Application
         window = new MainWindow(console, environment.GetDisplays);
         window.Activate();
         console.Refresh();
+        if (Environment.GetCommandLineArgs().Contains("--counter-demo", StringComparer.Ordinal))
+            _ = StartCounterAsync(console);
+    }
+    private static async Task StartCounterAsync(HostConsoleController console)
+    {
+        try
+        {
+            await console.StartCounterAsync(Path.Combine(AppContext.BaseDirectory, "Broker", "Mtp.Broker.dll"),
+                Path.Combine(AppContext.BaseDirectory, "CounterService", "Mtp.CounterService.dll"));
+        }
+        catch (Exception error) { console.Execute(() => throw new InvalidOperationException("计数器启动失败：" + error.Message, error)); }
     }
 }

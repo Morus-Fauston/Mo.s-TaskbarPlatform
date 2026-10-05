@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsTestProject>true</IsTestProject>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+    <Using Include="Xunit" />
+    <ProjectReference Include="../../src/Mtp.Host.Runtime/Mtp.Host.Runtime.csproj" />
+    <ProjectReference Include="../../src/Mtp.Broker/Mtp.Broker.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="../../samples/Mtp.CounterService/Mtp.CounterService.csproj" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+  <Import Project="../../build/CommunicationRuntimes.targets" />
+</Project>
