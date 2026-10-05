@@ -13,6 +13,8 @@ internal sealed class DisplayPermissionOutbox
     { SingleReader = true, FullMode = BoundedChannelFullMode.DropWrite });
     private bool stopped;
 
+    public int PendingCount { get { lock (gate) return pending.Count; } }
+
     public bool TryPublish(ProtocolMessage message)
     {
         lock (gate)

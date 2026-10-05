@@ -31,7 +31,20 @@ try
                 client.IsConnected,
                 initialResult = client.InitialPublicationResult,
                 publications = provider.Publications,
+                lifecycle = client.GetLifecycleSnapshot(),
             });
+        else if (scenario == "stop")
+        {
+            await client.DisposeAsync();
+            await client.DisposeAsync();
+            await Marker.WriteAsync(directory, "command-" + command + "-result", new
+            {
+                pid = Environment.ProcessId,
+                sessionId = client.SessionId,
+                lifecycle = client.GetLifecycleSnapshot(),
+            });
+            await Task.Delay(Timeout.InfiniteTimeSpan, lifetime.Token);
+        }
         else
         {
             var result = await provider.PublishScenarioAsync(scenario, lifetime.Token);
@@ -64,7 +77,9 @@ sealed class ActivityProvider(string applicationId, string directory) : IDeclara
     {
         cancellationToken.ThrowIfCancellationRequested();
         var presentation = new ItemPresentation(PresetTemplate.Status, ContentFields.Status, new ContentWidth(Tier: WidthTier.Small));
-        var island = new DynamicContentDeclaration(DynamicContentKind.LiveIsland, [new ItemStructureDeclaration("activity", true, presentation)]);
+        var island = new DynamicContentDeclaration(DynamicContentKind.LiveIsland,
+            [new ItemStructureDeclaration("activity", true, presentation,
+                presentation with { Width = new ContentWidth(Tier: WidthTier.Medium) })]);
         ActionSlotDeclaration[] actions = [new("activate")];
         var declaration = new ApplicationDeclaration(applicationId, [new FeatureGroupDeclaration("main",
             [new ComponentDeclaration("ordinary", actions), new ComponentDeclaration("island", actions) { DynamicContent = island }],

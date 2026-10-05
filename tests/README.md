@@ -105,3 +105,14 @@ dotnet test tests/Mtp.Communication.Tests/Mtp.Communication.Tests.csproj -c Rele
 HostDisplayController拥有当前Store的ItemPresentationController和ItemActivationRouter，相同Store刷新保留状态，换绑或关闭清理。ItemPresentationController按屏幕/应用/功能组/组件/项ID管理本地展开；Store每次合法提交维护出现代次，避免UI未观察到中间移除后错误保留状态。业务与面板意图附当前SessionId和Origin，五期消费方派发前仍需核对。此入口产出目标呈现，不宣称原生动态宽度或动画完成。
 
 ItemExpansionProcessTests复用真实动态与活动服务，验证两屏普通项/岛项共用路径、批量后新增不继承、刷新保留、删除/到期清理与Host重建。完整多屏交互与原生控件由五期提供后集中人工验收。
+
+## 四期组合与生命周期诊断
+
+~~~powershell
+$env:MSBUILDDISABLENODEREUSE='1'
+dotnet test tests/Mtp.Communication.Tests/Mtp.Communication.Tests.csproj -c Debug -nr:false --filter FullyQualifiedName~PhaseFourCombinationTests
+~~~
+
+同一Host三个服务运行两轮：各轮业务20秒、清理5秒，成功总计50秒以内；Broker恢复步骤8秒。失败时独立5秒安全收尾，不延长通过阈值。覆盖项展开、真实动作超时/晚到、健康服务动作、许可关闭/恢复、Broker新会话、活动到期和旧句柄隔离。
+
+HostBrokerSession.GetLifecycleSnapshot和SdkClient.GetLifecycleSnapshot读取实际拥有任务与队列，最多保存当前及最后清理代次。测试在Host仍保持凭据stdin时显式释放SDK，核对心跳/许可/恢复任务和队列，然后重复释放Host并确认全部自有PID退出、关闭后动作拒绝。保留的业务快照不算活连接；不把非合作提供方任务或未读取的Broker内部计数伪称归零。

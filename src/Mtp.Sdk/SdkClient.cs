@@ -42,6 +42,7 @@ public sealed class SdkClient : IAsyncDisposable
     private bool disposed;
     private ProtocolResult? lastError;
     private ProtocolResult initialPublicationResult;
+    private SdkConnectionLifecycleSnapshot? lastRetiredConnection;
 
     private SdkClient(ServiceLaunch launch, IDeclarationProvider provider, IActionHandler? handler, SdkConnection connection, Stream? input)
     {
@@ -59,6 +60,11 @@ public sealed class SdkClient : IAsyncDisposable
     public string SessionId { get { lock (gate) return lastSessionId; } }
     public ProtocolResult InitialPublicationResult { get { lock (gate) return initialPublicationResult; } }
     public bool IsConnected { get { lock (gate) return !disposed && connection?.IsConnected == true; } }
+    public SdkLifecycleSnapshot GetLifecycleSnapshot()
+    {
+        lock (gate) return new(credentialReader.IsCompleted, recoveryWorker.IsCompleted, credentials.Reader.Count,
+            connection?.GetLifecycleSnapshot(), lastRetiredConnection);
+    }
     public ProtocolResult? LastError
     {
         get { lock (gate) return connection?.IsConnected == true ? lastError : Unavailable(); }
@@ -190,7 +196,7 @@ public sealed class SdkClient : IAsyncDisposable
                 SdkConnection? candidate = null;
                 try
                 {
-                    if (previous is not null) await previous.DisposeAsync().ConfigureAwait(false);
+                    if (previous is not null) await RetireConnectionAsync(previous).ConfigureAwait(false);
                     // Host owns retry budgets and backoff. Every delivered ticket is tried exactly once.
                     candidate = await SdkConnection.ConnectAsync(credential.Launch, provider, attempt.Token, handler).ConfigureAwait(false);
                     lock (gate)
@@ -214,7 +220,7 @@ public sealed class SdkClient : IAsyncDisposable
                 finally
                 {
                     lock (gate) if (ReferenceEquals(connecting, attempt)) connecting = null;
-                    if (candidate is not null) await candidate.DisposeAsync().ConfigureAwait(false);
+                    if (candidate is not null) await RetireConnectionAsync(candidate).ConfigureAwait(false);
                 }
             }
         }
@@ -249,10 +255,19 @@ public sealed class SdkClient : IAsyncDisposable
         credentialsInput?.Dispose();
         credentials.Writer.TryComplete();
         await Task.WhenAll(credentialReader, recoveryWorker).ConfigureAwait(false);
+        // The credential reader may have passed its loop check before cancellation; drain after it exits.
+        while (credentials.Reader.TryRead(out _)) { }
         SdkConnection? current;
         lock (gate) { current = connection; connection = null; }
-        if (current is not null) await current.DisposeAsync().ConfigureAwait(false);
+        if (current is not null) await RetireConnectionAsync(current).ConfigureAwait(false);
         lifetime.Dispose();
+    }
+
+    private async Task RetireConnectionAsync(SdkConnection retired)
+    {
+        await retired.DisposeAsync().ConfigureAwait(false);
+        var snapshot = retired.GetLifecycleSnapshot();
+        lock (gate) lastRetiredConnection = snapshot;
     }
 
     private sealed record Credential(long Generation, ServiceLaunch Launch);

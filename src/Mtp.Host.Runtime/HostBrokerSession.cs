@@ -42,6 +42,7 @@ public sealed class HostBrokerSession : IAsyncDisposable
     private int peakPendingRequests;
     private int lastBrokerProcessId;
     private BrokerFaultSnapshot? lastBrokerFault;
+    private BrokerGenerationLifecycleSnapshot? lastRetiredBroker;
     private HostBrokerSession(string brokerPath, IReadOnlyCollection<string> applications, IProcessTermination processTermination)
     {
         this.brokerPath = brokerPath; this.applications = applications.ToArray(); this.processTermination = processTermination;
@@ -57,6 +58,21 @@ public sealed class HostBrokerSession : IAsyncDisposable
     public RecoverySnapshot? GetRecovery(string applicationId) { lock (gate) return recovery.GetValueOrDefault(applicationId)?.Snapshot; }
     public IReadOnlyList<OwnedServiceExit> ServiceProcessExits { get { lock (gate) return Array.AsReadOnly(exits.Values.ToArray()); } }
     public IReadOnlyList<int> ServiceProcessIds { get { lock (gate) return services.Values.Where(value => !value.Stopped).Select(value => value.ProcessId).ToArray(); } }
+    public HostLifecycleSnapshot GetLifecycleSnapshot()
+    {
+        lock (gate)
+        {
+            var owned = services.Values.ToList();
+            if (generation?.Broker is { } broker) owned.Add(broker);
+            return new(services.Count, generation?.Broker is null ? 0 : 1, clock.IsCompleted ? 0 : 1,
+                recovery.Values.Select(value => value.Task).Append(brokerRecovery.Task).Count(task => task is { IsCompleted: false }),
+                owned.Sum(value => (value.OutputDrain.IsCompleted ? 0 : 1) + (value.ErrorDrain.IsCompleted ? 0 : 1)),
+                Actions.OutstandingCount, Actions.BusyCount, generation is null ? null : ObserveGeneration(generation), lastRetiredBroker);
+        }
+    }
+    private static BrokerGenerationLifecycleSnapshot ObserveGeneration(BrokerGeneration current) =>
+        new(current.Id, current.Receiver.IsCompleted, current.Dispatcher.IsCompleted, current.PermissionPublisher.IsCompleted,
+            current.Actions.Reader.Count, current.Permissions.PendingCount, current.PendingRegistrations.Count);
     public static async Task<HostBrokerSession> StartAsync(string brokerPath, IReadOnlyCollection<string> applications,
         CancellationToken cancellationToken = default, IProcessTermination? processTermination = null)
     {
@@ -615,7 +631,11 @@ public sealed class HostBrokerSession : IAsyncDisposable
         lock (gate) current.Stop();
         await Task.WhenAll(current.Receiver, current.Dispatcher, current.PermissionPublisher).WaitAsync(cancellationToken).ConfigureAwait(false);
         if (current.Broker is not null) { await StopOwnedAsync(current.Broker, cancellationToken).ConfigureAwait(false); current.Broker = null; }
-        lock (gate) if (ReferenceEquals(generation, current)) generation = null;
+        lock (gate)
+        {
+            lastRetiredBroker = ObserveGeneration(current);
+            if (ReferenceEquals(generation, current)) generation = null;
+        }
         current.Dispose();
     }
     public async ValueTask DisposeAsync()

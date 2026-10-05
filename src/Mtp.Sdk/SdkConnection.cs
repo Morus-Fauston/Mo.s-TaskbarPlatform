@@ -56,6 +56,14 @@ internal sealed class SdkConnection : IAsyncDisposable
     public ProtocolResult InitialPublicationResult { get; private set; } = ProtocolResult.Success();
     public void ActivatePermissionCallbacks() => permissionCallbacksReady.TrySetResult(true);
 
+    public SdkConnectionLifecycleSnapshot GetLifecycleSnapshot()
+    {
+        lock (responseGate)
+            return new(SessionId, reader.IsCompleted, actionWorker.IsCompleted, heartbeatWorker.IsCompleted,
+                permissionWorker.IsCompleted, pendingResponse is not null && !pendingResponse.Task.IsCompleted,
+                actions.Reader.Count, permissions.Reader.Count, permissionObserver is not null && !permissionWorker.IsCompleted ? 1 : 0);
+    }
+
     public static async Task<SdkConnection> ConnectAsync(ServiceLaunch launch, IDeclarationProvider provider, CancellationToken cancellationToken = default, IActionHandler? actionHandler = null)
     {
         ArgumentNullException.ThrowIfNull(launch);
@@ -347,6 +355,10 @@ internal sealed class SdkConnection : IAsyncDisposable
     {
         Stop();
         await Task.WhenAll(reader, actionWorker, heartbeatWorker, permissionWorker).ConfigureAwait(false);
+        // A producer already past its cancellation check may enqueue after a worker's finally drain.
+        // All producers have now finished, so these final drains cannot race a new write.
+        while (actions.Reader.TryRead(out _)) { }
+        while (permissions.Reader.TryRead(out _)) { }
         lifetime.Dispose();
     }
 }
