@@ -20,6 +20,7 @@ internal sealed class TaskbarFlyoutCoordinator : IDisposable
     private readonly Microsoft.UI.Dispatching.DispatcherQueue dispatcher = Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread();
     internal TaskbarFlyoutManager Manager { get; }
     internal ShortHintManager Hints { get; }
+    internal InteractiveHintManager InteractiveHints { get; }
 
     internal TaskbarFlyoutCoordinator(HostBrokerSession session, IslandDisplayAdapter island,
         Func<IReadOnlyList<TaskbarDockDisplay>> displays, RegisteredImageCache images, Action<string, object?> record)
@@ -31,6 +32,10 @@ internal sealed class TaskbarFlyoutCoordinator : IDisposable
             new TemplateInteractionController(session.States, key.ApplicationId, key.Entry,
                 SendActionAsync, templateId, navigate), images), record);
         Hints = new(session.States, Manager, images, record);
+        InteractiveHints = new(session.States, Manager, images,
+            (origin, slot, parameter, expected, token) => SendActionCoreAsync(slot, parameter, expected, token, origin), ExpandHint, record);
+        Hints.AdditionalInstanceCount = () => InteractiveHints.Inspect().Count;
+        InteractiveHints.AdditionalInstanceCount = () => Hints.Inspect().Count;
     }
 
     internal void ApplySettings(HostSettingsPreferences preferences)
@@ -41,15 +46,22 @@ internal sealed class TaskbarFlyoutCoordinator : IDisposable
                     session.States.FlyoutRequests.SetEntryEnabled(entry,
                         preferences.HintVisibility?.GetValueOrDefault(HostSettingsController.IdentityKey(entry.Identity), true) != false);
         Hints.ApplySettings(preferences);
+        InteractiveHints.ApplySettings(preferences);
     }
 
-    internal async Task<ProtocolResult> SendActionAsync(ActionSlotReference slot, ActionParameter parameter, string expected, CancellationToken token)
+    internal Task<ProtocolResult> SendActionAsync(ActionSlotReference slot, ActionParameter parameter, string expected, CancellationToken token) =>
+        SendActionCoreAsync(slot, parameter, expected, token);
+
+    private async Task<ProtocolResult> SendActionCoreAsync(ActionSlotReference slot, ActionParameter parameter, string expected,
+        CancellationToken token, ShortHintRequest? hintOrigin = null)
     {
         // A result belongs to the group present at dispatch, never to a later same-name group.
-        var kind = slot.EntryKind == ActionEntryKind.TaskbarFlyout ? TemplateEntryKind.TaskbarFlyout : TemplateEntryKind.Component;
+        var kind = slot.EntryKind switch { ActionEntryKind.TaskbarFlyout => TemplateEntryKind.TaskbarFlyout,
+            ActionEntryKind.Hint => TemplateEntryKind.Hint, _ => TemplateEntryKind.Component };
         var entry = new FlyoutEntryKey(slot.ApplicationId, new(slot.FeatureGroupId, kind, slot.EntryId));
         var origin = await OnUi(() =>
         {
+            if (hintOrigin is not null) return (Owner: hintOrigin.Owner, ScreenId: (string?)hintOrigin.ScreenId);
             var group = Manager.Inspect().FirstOrDefault(x => x.Entry == entry && x.SessionId == expected && !x.Closing);
             var owned = group is null ? null : new HintOwner(group.ScreenId, group.Generation, group.Entry, group.SessionId);
             return (Owner: owned, ScreenId: owned?.ScreenId ?? TriggerDisplay()?.Id);
@@ -135,12 +147,23 @@ internal sealed class TaskbarFlyoutCoordinator : IDisposable
         if (state.State?.Revision != request.StateRevision) return ProtocolResult.Reject("StaleState", "显示请求状态已更换");
         if (!session.States.FlyoutRequests.IsEntryEnabled(message.ApplicationId, message.SessionId, request.FeatureGroupId, request.EntryId))
             return ProtocolResult.Reject("EntryDisabled", "入口显示已关闭");
-        if (request.Kind == FlyoutKind.ShortHint)
+        if (request.Kind is FlyoutKind.ShortHint or FlyoutKind.InteractiveHint)
         {
             var target = request.Screen == FlyoutScreen.Primary ? displays().FirstOrDefault(x => x.IsPrimary) ?? TriggerDisplay(queued.Trigger) : TriggerDisplay(queued.Trigger);
             if (target is null) return ProtocolResult.Reject("ScreenUnavailable", "没有可用提示屏幕");
-            return Hints.Show(new(new(message.ApplicationId, new(request.FeatureGroupId, TemplateEntryKind.Hint, request.EntryId)),
-                message.SessionId, target.Id, target.WorkArea, target.Dpi, request.Position));
+            var entry = new FlyoutEntryKey(message.ApplicationId, new(request.FeatureGroupId, TemplateEntryKind.Hint, request.EntryId));
+            HintOwner? owner = null;
+            if (request.Kind == FlyoutKind.InteractiveHint)
+            {
+                var expansion = state.Declaration?.FlyoutEntries.FirstOrDefault(x => x.Identity.Segments[1].Value == request.FeatureGroupId &&
+                    x.Identity.Segments[2].Value == request.EntryId)?.Expansion;
+                var group = Manager.Inspect().FirstOrDefault(x => x.ScreenId == target.Id && !x.Closing && x.SessionId == message.SessionId &&
+                    x.Entry.ApplicationId == message.ApplicationId && x.Entry.Entry.FeatureGroupId == request.FeatureGroupId &&
+                    x.Entry.Entry.Kind == TemplateEntryKind.TaskbarFlyout && x.Entry.Entry.EntryId == expansion?.TaskbarFlyoutId);
+                if (group is not null) owner = new(group.ScreenId, group.Generation, group.Entry, group.SessionId);
+            }
+            var hintRequest = new ShortHintRequest(entry, message.SessionId, target.Id, target.WorkArea, target.Dpi, request.Position, owner);
+            return request.Kind == FlyoutKind.ShortHint ? Hints.Show(hintRequest) : InteractiveHints.Show(hintRequest);
         }
         if (request.Kind != FlyoutKind.TaskbarGroup) return ProtocolResult.Reject("FlyoutUnavailable", "该浮窗类型尚未接入窗口");
         if (request.Screen == FlyoutScreen.Primary && displays().FirstOrDefault(x => x.IsPrimary)?.Id != island.Geometry?.DisplayId)
@@ -159,6 +182,31 @@ internal sealed class TaskbarFlyoutCoordinator : IDisposable
             message.SessionId, ReadAnchor, FlyoutInvocationKind.Automatic);
         if (result.Code == "Replacing" && island.Geometry is { } geometry) replacingRequests.Track(geometry.DisplayId, message);
         return result;
+    }
+
+    private ProtocolResult ExpandHint(ShortHintRequest source, HintExpansionTarget target)
+    {
+        var entry = new FlyoutEntryKey(source.Entry.ApplicationId,
+            new(source.Entry.Entry.FeatureGroupId, TemplateEntryKind.TaskbarFlyout, target.TaskbarFlyoutId));
+        if (source.Owner is { } owner)
+        {
+            if (owner.Entry != entry) return ProtocolResult.Reject("InvalidHintOwner", "展开目标不属于当前组");
+            return Manager.ExpandFromHint(owner, target.PanelTemplateId);
+        }
+        var component = island.GetGroupFrame()?.Components.FirstOrDefault(x => x.Key.ApplicationId == source.Entry.ApplicationId &&
+            x.Key.FeatureGroupId == source.Entry.Entry.FeatureGroupId)?.Key;
+        PixelRect? ReadAnchor()
+        {
+            var frame = island.GetGroupFrame();
+            var current = frame?.Components.FirstOrDefault(x => x.Key == component);
+            if (component is null || island.GroupSnapshot?.ComponentsByKey.ContainsKey(component) != true || current is null || frame is null) return null;
+            return ToScreen(new(current.Bounds.X + frame.WidthDip, current.Bounds.Y, current.Bounds.Width, current.Bounds.Height));
+        }
+        if (island.Geometry?.DisplayId != source.ScreenId) return ProtocolResult.Reject("AnchorUnavailable", "提示屏幕没有可用任务栏入口");
+        var existing = Manager.Inspect().FirstOrDefault(x => x.ScreenId == source.ScreenId && x.Entry == entry && x.SessionId == source.SessionId && !x.Closing);
+        if (existing is not null)
+            return Manager.ExpandFromHint(new(existing.ScreenId, existing.Generation, existing.Entry, existing.SessionId), target.PanelTemplateId);
+        return Open(entry, source.SessionId, ReadAnchor, FlyoutInvocationKind.Pointer, target.PanelTemplateId);
     }
 
     private ProtocolResult Open(FlyoutEntryKey entry, string sessionId, Func<PixelRect?> readAnchor,
@@ -200,6 +248,7 @@ internal sealed class TaskbarFlyoutCoordinator : IDisposable
         }
         Manager.Refresh();
         Hints.Refresh(id => displays().FirstOrDefault(x => x.Id == id));
+        InteractiveHints.Refresh(id => displays().FirstOrDefault(x => x.Id == id));
         var observed = Manager.Inspect();
         foreach (var pair in replacingRequests.Snapshot())
         {
@@ -230,10 +279,11 @@ internal sealed class TaskbarFlyoutCoordinator : IDisposable
     internal CoreResult<bool> TryClose()
     {
         var hintsClosed = Hints.TryClose();
+        var interactiveClosed = InteractiveHints.TryClose();
         var result = Manager.TryClose();
         if (result.IsSuccess) { anchors.Clear(); replacingRequests.Clear(); }
-        return !hintsClosed.IsSuccess ? hintsClosed : result;
+        return !hintsClosed.IsSuccess ? hintsClosed : !interactiveClosed.IsSuccess ? interactiveClosed : result;
     }
-    public void Dispose() { Hints.Dispose(); Manager.Dispose(); anchors.Clear(); replacingRequests.Clear(); }
+    public void Dispose() { Hints.Dispose(); InteractiveHints.Dispose(); Manager.Dispose(); anchors.Clear(); replacingRequests.Clear(); }
     private sealed record AnchorOwner(FlyoutEntryKey Entry, string SessionId, Func<PixelRect?> Read);
 }

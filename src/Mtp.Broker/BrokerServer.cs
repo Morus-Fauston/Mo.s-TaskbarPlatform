@@ -379,6 +379,7 @@ public sealed class BrokerServer : IAsyncDisposable
         {
             ActionEntryKind.Component => group?.Components?.FirstOrDefault(entry => entry.ComponentId == slot.EntryId)?.ActionSlots,
             ActionEntryKind.TaskbarFlyout => group?.TaskbarFlyouts?.FirstOrDefault(entry => entry.TaskbarFlyoutId == slot.EntryId)?.ActionSlots,
+            ActionEntryKind.Hint => group?.Hints?.FirstOrDefault(entry => entry.EntryId == slot.EntryId && entry.Kind == FlyoutKind.InteractiveHint)?.ActionSlots,
             _ => null
         };
         var declared = slots?.FirstOrDefault(candidate => candidate.ActionSlotId == slot.ActionSlotId);

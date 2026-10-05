@@ -1,7 +1,7 @@
 namespace Mtp.Contracts;
 
 public enum ActionParameterKind { None, Boolean, Number, Text }
-public enum ActionEntryKind { Component, TaskbarFlyout }
+public enum ActionEntryKind { Component, TaskbarFlyout, Hint }
 
 public sealed record ActionParameter(ActionParameterKind Kind = ActionParameterKind.None,
     bool? Boolean = null, double? Number = null, string? Text = null);

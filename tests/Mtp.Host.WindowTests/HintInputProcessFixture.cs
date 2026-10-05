@@ -144,7 +144,12 @@ internal static class HintInputProcessFixture
                 Content = "MTP 跨进程穿透目标", HorizontalAlignment = HorizontalAlignment.Stretch,
                 VerticalAlignment = VerticalAlignment.Stretch, Margin = new Thickness(24)
             };
-            window = new Window { Title = "MTP owned hint input target", Content = button };
+            // A root container preserves the Button's margin in TransformToVisual(root).
+            // When the Button was itself Content, transforming it to itself omitted that
+            // margin and reported a rectangle extending into non-interactive client space.
+            var root = new Grid();
+            root.Children.Add(button);
+            window = new Window { Title = "MTP owned hint input target", Content = root };
             hwnd = WinRT.Interop.WindowNative.GetWindowHandle(window);
             pressed = (_, _) => Update(counts with { Presses = counts.Presses + 1 });
             released = (_, _) => Update(counts with { Releases = counts.Releases + 1 });
@@ -156,7 +161,9 @@ internal static class HintInputProcessFixture
             var work = Microsoft.UI.Windowing.DisplayArea.Primary.WorkArea;
             window.AppWindow.MoveAndResize(new(work.X + 64, work.Y + 64, 480, 240));
             window.AppWindow.Show(false);
-            FlyoutNative.Position(hwnd, FlyoutNative.Bounds(hwnd));
+            // The input target is a normal application, not a competing topmost overlay.
+            // Activating a topmost target would intentionally raise it over the hints.
+            if (!SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0013)) throw FlyoutNative.Error("PositionInputTarget");
             Update(counts);
             timer.Tick += Tick;
             timer.Start();
@@ -254,4 +261,6 @@ internal static class HintInputProcessFixture
     [DllImport("user32.dll", SetLastError = true)] private static extern uint SendInput(uint count, Input[] inputs, int size);
     [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool SetForegroundWindow(nint window);
+    [DllImport("user32.dll", SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetWindowPos(nint window, nint after, int x, int y, int width, int height, uint flags);
 }

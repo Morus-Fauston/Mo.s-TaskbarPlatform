@@ -1,12 +1,17 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
+using Microsoft.UI.Xaml.Automation.Peers;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Mtp.Contracts;
+using Windows.Foundation;
 
 namespace Mtp.Host.Templates;
+
+internal enum TemplateRenderSurface { Full, HintForeground, HintBackground }
+internal sealed record TemplateInteractiveRegion(string NodeId, Control Control, Rect Bounds);
 
 /// <summary>Renders only validated Host primitives. Field updates preserve native controls and their focus.</summary>
 internal sealed class TemplateRenderer : UserControl, IDisposable
@@ -22,11 +27,17 @@ internal sealed class TemplateRenderer : UserControl, IDisposable
     private bool disposed;
     private bool inputStopped;
     private string applicationId = "";
+    private readonly TemplateRenderSurface surface;
+    internal event Action? PresentationChanged;
+    internal event Action? InteractiveGeometryChanged;
+    internal TemplateSurfaceSnapshot? CapturedSnapshot { get; private set; }
 
-    public TemplateRenderer(TemplateInteractionController controller, RegisteredImageCache images)
+    public TemplateRenderer(TemplateInteractionController controller, RegisteredImageCache images,
+        TemplateRenderSurface surface = TemplateRenderSurface.Full)
     {
         this.controller = controller;
         this.images = images;
+        this.surface = surface;
         VerticalContentAlignment = VerticalAlignment.Center;
         HorizontalContentAlignment = HorizontalAlignment.Stretch;
         Padding = new Thickness(4, 0, 4, 0);
@@ -36,8 +47,15 @@ internal sealed class TemplateRenderer : UserControl, IDisposable
     public void Refresh()
     {
         if (disposed || inputStopped) return;
-        var snapshot = controller.GetSnapshot();
-        if (snapshot is null) { ClearTree(); return; }
+        // The passive layer never independently reads Broker state; its owner supplies
+        // the exact snapshot already used by the foreground's unique controller.
+        RefreshFromSnapshot(surface == TemplateRenderSurface.HintBackground ? CapturedSnapshot : controller.GetSnapshot());
+    }
+
+    internal void RefreshFromSnapshot(TemplateSurfaceSnapshot? snapshot)
+    {
+        if (disposed || inputStopped) return;
+        if (snapshot is null) { ClearTree(); CapturedSnapshot = null; PresentationChanged?.Invoke(); return; }
         refreshing = true;
         try
         {
@@ -56,7 +74,7 @@ internal sealed class TemplateRenderer : UserControl, IDisposable
                 bool visible = state.Visible && view.Ancestors.All(id => values[id].Visible);
                 bool enabled = state.Enabled && view.Ancestors.All(id => values[id].Enabled);
                 view.Element.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
-                view.Element.IsHitTestVisible = enabled;
+                view.Element.IsHitTestVisible = enabled && surface != TemplateRenderSurface.HintBackground;
                 if (view.Element is Control control) control.IsEnabled = enabled;
                 var value = state.Preview ?? state.Confirmed;
                 string? status = state.Error ?? (state.Busy ? "等待确认" : null);
@@ -83,6 +101,43 @@ internal sealed class TemplateRenderer : UserControl, IDisposable
             }
         }
         finally { refreshing = false; }
+        CapturedSnapshot = snapshot;
+        PresentationChanged?.Invoke();
+    }
+
+    internal IReadOnlyList<TemplateInteractiveRegion> GetInteractiveRegions()
+    {
+        if (disposed || inputStopped || surface == TemplateRenderSurface.HintBackground || !IsLoaded) return [];
+        var result = new List<TemplateInteractiveRegion>();
+        foreach (var view in views.Values)
+        {
+            if (view.Node.Action is null || view.Element is not Control { IsEnabled: true,
+                IsHitTestVisible: true, Visibility: Visibility.Visible } control || !control.IsLoaded ||
+                view.Ancestors.Any(id => views[id].Element.Visibility != Visibility.Visible ||
+                    !views[id].Element.IsHitTestVisible)) continue;
+            var bounds = control.TransformToVisual(this).TransformBounds(new Rect(0, 0, control.ActualWidth, control.ActualHeight));
+            if (!double.IsFinite(bounds.X) || !double.IsFinite(bounds.Y) || !double.IsFinite(bounds.Width) ||
+                !double.IsFinite(bounds.Height) || bounds.Width <= 0 || bounds.Height <= 0) continue;
+            result.Add(new(view.Node.NodeId, control, bounds));
+            if (result.Count >= TemplateLimits.NodesPerTemplate) break;
+        }
+        return result;
+    }
+
+    /// <summary>The sealed ToggleSwitch cannot suppress its peer. Its background counterpart is geometry only.</summary>
+    internal void SynchronizeHintBackgroundLayout(TemplateRenderer input)
+    {
+        if (surface != TemplateRenderSurface.HintBackground || disposed) return;
+        foreach (var pair in views)
+        {
+            if (pair.Value.Element is not TogglePlaceholder placeholder ||
+                !input.views.TryGetValue(pair.Key, out var source) || source.Element is not ToggleSwitch toggle) continue;
+            if (double.IsFinite(toggle.ActualWidth) && toggle.ActualWidth > 0 && placeholder.Width != toggle.ActualWidth)
+                placeholder.Width = toggle.ActualWidth;
+            if (double.IsFinite(toggle.ActualHeight) && toggle.ActualHeight > 0 && placeholder.Height != toggle.ActualHeight)
+                placeholder.Height = toggle.ActualHeight;
+        }
+        UpdateLayout();
     }
 
     public bool IsCurrentNavigation(TemplateNavigationIntent intent) => !disposed && !inputStopped && controller.IsCurrentNavigation(intent);
@@ -123,18 +178,28 @@ internal sealed class TemplateRenderer : UserControl, IDisposable
             element = ImageSurface(out image, out placeholder);
         else if (node.Kind is TemplateNodeKind.Button or TemplateNodeKind.IconButton)
         {
-            var button = new Button { MinWidth = 0, MinHeight = 24, Padding = new Thickness(4, 0, 4, 0), VerticalAlignment = VerticalAlignment.Center };
+            Button button = surface == TemplateRenderSurface.HintBackground ? new PassiveButton() : new Button();
+            button.MinWidth = 0; button.MinHeight = 24; button.Padding = new Thickness(4, 0, 4, 0);
+            button.VerticalAlignment = VerticalAlignment.Center;
             if (node.Kind == TemplateNodeKind.IconButton && node.Icon is { } icon) button.Content = new SymbolIcon(SymbolFor(icon));
             else if (values[node.NodeId].Confirmed?.Kind == TemplateValueKind.Resource)
                 button.Content = ImageSurface(out image, out placeholder);
             RoutedEventHandler click = (_, _) => Activate(node.NodeId, null, inputGeneration, inputEpoch);
-            button.Click += click;
-            detach.Add(() => button.Click -= click);
+            if (surface != TemplateRenderSurface.HintBackground)
+            { button.Click += click; detach.Add(() => button.Click -= click); }
             element = button;
+        }
+        else if (node.Kind == TemplateNodeKind.Toggle && surface == TemplateRenderSurface.HintBackground)
+        {
+            // The only real ToggleSwitch is in the foreground. Its measured size is copied
+            // after layout, including while disabled, so no duplicate control/peer is created.
+            element = new TogglePlaceholder { MinHeight = 24, VerticalAlignment = VerticalAlignment.Center };
         }
         else if (node.Kind == TemplateNodeKind.Toggle)
         {
-            var toggle = new ToggleSwitch { MinWidth = 0, MinHeight = 24, OffContent = "", OnContent = "", VerticalAlignment = VerticalAlignment.Center };
+            var toggle = new ToggleSwitch();
+            toggle.MinWidth = 0; toggle.MinHeight = 24; toggle.OffContent = ""; toggle.OnContent = "";
+            toggle.VerticalAlignment = VerticalAlignment.Center;
             RoutedEventHandler changed = (_, _) =>
             {
                 if (refreshing || disposed || inputEpoch != epoch) return;
@@ -142,24 +207,17 @@ internal sealed class TemplateRenderer : UserControl, IDisposable
                 controller.Preview(node.NodeId, value, inputGeneration);
                 Activate(node.NodeId, value, inputGeneration, inputEpoch);
             };
-            toggle.Toggled += changed;
-            detach.Add(() => toggle.Toggled -= changed);
+            if (surface != TemplateRenderSurface.HintBackground)
+            { toggle.Toggled += changed; detach.Add(() => toggle.Toggled -= changed); }
             element = toggle;
         }
         else if (node.Kind == TemplateNodeKind.Slider)
         {
-            var slider = new Slider
-            {
-                Minimum = node.Minimum!.Value,
-                Maximum = node.Maximum!.Value,
-                StepFrequency = node.Step!.Value,
-                SmallChange = node.Step.Value,
-                LargeChange = node.Step.Value,
-                MinWidth = 100,
-                MinHeight = 24,
-                VerticalAlignment = VerticalAlignment.Center,
-                IsThumbToolTipEnabled = true,
-            };
+            Slider slider = surface == TemplateRenderSurface.HintBackground ? new PassiveSlider() : new Slider();
+            slider.Minimum = node.Minimum!.Value; slider.Maximum = node.Maximum!.Value;
+            slider.StepFrequency = node.Step!.Value; slider.SmallChange = node.Step.Value; slider.LargeChange = node.Step.Value;
+            slider.MinWidth = 100; slider.MinHeight = 24; slider.VerticalAlignment = VerticalAlignment.Center;
+            slider.IsThumbToolTipEnabled = surface != TemplateRenderSurface.HintBackground;
             bool dragging = false;
             PointerEventHandler pressed = (_, _) => dragging = true;
             PointerEventHandler released = (_, _) =>
@@ -175,17 +233,20 @@ internal sealed class TemplateRenderer : UserControl, IDisposable
                 var preview = controller.Preview(node.NodeId, value, inputGeneration);
                 if (preview.Accepted && !dragging) Activate(node.NodeId, value, inputGeneration, inputEpoch);
             };
-            slider.AddHandler(PointerPressedEvent, pressed, true);
-            slider.AddHandler(PointerReleasedEvent, released, true);
-            slider.AddHandler(PointerCaptureLostEvent, released, true);
-            slider.ValueChanged += changed;
-            detach.Add(() =>
+            if (surface != TemplateRenderSurface.HintBackground)
             {
-                slider.RemoveHandler(PointerPressedEvent, pressed);
-                slider.RemoveHandler(PointerReleasedEvent, released);
-                slider.RemoveHandler(PointerCaptureLostEvent, released);
-                slider.ValueChanged -= changed;
-            });
+                slider.AddHandler(PointerPressedEvent, pressed, true);
+                slider.AddHandler(PointerReleasedEvent, released, true);
+                slider.AddHandler(PointerCaptureLostEvent, released, true);
+                slider.ValueChanged += changed;
+                detach.Add(() =>
+                {
+                    slider.RemoveHandler(PointerPressedEvent, pressed);
+                    slider.RemoveHandler(PointerReleasedEvent, released);
+                    slider.RemoveHandler(PointerCaptureLostEvent, released);
+                    slider.ValueChanged -= changed;
+                });
+            }
             element = slider;
         }
         else if (node.Kind == TemplateNodeKind.Separator)
@@ -203,14 +264,16 @@ internal sealed class TemplateRenderer : UserControl, IDisposable
             foreach (var child in node.Children ?? []) children.Children.Add(Build(child, [.. ancestors, node.NodeId], values));
             if (node.Kind == TemplateNodeKind.ListItem && node.Action is not null)
             {
-                var button = new Button { Content = children, MinWidth = 0, Padding = new Thickness(4), HorizontalContentAlignment = HorizontalAlignment.Stretch };
+                Button button = surface == TemplateRenderSurface.HintBackground ? new PassiveButton() : new Button();
+                button.Content = children; button.MinWidth = 0; button.Padding = new Thickness(4);
+                button.HorizontalContentAlignment = HorizontalAlignment.Stretch;
                 RoutedEventHandler click = (_, args) =>
                 {
                     if (args.OriginalSource is DependencyObject source && IsNestedInteractive(source, button)) return;
                     Activate(node.NodeId, null, inputGeneration, inputEpoch);
                 };
-                button.Click += click;
-                detach.Add(() => button.Click -= click);
+                if (surface != TemplateRenderSurface.HintBackground)
+                { button.Click += click; detach.Add(() => button.Click -= click); }
                 element = button;
             }
             else element = node.Kind == TemplateNodeKind.Group ? new Border { Child = children, Padding = new Thickness(4) } : children;
@@ -218,13 +281,29 @@ internal sealed class TemplateRenderer : UserControl, IDisposable
         AutomationProperties.SetAutomationId(element, "mtp-template-" + node.NodeId);
         if (node.AccessibleName is { } name) AutomationProperties.SetName(element, name);
         if (node.Decorative) AutomationProperties.SetAccessibilityView(element, Microsoft.UI.Xaml.Automation.Peers.AccessibilityView.Raw);
+        if (surface == TemplateRenderSurface.HintBackground && element is Control)
+        {
+            element.Opacity = 0;
+            ((Control)element).IsTabStop = false;
+            AutomationProperties.SetAccessibilityView(element, AccessibilityView.Raw);
+        }
+        if (surface == TemplateRenderSurface.HintForeground && element is not Control)
+            AutomationProperties.SetAccessibilityView(element, AccessibilityView.Raw);
+        if (surface == TemplateRenderSurface.HintForeground && node.Action is not null && element is Control)
+        {
+            // Loaded is delivered per control, after an earlier LayoutUpdated may already
+            // have seen only part of the tree. Notify the owner when eligibility changes.
+            RoutedEventHandler availability = (_, _) => InteractiveGeometryChanged?.Invoke();
+            element.Loaded += availability; element.Unloaded += availability;
+            detach.Add(() => { element.Loaded -= availability; element.Unloaded -= availability; });
+        }
         views.Add(node.NodeId, new(node, element, ancestors, image, placeholder));
         return element;
     }
 
     private async void Activate(string nodeId, TemplateValue? value, long inputGeneration, long inputEpoch)
     {
-        if (disposed || inputStopped || refreshing || epoch != inputEpoch) return;
+        if (disposed || inputStopped || refreshing || epoch != inputEpoch || surface == TemplateRenderSurface.HintBackground) return;
         try
         {
             var operation = controller.ActivateAsync(nodeId, value, generationLifetime.Token, inputGeneration);
@@ -330,7 +409,18 @@ internal sealed class TemplateRenderer : UserControl, IDisposable
         ClearTree();
         generationLifetime.Dispose();
         controller.Dispose();
+        PresentationChanged = null;
+        CapturedSnapshot = null;
     }
+
+    private sealed class PassiveButton : Button { protected override AutomationPeer OnCreateAutomationPeer() => null!; }
+    private sealed class TogglePlaceholder : FrameworkElement
+    {
+        protected override AutomationPeer OnCreateAutomationPeer() => null!;
+        protected override Size MeasureOverride(Size availableSize) => new(
+            double.IsNaN(Width) ? 0 : Width, double.IsNaN(Height) ? MinHeight : Height);
+    }
+    private sealed class PassiveSlider : Slider { protected override AutomationPeer OnCreateAutomationPeer() => null!; }
 
     private sealed class NodeView(TemplateNode node, FrameworkElement element, string[] ancestors, Image? image, SymbolIcon? placeholder)
     {

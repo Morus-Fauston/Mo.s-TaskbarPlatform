@@ -73,6 +73,26 @@ public sealed partial class WindowTestApplication : Application
             }
             // Keep the application alive while the last dock is closed and recreated.
             lifetimeWindow = new Window();
+            if (launchArguments.Contains("--interactive-hint-motion-only", StringComparer.Ordinal))
+            {
+                await InteractiveHintMotionNativeTests.RunAsync(message => AppendLog(message + "\n"));
+                Finish(null);
+                return;
+            }
+            if (launchArguments.Contains("--interactive-hint-production-only", StringComparer.Ordinal))
+            {
+                await InteractiveHintProductionRegression.RunAsync(message => AppendLog(message + "\n"));
+                Finish(null);
+                return;
+            }
+            if (launchArguments.Contains("--interactive-hint-only", StringComparer.Ordinal))
+            {
+                await InteractiveHintWindowNativeTests.RunAsync(message => AppendLog(message + "\n"));
+                await InteractiveHintManagerNativeTests.RunAsync(message => AppendLog(message + "\n"));
+                await InteractiveHintMotionNativeTests.RunAsync(message => AppendLog(message + "\n"));
+                Finish(null);
+                return;
+            }
             if (launchArguments.Contains("--hint-window-only", StringComparer.Ordinal))
             {
                 await ShortHintNativeTests.RunAsync(message => AppendLog(message + "\n"));

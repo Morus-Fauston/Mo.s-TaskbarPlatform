@@ -7,8 +7,11 @@ namespace Mtp.Host;
 public sealed class TemplateValidator
 {
     public CoreResult<ValidatedEntryTemplate> Validate(TemplateEntryReference entry, EntryTemplateDeclaration template,
-        IReadOnlyList<ActionSlotDeclaration> actions, IReadOnlyList<ImageResourceDeclaration> images, ref int remainingNodes)
+        IReadOnlyList<ActionSlotDeclaration> actions, IReadOnlyList<ImageResourceDeclaration> images, ref int remainingNodes,
+        bool allowHintActions = false, bool allowHintExpansion = false)
     {
+        if (entry.Kind == TemplateEntryKind.Hint && template?.Panels is { Count: > 0 })
+            return Reject("template_reference_invalid", "短提示不能声明内部关联面板；展开使用已验证的任务栏目标");
         if (template?.Templates is null || template.Fields is null || !ValidId(template.MainTemplateId) ||
             template.Templates.Count is < 1 or > TemplateLimits.TemplatesPerEntry || template.Fields.Count > TemplateLimits.FieldsPerEntry ||
             template.Panels?.Count > TemplateLimits.TemplatesPerEntry)
@@ -24,7 +27,7 @@ public sealed class TemplateValidator
                 return Reject("template_field_invalid", "字段或默认值无效");
             if (field.DefaultValue is not null) cost++;
         }
-        var context = new NodeContext(fields, imageIds, actions);
+        var context = new NodeContext(fields, imageIds, actions, entry.Kind, allowHintActions, allowHintExpansion);
         var ids = new HashSet<string>(StringComparer.Ordinal);
         foreach (var definition in template.Templates)
         {
@@ -117,7 +120,12 @@ public sealed class TemplateValidator
         if (node.Action is { } action)
         {
             cost++;
-            if (!Enum.IsDefined(action.Kind) || (action.Kind == TemplateActionKind.Back ? action.TargetId is not null : !ValidId(action.TargetId))) return false;
+            if (!Enum.IsDefined(action.Kind) || (action.Kind is TemplateActionKind.Back or TemplateActionKind.ExpandHint
+                ? action.TargetId is not null : !ValidId(action.TargetId))) return false;
+            if (context.EntryKind == TemplateEntryKind.Hint && !context.AllowHintActions) return false;
+            if (context.EntryKind == TemplateEntryKind.Hint && action.Kind is TemplateActionKind.OpenPanel or TemplateActionKind.Back) return false;
+            if (action.Kind == TemplateActionKind.ExpandHint &&
+                (context.EntryKind != TemplateEntryKind.Hint || !context.AllowHintActions || !context.AllowHintExpansion)) return false;
             if (action.Kind == TemplateActionKind.Business)
             {
                 var parameter = node.Kind == TemplateNodeKind.Toggle ? ActionParameterKind.Boolean :
@@ -137,7 +145,7 @@ public sealed class TemplateValidator
     private static bool ValidId(string? value) => !string.IsNullOrWhiteSpace(value) && value.Length <= DeclarationValidator.MaximumIdLength && value == value.Trim();
 
     private sealed record NodeContext(IReadOnlyDictionary<string, TemplateFieldDeclaration> Fields, HashSet<string> Images,
-        IReadOnlyList<ActionSlotDeclaration> Actions);
+        IReadOnlyList<ActionSlotDeclaration> Actions, TemplateEntryKind EntryKind, bool AllowHintActions, bool AllowHintExpansion);
 
     private static TemplateValueKind? BindingKind(TemplateBinding binding, NodeContext context) => binding.Literal?.Kind ??
         (binding.StateFieldId is not null && context.Fields.TryGetValue(binding.StateFieldId, out var field) ? field.Kind : null);

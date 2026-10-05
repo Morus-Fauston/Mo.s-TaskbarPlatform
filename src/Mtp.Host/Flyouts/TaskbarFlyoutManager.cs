@@ -49,15 +49,23 @@ internal sealed class TaskbarFlyoutManager : IDisposable
         return new(left, top, bounds.Max(x => x.Right) - left, bounds.Max(x => x.Bottom) - top);
     }
 
-    internal bool ReserveHintSpace(string screenId, long expectedGeneration, double heightDip)
+    internal bool ReserveHintSpace(string screenId, long expectedGeneration, double heightDip, string source = "ordinary")
     {
         if (!double.IsFinite(heightDip) || heightDip < 0 || heightDip > 512 ||
             !groups.TryGetValue(screenId, out var group) || group.Generation != expectedGeneration || group.Closing) return false;
-        if (group.HintReservation == heightDip) return true;
+        if (string.IsNullOrWhiteSpace(source) || source.Length > 256 ||
+            !group.HintReservations.ContainsKey(source) && group.HintReservations.Count >= 65) return false;
+        double previousSource = group.HintReservations.GetValueOrDefault(source);
         double previous = group.HintReservation;
-        group.HintReservation = heightDip;
+        if (heightDip == 0) group.HintReservations.Remove(source); else group.HintReservations[source] = heightDip;
+        group.HintReservation = group.HintReservations.Values.DefaultIfEmpty().Max();
+        if (group.HintReservation == previous) return true;
         try { Reflow(group, false); return true; }
-        catch (Exception error) { group.HintReservation = previous; record("flyout-hint-reflow-failed", error.Message); return false; }
+        catch (Exception error)
+        {
+            if (previousSource == 0) group.HintReservations.Remove(source); else group.HintReservations[source] = previousSource;
+            group.HintReservation = previous; record("flyout-hint-reflow-failed", error.Message); return false;
+        }
     }
 
     internal void ApplyAppearance(HostAppearancePreferences value)
@@ -189,6 +197,14 @@ internal sealed class TaskbarFlyoutManager : IDisposable
             FlyoutNative.GetWindowThreadProcessId(window, out var pid) == 0 || pid != Environment.ProcessId)
             return Failure<bool>("InvalidInteractionWindow", "关联窗口必须由当前Host拥有且在预算内");
         group.Associated.Add(window); return CoreResult<bool>.Success(true);
+    }
+    internal ProtocolResult ExpandFromHint(HintOwner owner, string? panelTemplateId)
+    {
+        if (!groups.TryGetValue(owner.ScreenId, out var group) || group.Generation != owner.Generation || group.Closing ||
+            group.Request.Entry != owner.Entry || group.Request.SessionId != owner.SessionId)
+            return ProtocolResult.Reject("StaleFlyout", "提示所属浮窗组已结束");
+        if (panelTemplateId is null || panelTemplateId == group.Declaration.MainTemplateId) return ProtocolResult.Success("Displayed");
+        return Navigate(group, panelTemplateId);
     }
     internal CoreResult<bool> TryClose()
     {
@@ -487,6 +503,7 @@ internal sealed class TaskbarFlyoutManager : IDisposable
         internal readonly DispatcherTimer Timer = new() { Interval = TimeSpan.FromMilliseconds(16) };
         internal FlyoutGroupLayoutResult? Layout;
         internal double HintReservation;
+        internal readonly Dictionary<string, double> HintReservations = new(StringComparer.Ordinal);
         internal HashSet<string> VisibleKeys = [];
         internal IReadOnlyList<FlyoutRectangleTarget>? AnimationTargets;
         internal FlyoutOpenRequest? Pending;

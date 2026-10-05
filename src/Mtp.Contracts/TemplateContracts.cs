@@ -5,7 +5,7 @@ namespace Mtp.Contracts;
 public enum TemplateNodeKind { Text, Image, Button, IconButton, Toggle, Slider, Horizontal, Vertical, Group, Separator, ListItem }
 public enum TemplateValueKind { Text, Boolean, Number, Resource }
 public enum TemplateEntryKind { Component, TaskbarFlyout, Hint, EventChannel }
-public enum TemplateActionKind { Business, OpenPanel, Back }
+public enum TemplateActionKind { Business, OpenPanel, Back, ExpandHint }
 public enum HostIcon { Info, Check, Warning, Error, Play, Pause, Settings, ChevronRight, ChevronLeft }
 public enum PanelPresentation { Hierarchical, Parallel }
 public enum ImageResourceFormat { Png, Jpeg }

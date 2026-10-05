@@ -12,6 +12,7 @@
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
     <Using Include="Xunit" />
     <Compile Include="../../samples/Mtp.CounterService/FlyoutDemoProvider.cs" Link="FlyoutDemoProvider.cs" />
+    <Compile Include="../../samples/Mtp.CounterService/InteractiveHintDemoProvider.cs" Link="InteractiveHintDemoProvider.cs" />
     <ProjectReference Include="../../src/Mtp.Sdk/Mtp.Sdk.csproj" />
     <ProjectReference Include="../../src/Mtp.Host.Runtime/Mtp.Host.Runtime.csproj" />
   </ItemGroup>

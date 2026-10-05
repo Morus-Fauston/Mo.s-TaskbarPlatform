@@ -6,20 +6,24 @@ namespace Mtp.Host;
 /// <summary>An immutable entry produced by the Host declaration validator.</summary>
 public sealed record ValidatedFlyoutEntry
 {
-    internal ValidatedFlyoutEntry(StableIdentity identity, FlyoutKind kind, EventClosePolicy? closePolicy = null)
+    internal ValidatedFlyoutEntry(StableIdentity identity, FlyoutKind kind, EventClosePolicy? closePolicy = null,
+        HintExpansionTarget? expansion = null)
     {
         ArgumentNullException.ThrowIfNull(identity);
         if (identity.Segments.Count != 3 || !Enum.IsDefined(kind) ||
-            (kind == FlyoutKind.EventGroup ? closePolicy is null || !Enum.IsDefined(closePolicy.Value) : closePolicy is not null))
+            (kind == FlyoutKind.EventGroup ? closePolicy is null || !Enum.IsDefined(closePolicy.Value) : closePolicy is not null) ||
+            (expansion is not null && kind != FlyoutKind.InteractiveHint))
             throw new ArgumentException("Invalid validated flyout entry.");
         Identity = identity;
         Kind = kind;
         ClosePolicy = closePolicy;
+        Expansion = expansion;
     }
 
     public StableIdentity Identity { get; }
     public FlyoutKind Kind { get; }
     public EventClosePolicy? ClosePolicy { get; }
+    public HintExpansionTarget? Expansion { get; }
 }
 
 public sealed record FlyoutRequestReceipt(string? RequestId, long RequestSequence, ProtocolResult Result);

@@ -239,11 +239,37 @@ public sealed class DeclarationValidator
                     return CoreResult<ValidatedApplicationDeclaration>.Failure(idError!);
                 if (!entryIds.Add(hintId))
                     return Failure("hierarchy_conflict", "Entry identities must be unique within the feature group.", featurePath + ".hints");
-                flyoutEntries.Add(new ValidatedFlyoutEntry(featureIdentity.CreateChild(hintId), hint.Kind));
+                if (hint.Kind == FlyoutKind.ShortHint && (hint.ActionSlots is { Count: > 0 } || hint.Expansion is not null))
+                    return Failure("unsupported_structure", "Ordinary hints cannot declare actions or expansion.", featurePath + ".hints");
+                if (hint.ActionSlots is { Count: > 0 })
+                {
+                    if (!TryValidateActionSlots(hint.ActionSlots, featureIdentity.CreateChild(hintId), featurePath + ".hints.actionSlots",
+                        ref remainingNodes, out _, out var actionError))
+                        return CoreResult<ValidatedApplicationDeclaration>.Failure(actionError!);
+                    foreach (var slot in hint.ActionSlots)
+                        declaredActions.Add(new(new(declaration.ApplicationId!, feature.FeatureGroupId!, ActionEntryKind.Hint,
+                            hint.EntryId!, slot.ActionSlotId!), slot.ParameterKind));
+                }
+                if (hint.Expansion is { } expansion)
+                {
+                    if (!ConsumeNodes(1, 1, ref remainingNodes)) return BudgetFailure(featurePath + ".hints.expansion");
+                    if (!TryCreateId(expansion.TaskbarFlyoutId, featurePath + ".hints.expansion", "expansion entry", out _, out idError) ||
+                        (expansion.PanelTemplateId is not null && !TryCreateId(expansion.PanelTemplateId,
+                            featurePath + ".hints.expansion", "expansion panel", out _, out idError)))
+                        return CoreResult<ValidatedApplicationDeclaration>.Failure(idError!);
+                    var target = templates.FirstOrDefault(value => value.Entry ==
+                        new TemplateEntryReference(feature.FeatureGroupId!, TemplateEntryKind.TaskbarFlyout, expansion.TaskbarFlyoutId));
+                    if (target is null || expansion.PanelTemplateId is { } panel &&
+                        target.Declaration.Panels?.Any(value => value.TemplateId == panel) != true)
+                        return Failure("hint_expansion_invalid", "Hint expansion must reference a declared taskbar template and optional associated panel in the same feature group.",
+                            featurePath + ".hints.expansion");
+                }
+                flyoutEntries.Add(new ValidatedFlyoutEntry(featureIdentity.CreateChild(hintId), hint.Kind, expansion: hint.Expansion));
                 if (hint.Template is not null)
                 {
                     var templateResult = templateValidator.Validate(new(feature.FeatureGroupId!, TemplateEntryKind.Hint, hint.EntryId!),
-                        hint.Template, [], images, ref remainingNodes);
+                        hint.Template, hint.ActionSlots ?? [], images, ref remainingNodes,
+                        allowHintActions: hint.Kind == FlyoutKind.InteractiveHint, allowHintExpansion: hint.Expansion is not null);
                     if (!templateResult.IsSuccess) return CoreResult<ValidatedApplicationDeclaration>.Failure(templateResult.Error!);
                     templates.Add(templateResult.Value!);
                 }

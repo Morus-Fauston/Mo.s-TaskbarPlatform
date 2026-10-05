@@ -76,7 +76,9 @@ public sealed class TemplateInteractionController : IDisposable
                     if (value is not null) return Completed("InvalidControlValue", "导航不接受额外值");
                     if (action.Kind == TemplateActionKind.OpenPanel && declaration!.Panels?.Any(x => x.TemplateId == action.TargetId) != true)
                         return Completed("UnknownPanel", "面板未声明");
-                    if (action.Kind is not (TemplateActionKind.OpenPanel or TemplateActionKind.Back))
+                    if (action.Kind == TemplateActionKind.ExpandHint && !CanExpandHint())
+                        return Completed("HintExpansionUnavailable", "当前提示没有已验证的展开目标");
+                    if (action.Kind is not (TemplateActionKind.OpenPanel or TemplateActionKind.Back or TemplateActionKind.ExpandHint))
                         return Completed("InvalidAction", "动作种类无效");
                     intent = new(applicationId, entry, current!.SessionId, generation, template!.TemplateId, nodeId, action);
                 }
@@ -115,7 +117,11 @@ public sealed class TemplateInteractionController : IDisposable
             if (!target.Available) return Completed("ControlUnavailable", "控件当前不可操作");
             var action = target.Node.Action;
             if (action is null) return Completed("ActionNotAvailable", "控件未绑定动作");
-            if (action.Kind != TemplateActionKind.Business) return Task.FromResult(Navigate(action));
+            if (action.Kind != TemplateActionKind.Business)
+            {
+                if (value is not null) return Completed("InvalidControlValue", "导航不接受额外值");
+                return Task.FromResult(Navigate(action));
+            }
             TemplateValue? normalized = null;
             ActionParameter parameter;
             if (target.Node.Kind is TemplateNodeKind.Toggle or TemplateNodeKind.Slider)
@@ -132,10 +138,11 @@ public sealed class TemplateInteractionController : IDisposable
                 if (value is not null) return Completed("InvalidControlValue", "按钮不接受额外值");
                 parameter = new();
             }
-            if (entry.Kind is not (TemplateEntryKind.Component or TemplateEntryKind.TaskbarFlyout))
+            if (entry.Kind is not (TemplateEntryKind.Component or TemplateEntryKind.TaskbarFlyout or TemplateEntryKind.Hint))
                 return Completed("ActionNotAvailable", "入口未声明业务动作");
             var slot = new ActionSlotReference(applicationId, entry.FeatureGroupId,
-                entry.Kind == TemplateEntryKind.Component ? ActionEntryKind.Component : ActionEntryKind.TaskbarFlyout, entry.EntryId, action.TargetId!);
+                entry.Kind switch { TemplateEntryKind.Component => ActionEntryKind.Component,
+                    TemplateEntryKind.Hint => ActionEntryKind.Hint, _ => ActionEntryKind.TaskbarFlyout }, entry.EntryId, action.TargetId!);
             if (current!.Declaration!.ActionSlots.Any(item => item.Reference == slot && item.ParameterKind == parameter.Kind) != true)
                 return Completed("ActionNotAvailable", "当前入口动作或参数未声明");
             control = Control(nodeId);
@@ -217,6 +224,8 @@ public sealed class TemplateInteractionController : IDisposable
 
     private ProtocolResult Navigate(TemplateAction action)
     {
+        if (action.Kind == TemplateActionKind.ExpandHint)
+            return Rejected("NavigationUnavailable", "提示展开须由浮窗协调器处理");
         if (fixedTemplateId is not null) return Rejected("NavigationUnavailable", "固定面板的导航须由浮窗组处理");
         if (action.Kind == TemplateActionKind.Back)
         {
@@ -236,6 +245,11 @@ public sealed class TemplateInteractionController : IDisposable
         template = declaration!.Templates.First(value => value.TemplateId == (panels.Count == 0 ? declaration.MainTemplateId : panels[^1]));
         return ProtocolResult.Success();
     }
+
+    private bool CanExpandHint() => entry.Kind == TemplateEntryKind.Hint &&
+        current?.Declaration?.FlyoutEntries.Any(value => value.Kind == FlyoutKind.InteractiveHint && value.Expansion is not null &&
+            value.Identity.Segments[0].Value == applicationId && value.Identity.Segments[1].Value == entry.FeatureGroupId &&
+            value.Identity.LocalId.Value == entry.EntryId) == true;
 
     public void Dispose()
     {

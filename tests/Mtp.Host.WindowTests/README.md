@@ -71,3 +71,9 @@ powershell -ExecutionPolicy Bypass -File tests/Mtp.Host.WindowTests/Run.ps1 -Sce
 `Run.ps1 -Scenario hint -EvidenceDirectory <新的独立目录>` 串行执行普通WinUI提示、可替换时钟、关联组上/下/限高布局、实际帧等宽与连续转向、减少动画、Close异常资源隔离、跨进程SendInput和真实设置控件。独立目标进程必须记录Press/Release/Click各一次并exit0；不得把透明样式检查单独当作穿透证明。总runner上限60秒；单动画段8秒/256帧。`-Scenario hint-window`只复核窗口边界及保存实际原生和内容截图，便于定向视觉检查。
 
 `-Scenario flyout-production`在既有真实SDK/Broker/Host链路中补验notice请求、同HWND刷新、八方位及覆盖许可、隐藏准入、关联动作失败重计和组关闭。此夹具的内容岛与组位于自有离屏父窗口，屏幕几何显式注入；它证明生产通信/控件/窗口接线，不承诺Explorer或多屏支持。真实普通提示及跨进程点击使用前一场景。原生测量、截图、自动化交互均不代替维护者人工验收。
+
+## 可交互短提示（五期09）
+
+启动 `Mtp.Host.exe --interactive-hint-demo`，在设置显示 `counter/main/controls`，点击请求提示后使用模拟滑块、展开和失败按钮；不写系统音量或亮度。提示默认5秒，悬停、拖动捕获和显式键盘交互暂停，最后交互结束重新计时；确认值由SDK提供方返回，拒绝时回退。
+
+`Run.ps1 -Scenario interactive-hint -EvidenceDirectory <新的独立目录>` 验证真实跨进程空白穿透、裁剪控件命中、拖出区域捕获、键盘、双窗口清理、计时和关联动画。`-Scenario interactive-hint-production` 验证真实SDK/Broker动作、请求、设置、展开、失败与重连；其内容岛使用离屏自有父窗口，不能代替真实Explorer验收。前景是唯一交互控件来源，背景共享确认快照；本地peer断言不等于人类读屏验收。
