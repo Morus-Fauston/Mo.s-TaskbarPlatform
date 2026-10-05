@@ -77,8 +77,10 @@ public sealed class ActionRequestTracker
                 ProtocolResult committed;
                 try { committed = validateAndCommitState(completion.State); }
                 catch (Exception) { committed = ProtocolResult.Reject("ActionStateRejected", "动作确认状态无法接收"); }
-                if (!ValidResult(committed)) committed = ProtocolResult.Reject("ActionStateRejected", "动作确认状态结果无效");
-                if (!committed.Accepted) result = committed;
+                if (!ValidResult(committed, applicationId)) committed = ProtocolResult.Reject("ActionStateRejected", "动作确认状态结果无效");
+                if (!committed.Accepted || committed.ActivityRejections is { Count: > 0 })
+                    result = committed.ActivityRejections is null ? committed : committed with
+                    { ActivityRejections = Array.AsReadOnly(committed.ActivityRejections.ToArray()) };
             }
             if (!result.Accepted && pending.Busy)
                 session.ErrorHint = new(applicationId, sessionId, completion.RequestId, pending.Invocation.Slot, result);
@@ -175,9 +177,14 @@ public sealed class ActionRequestTracker
     }
 
     private static bool ValidId(string? value) => !string.IsNullOrWhiteSpace(value) && value.Length <= 256 && value == value.Trim();
-    private static bool ValidResult(ProtocolResult? result) => result is not null && ValidId(result.Code) &&
+    private static bool ValidResult(ProtocolResult? result, string? admissionApplicationId = null) => result is not null && ValidId(result.Code) &&
         result.Message is not null && result.Message.Length <= ProtocolLimits.MaximumTextLength &&
-        (result.Path is null || result.Path.Length <= ProtocolLimits.MaximumTextLength);
+        (result.Path is null || result.Path.Length <= ProtocolLimits.MaximumTextLength) &&
+        (result.ActivityRejections is null || (admissionApplicationId is not null && result.Accepted &&
+            result.Code == "AcceptedWithActivityRejections" && result.ActivityRejections.Count is > 0 and <= DynamicContentLimits.MaximumActivitiesPerApplication &&
+            result.ActivityRejections.All(value => value is not null && value.ApplicationId == admissionApplicationId &&
+                ValidId(value.FeatureGroupId) && ValidId(value.ComponentId) && ValidId(value.ActivityId) && value.Code == "DisplayNotAllowed") &&
+            result.ActivityRejections.Select(value => (value.FeatureGroupId, value.ComponentId, value.ActivityId)).Distinct().Count() == result.ActivityRejections.Count));
 
     private static bool ValidParameter(ActionParameter parameter, ActionParameterKind expected) => parameter.Kind == expected && expected switch
     {

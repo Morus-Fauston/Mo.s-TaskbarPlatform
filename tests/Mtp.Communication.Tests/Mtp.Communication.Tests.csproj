@@ -20,6 +20,7 @@
     <ProjectReference Include="../Mtp.Action.ProcessProbe/Mtp.Action.ProcessProbe.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="../Mtp.Heartbeat.ProcessProbe/Mtp.Heartbeat.ProcessProbe.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="../Mtp.Recovery.ProcessProbe/Mtp.Recovery.ProcessProbe.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="../Mtp.Activity.ProcessProbe/Mtp.Activity.ProcessProbe.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
   <Import Project="../../build/CommunicationRuntimes.targets" />
   <Target Name="CopyCommunicationProbe" AfterTargets="Build">
@@ -75,5 +76,14 @@
       <_RecoveryProbeFiles Include="@(_RecoveryProbeAssembly);@(_RecoveryProbeAssembly->'%(RootDir)%(Directory)Mtp.Recovery.ProcessProbe.deps.json');@(_RecoveryProbeAssembly->'%(RootDir)%(Directory)Mtp.Recovery.ProcessProbe.runtimeconfig.json');@(_RecoveryProbeAssembly->'%(RootDir)%(Directory)Mtp.Contracts.dll');@(_RecoveryProbeAssembly->'%(RootDir)%(Directory)Mtp.Transport.dll');@(_RecoveryProbeAssembly->'%(RootDir)%(Directory)Mtp.Sdk.dll')" />
     </ItemGroup>
     <Copy SourceFiles="@(_RecoveryProbeFiles)" DestinationFolder="$(OutDir)RecoveryProcessProbe" />
+  </Target>
+  <Target Name="CopyActivityProbe" AfterTargets="Build">
+    <MSBuild Projects="../Mtp.Activity.ProcessProbe/Mtp.Activity.ProcessProbe.csproj" Targets="GetTargetPath" Properties="Configuration=$(Configuration);TargetFramework=net10.0">
+      <Output TaskParameter="TargetOutputs" ItemName="_ActivityProbeAssembly" />
+    </MSBuild>
+    <ItemGroup>
+      <_ActivityProbeFiles Include="@(_ActivityProbeAssembly);@(_ActivityProbeAssembly->'%(RootDir)%(Directory)Mtp.Activity.ProcessProbe.deps.json');@(_ActivityProbeAssembly->'%(RootDir)%(Directory)Mtp.Activity.ProcessProbe.runtimeconfig.json');@(_ActivityProbeAssembly->'%(RootDir)%(Directory)Mtp.Contracts.dll');@(_ActivityProbeAssembly->'%(RootDir)%(Directory)Mtp.Transport.dll');@(_ActivityProbeAssembly->'%(RootDir)%(Directory)Mtp.Sdk.dll')" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_ActivityProbeFiles)" DestinationFolder="$(OutDir)ActivityProcessProbe" />
   </Target>
 </Project>

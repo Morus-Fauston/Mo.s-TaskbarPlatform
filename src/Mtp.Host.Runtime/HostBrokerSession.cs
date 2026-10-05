@@ -95,6 +95,7 @@ public sealed class HostBrokerSession : IAsyncDisposable
         {
             if (!IsCurrent(current)) throw new OperationCanceledException(deadline.Token);
             current.Ready = true; current.Receiver = ReceiveAsync(current); current.Dispatcher = DispatchActionsAsync(current);
+            current.PermissionPublisher = PublishDisplayPermissionsAsync(current);
         }
         return current;
     }
@@ -157,6 +158,38 @@ public sealed class HostBrokerSession : IAsyncDisposable
         using var cancel = cancellationToken.Register(() => Actions.Cancel(current.ApplicationId, current.SessionId, reserved.Invocation!.RequestId));
         return await reserved.Completion.ConfigureAwait(false);
     }
+    private void QueueDisplayPermissions(BrokerGeneration current, string applicationId)
+    {
+        if (!IsCurrent(current)) return;
+        var state = States.GetSnapshot(applicationId);
+        var snapshot = States.GetDisplayPermissions(applicationId);
+        if (state is not { IsConnected: true } || snapshot is null || snapshot.Entries.Count == 0 ||
+            current.PermissionRevisions.TryGetValue(applicationId, out var previous) && previous.Session == state.SessionId && previous.Revision >= snapshot.Revision) return;
+        if (!current.Permissions.TryPublish(new ProtocolMessage
+        {
+            Kind = MessageKind.DisplayPermissions,
+            ApplicationId = applicationId,
+            SessionId = state.SessionId,
+            RequestId = Guid.NewGuid().ToString("N"),
+            Permissions = snapshot
+        })) throw new IOException("DisplayPermissionQueueFull");
+        current.PermissionRevisions[applicationId] = (state.SessionId, snapshot.Revision);
+    }
+
+    private async Task PublishDisplayPermissionsAsync(BrokerGeneration current)
+    {
+        try
+        {
+            await foreach (var message in current.Permissions.ReadAllAsync(current.Lifetime.Token).ConfigureAwait(false))
+            {
+                lock (gate)
+                    if (!IsCurrent(current) || States.GetSnapshot(message.ApplicationId) is not { IsConnected: true } snapshot || snapshot.SessionId != message.SessionId) continue;
+                await WriteControlAsync(current, message, current.Lifetime.Token).ConfigureAwait(false);
+            }
+        }
+        catch (Exception error) when (IsTransportError(error)) { FaultBroker(current, "PermissionPublisher", error); }
+        finally { current.Permissions.Complete(); }
+    }
     private async Task DispatchActionsAsync(BrokerGeneration current)
     {
         try
@@ -190,10 +223,11 @@ public sealed class HostBrokerSession : IAsyncDisposable
                 lock (gate)
                 {
                     if (!IsCurrent(current)) return;
+                    if (message.Permissions is not null) throw new IOException("UnexpectedDisplayPermissions");
                     if (message.Kind == MessageKind.Result && current.PendingRegistrations.TryGetValue(message.RequestId, out var pending))
                     {
                         if (message.Version != ProtocolLimits.Version || message.ApplicationId != pending.Application || message.SessionId != "" ||
-                            message.Result is null || message.Result.Code is null || message.Result.Code.Length > 256 ||
+                            message.Result is null || message.Result.ActivityRejections is not null || message.Result.Code is null || message.Result.Code.Length > 256 ||
                             message.Result.Message is null || message.Result.Message.Length > 1024 || message.Result.Path?.Length > 1024 || !EmptyPayload(message, true)) throw new IOException("InvalidRegistrationResult");
                         pending.Completion.TrySetResult(message.Result); continue;
                     }
@@ -204,6 +238,7 @@ public sealed class HostBrokerSession : IAsyncDisposable
                     {
                         if (message.Version != ProtocolLimits.Version || message.ActionCompletion is not { } completion ||
                             message.RequestId != completion.RequestId || !ValidId(message.ApplicationId) || !ValidId(message.SessionId) ||
+                            completion.Result?.ActivityRejections is not null ||
                             message.Action is not null || message.Result is not null || message.Declaration is not null || message.State is not null ||
                             message.Flyout is not null || message.BrokerLoad is not null || message.Heartbeat is not null || message.Registration is not null ||
                             !string.IsNullOrEmpty(message.Ticket) || !string.IsNullOrEmpty(message.StartRequestId)) throw new IOException("InvalidActionCompletionEnvelope");
@@ -227,6 +262,7 @@ public sealed class HostBrokerSession : IAsyncDisposable
                             declared.BrokerGeneration == current.Id && declared.SessionId == message.SessionId) declared.InitialConnectionConfirmed = true;
                         if (message.Kind == MessageKind.Disconnected || (message.Kind == MessageKind.Welcome && previous is not null)) Actions.EndSession(message.ApplicationId, previous?.SessionId ?? message.SessionId);
                         if (message.Kind == MessageKind.Disconnected) ScheduleServiceRecovery(message.ApplicationId, current);
+                        if (message.Kind == MessageKind.Declare) QueueDisplayPermissions(current, message.ApplicationId);
                     }
                     if (message.Kind is MessageKind.Disconnected or MessageKind.SessionReady) response = null;
                 }
@@ -492,9 +528,12 @@ public sealed class HostBrokerSession : IAsyncDisposable
             {
                 await Task.Delay(250, lifetime.Token).ConfigureAwait(false); Actions.Tick();
                 if (++ticks < 4) continue; ticks = 0;
+                States.TickActivities();
                 lock (gate)
                 {
                     if (disposed != 0) continue;
+                    if (generation is { Ready: true, Faulted: false } permissionsGeneration)
+                        foreach (var snapshot in States.Snapshots) QueueDisplayPermissions(permissionsGeneration, snapshot.ApplicationId);
                     if (generation is { Faulted: true }) ScheduleBrokerRecovery();
                     foreach (var pair in services)
                     {
@@ -574,7 +613,7 @@ public sealed class HostBrokerSession : IAsyncDisposable
     private async Task RetireGenerationAsync(BrokerGeneration current, CancellationToken cancellationToken = default)
     {
         lock (gate) current.Stop();
-        await Task.WhenAll(current.Receiver, current.Dispatcher).WaitAsync(cancellationToken).ConfigureAwait(false);
+        await Task.WhenAll(current.Receiver, current.Dispatcher, current.PermissionPublisher).WaitAsync(cancellationToken).ConfigureAwait(false);
         if (current.Broker is not null) { await StopOwnedAsync(current.Broker, cancellationToken).ConfigureAwait(false); current.Broker = null; }
         lock (gate) if (ReferenceEquals(generation, current)) generation = null;
         current.Dispose();
@@ -620,7 +659,7 @@ public sealed class HostBrokerSession : IAsyncDisposable
     private static bool ValidId(string? value) => !string.IsNullOrWhiteSpace(value) && value.Length <= 256;
     private static bool EmptyPayload(ProtocolMessage message, bool allowResult = false) => message.Declaration is null && message.State is null &&
         (allowResult || message.Result is null) && message.BrokerLoad is null && message.Flyout is null && message.Action is null &&
-        message.ActionCompletion is null && message.Heartbeat is null && message.Registration is null && message.Ticket == "" && message.StartRequestId == "";
+        message.ActionCompletion is null && message.Heartbeat is null && message.Registration is null && message.Permissions is null && message.Ticket == "" && message.StartRequestId == "";
     private static string Secret() => Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
     private static bool SecretEquals(string expected, string actual) => actual is not null && actual.Length == expected.Length &&
         CryptographicOperations.FixedTimeEquals(System.Text.Encoding.UTF8.GetBytes(expected), System.Text.Encoding.UTF8.GetBytes(actual));

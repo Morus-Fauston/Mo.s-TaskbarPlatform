@@ -31,6 +31,9 @@ internal sealed class BrokerGeneration : IDisposable
     public OwnedServiceRuntime? Broker;
     public Task Receiver = Task.CompletedTask;
     public Task Dispatcher = Task.CompletedTask;
+    public Task PermissionPublisher = Task.CompletedTask;
+    public DisplayPermissionOutbox Permissions { get; } = new();
+    public Dictionary<string, (string Session, long Revision)> PermissionRevisions { get; } = new(StringComparer.Ordinal);
     public bool Ready;
     public bool Faulted;
     public int PeakPending;
@@ -41,6 +44,8 @@ internal sealed class BrokerGeneration : IDisposable
         Lifetime.Cancel();
         Control.Dispose();
         Actions.Writer.TryComplete();
+        Permissions.Complete();
+        PermissionRevisions.Clear();
         foreach (var pending in PendingRegistrations.Values)
             pending.Completion.TrySetResult(ProtocolResult.Reject("BrokerUnavailable", "Broker连接不可用"));
         PendingRegistrations.Clear();

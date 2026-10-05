@@ -10,12 +10,15 @@ public sealed class BrokerDynamicStateTests
     {
         var store = new BrokerStateStore(["app"]);
         store.Handle(Message(MessageKind.Welcome));
+        Assert.True(store.Handle(Message(MessageKind.Declare) with
+        { Declaration = Declaration(), State = new(0, []) }).Result!.Accepted);
+        Assert.True(store.SetEntryDisplayAllowed("app", "main", "island", true).Accepted);
         var activities = new List<ActivityState> { new("activity", DateTimeOffset.UtcNow.AddHours(1)) };
         var references = new List<string> { "activity" };
         var items = new List<DynamicItemState> { new("item", "status", references, new(Status: new("running"))) };
-        var initial = new ApplicationState(0, [new("main", "island", "initial")],
+        var initial = new ApplicationState(1, [new("main", "island", "initial")],
             [new("main", "island", new(activities, items))]);
-        var declared = store.Handle(Message(MessageKind.Declare) with { Declaration = Declaration(), State = initial });
+        var declared = store.Handle(Message(MessageKind.State) with { State = initial });
         Assert.True(declared.Result!.Accepted, declared.Result.Code);
         var frozen = store.GetSnapshot("app")!.State!;
         references.Clear();
@@ -26,13 +29,13 @@ public sealed class BrokerDynamicStateTests
 
         var rejected = store.Handle(Message(MessageKind.State) with
         {
-            State = new(1, [new("main", "island", "poison")],
+            State = new(2, [new("main", "island", "poison")],
                 [new("main", "island", new([], [new("item", "foreign", [], new(Status: new("poison")))]))])
         });
         Assert.False(rejected.Result!.Accepted);
         Assert.Same(frozen, store.GetSnapshot("app")!.State);
         Assert.Equal("initial", frozen.Components[0].Text);
-        var removed = store.Handle(Message(MessageKind.State) with { State = new(2, [], []) });
+        var removed = store.Handle(Message(MessageKind.State) with { State = new(3, [], []) });
         Assert.True(removed.Result!.Accepted);
         Assert.Empty(store.GetSnapshot("app")!.State!.DynamicEntries!);
     }

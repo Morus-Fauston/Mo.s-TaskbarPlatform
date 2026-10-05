@@ -31,6 +31,7 @@ public sealed class HostDisplayController
     private IReadOnlyDictionary<string, BrokerApplicationSnapshot> brokerSnapshots =
         new Dictionary<string, BrokerApplicationSnapshot>(StringComparer.Ordinal);
     private bool preferencesLoaded;
+    private BrokerStateStore? activityPermissions;
 
     public HostDisplayController(
         IDeclarationSource declarationSource,
@@ -41,6 +42,14 @@ public sealed class HostDisplayController
     }
 
     public IReadOnlyList<HostComponentDisplayModel> CurrentComponents => components;
+
+    /// <summary>Bind the current Host session on the UI thread; preferences remain the durable authority.</summary>
+    public void BindActivityPermissions(BrokerStateStore states)
+    {
+        ArgumentNullException.ThrowIfNull(states);
+        activityPermissions = states;
+        SynchronizeActivityPermissions();
+    }
 
     public void ApplyBrokerSnapshot(BrokerApplicationSnapshot snapshot)
     {
@@ -75,6 +84,7 @@ public sealed class HostDisplayController
         var nextComponents = BuildComponents(next);
         brokerSnapshots = next;
         components = nextComponents;
+        SynchronizeActivityPermissions();
     }
 
     public HostDisplayLoadResult Load()
@@ -93,6 +103,7 @@ public sealed class HostDisplayController
         var preferenceResult = preferenceManager.Load();
         preferencesLoaded = true;
         components = BuildComponents(brokerSnapshots);
+        SynchronizeActivityPermissions();
 
         return new HostDisplayLoadResult(
             declarationResult.Accepted,
@@ -120,6 +131,7 @@ public sealed class HostDisplayController
         }
 
         components = BuildComponents(brokerSnapshots);
+        SynchronizeActivityPermissions();
         return CoreResult<HostComponentDisplayModel>.Success(
             components.First(component => component.Identity == identity));
     }
@@ -137,6 +149,23 @@ public sealed class HostDisplayController
                 models[component.Identity] = Project(component, snapshot);
         }
         return Array.AsReadOnly(models.Values.ToArray());
+    }
+
+    private void SynchronizeActivityPermissions()
+    {
+        if (activityPermissions is null || !preferencesLoaded) return;
+        foreach (var snapshot in brokerSnapshots.Values)
+        {
+            if (snapshot.Declaration is null) continue;
+            foreach (var entry in snapshot.Declaration.DynamicContents)
+            {
+                if (entry.Declaration.Kind != DynamicContentKind.LiveIsland) continue;
+                var identity = entry.ComponentIdentity;
+                activityPermissions.SetEntryDisplayAllowed(snapshot.ApplicationId,
+                    identity.Segments[1].Value, identity.LocalId.Value,
+                    preferenceManager.Current.IsVisible(identity));
+            }
+        }
     }
 
     private HostComponentDisplayModel Project(Component component, BrokerApplicationSnapshot? brokerSnapshot)

@@ -122,7 +122,11 @@ internal sealed class HostConsoleController
         refreshing = true;
         try
         {
-            if (communication is not null) display.ApplyBrokerSnapshots(communication.States.Snapshots);
+            if (communication is not null)
+            {
+                display.BindActivityPermissions(communication.States);
+                display.ApplyBrokerSnapshots(communication.States.Snapshots);
+            }
             if (communication?.LastError is { } connectionError) AddError(new(connectionError, "平台通信不可用，已保留最后确认读数。"));
             var prepared = adapter.Prepare(Preferences, Component, Tests.Configuration, SimulateUnavailable);
             Session.SetIntent(Component?.IsVisible == true);

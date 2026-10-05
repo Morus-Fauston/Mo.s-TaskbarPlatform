@@ -32,6 +32,7 @@ public sealed class DynamicContentProcessTests(ITestOutputHelper output)
             Assert.Equal("ring", Assert.Single(ordinaryStructure.ExpandTargetStructureIds!));
             Assert.Equal(SemanticAnimation.ContentChange, ordinaryStructure.Animation);
             Assert.Equal(PresetTemplate.Composite, Assert.Single(islandDeclaration.Structures).Normal.Template);
+            Assert.True(host.States.SetEntryDisplayAllowed("dynamic", "main", "island", true).Accepted);
             await ContinueAsync(directory, "ready", token);
 
             using var addedMarker = await MarkerAsync(directory, "added", token);

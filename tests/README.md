@@ -81,3 +81,15 @@ powershell -ExecutionPolicy Bypass -File tests/Mtp.Host.WindowTests/Run.ps1 -Sce
 ~~~
 
 恢复夹具验证真实Broker新代次、健康PID保留、当前快照重取、SDK关闭、20秒窗口/一次重启/手动应用恢复及恢复中关闭。原生broker场景覆盖3次自动替换、预算耗尽后的实际“重试通信”按钮、独立应用重启预算和同一HWND；仅操作测试自有进程，不代替人工桌面验收。
+
+## 四期活动生命周期与显示许可
+
+~~~powershell
+$env:MSBUILDDISABLENODEREUSE='1'
+dotnet test tests/Mtp.Platform.Core.Tests/Mtp.Platform.Core.Tests.csproj -nr:false --filter 'FullyQualifiedName~ActivityLifecycleTests|FullyQualifiedName~ActivityDisplayPreferenceTests'
+dotnet test tests/Mtp.Communication.Tests/Mtp.Communication.Tests.csproj -c Release -nr:false --filter FullyQualifiedName~ActivityProcessTests
+~~~
+
+新实况岛入口默认关闭。合法声明仍建立连接，但未获许可的新活动返回 AcceptedWithActivityRejections 明细；SDK 的 InitialPublicationResult 与 PublishAsync 均可读取。许可通知由声明提供方可选实现 IDisplayPermissionObserver 接收，提供方主动提交仍在进行的活动，SDK 不重放此前拒绝的创建。首次回调如需 SDK 引用，提供方应等待其在 Connect 返回后显式绑定的信号。
+
+ActivityProcessTests 使用真实双服务验证关闭期间已有活动更新、新建拒绝、共享活动引用过滤、隐藏期间结束/到期、Broker 新会话重新确认和旧回调取消；新 Host 不恢复运行期实例。偏好持久化和保存失败由公开显示控制器边界验证。窗口外观与实际多屏仍待人工。

@@ -14,6 +14,11 @@ public interface IActionHandler
     Task<ActionCompletion> HandleAsync(ActionInvocation action, CancellationToken cancellationToken);
 }
 
+public interface IDisplayPermissionObserver
+{
+    Task OnDisplayPermissionsChangedAsync(DisplayPermissionSnapshot snapshot, CancellationToken cancellationToken);
+}
+
 /// <summary>Owns credential delivery and connection generations; business requests are never replayed.</summary>
 public sealed class SdkClient : IAsyncDisposable
 {
@@ -36,6 +41,7 @@ public sealed class SdkClient : IAsyncDisposable
     private bool inputAvailable;
     private bool disposed;
     private ProtocolResult? lastError;
+    private ProtocolResult initialPublicationResult;
 
     private SdkClient(ServiceLaunch launch, IDeclarationProvider provider, IActionHandler? handler, SdkConnection connection, Stream? input)
     {
@@ -47,9 +53,11 @@ public sealed class SdkClient : IAsyncDisposable
         inputAvailable = input is not null;
         lastSessionId = connection.SessionId;
         lastLaunchId = launch.StartRequestId;
+        initialPublicationResult = connection.InitialPublicationResult;
     }
 
     public string SessionId { get { lock (gate) return lastSessionId; } }
+    public ProtocolResult InitialPublicationResult { get { lock (gate) return initialPublicationResult; } }
     public bool IsConnected { get { lock (gate) return !disposed && connection?.IsConnected == true; } }
     public ProtocolResult? LastError
     {
@@ -79,6 +87,7 @@ public sealed class SdkClient : IAsyncDisposable
             var client = new SdkClient(launch, provider, actionHandler, connection, input);
             client.credentialReader = client.ReadCredentialsAsync();
             client.recoveryWorker = client.RecoverAsync();
+            connection.ActivatePermissionCallbacks();
             return client;
         }
         catch { input.Dispose(); throw; }
@@ -90,7 +99,9 @@ public sealed class SdkClient : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(provider);
         ValidateLaunch(launch);
         var connection = await SdkConnection.ConnectAsync(launch, provider, cancellationToken, actionHandler).ConfigureAwait(false);
-        return new(launch, provider, actionHandler, connection, null);
+        var client = new SdkClient(launch, provider, actionHandler, connection, null);
+        connection.ActivatePermissionCallbacks();
+        return client;
     }
 
     public Task<ProtocolResult> PublishAsync(ApplicationState state, CancellationToken cancellationToken = default)
@@ -112,6 +123,8 @@ public sealed class SdkClient : IAsyncDisposable
         lock (gate)
         {
             ObjectDisposedException.ThrowIf(disposed, this);
+            if (SdkConnection.CurrentPermissionCallback is { } callback && !ReferenceEquals(callback, connection))
+                return ProtocolResult.Reject("StaleSession", "旧会话许可回调不能提交到当前连接");
             if (connection?.IsConnected != true) return Unavailable();
             current = connection;
         }
@@ -186,7 +199,9 @@ public sealed class SdkClient : IAsyncDisposable
                         {
                             connection = candidate;
                             lastSessionId = candidate.SessionId;
+                            initialPublicationResult = candidate.InitialPublicationResult;
                             lastError = null;
+                            candidate.ActivatePermissionCallbacks();
                             candidate = null;
                         }
                     }

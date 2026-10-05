@@ -8,6 +8,8 @@ namespace Mtp.Sdk;
 /// <summary>Hides framing and credentials from application business logic.</summary>
 internal sealed class SdkConnection : IAsyncDisposable
 {
+    private static readonly AsyncLocal<SdkConnection?> permissionCallbackContext = new();
+    internal static SdkConnection? CurrentPermissionCallback => permissionCallbackContext.Value;
     private readonly NamedPipeClientStream pipe;
     private readonly string applicationId;
     private readonly SemaphoreSlim requestGate = new(1, 1);
@@ -22,24 +24,37 @@ internal sealed class SdkConnection : IAsyncDisposable
     private readonly Task reader;
     private readonly Task actionWorker;
     private readonly Task heartbeatWorker;
+    private readonly IDisplayPermissionObserver? permissionObserver;
+    private readonly Task permissionWorker;
+    private readonly TaskCompletionSource<bool> permissionCallbacksReady = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly Channel<DisplayPermissionSnapshot> permissions = Channel.CreateBounded<DisplayPermissionSnapshot>(
+        new BoundedChannelOptions(1) { SingleReader = true, SingleWriter = true, FullMode = BoundedChannelFullMode.DropOldest });
+    private HashSet<(string?, string?)> liveEntries = [];
+    private long lastPermissionRevision;
+    private ApplicationState? pendingPublication;
     private TaskCompletionSource<ProtocolResult>? pendingResponse;
     private string? pendingRequestId;
     private long lastActionSequence;
     private int outstandingActions;
 
-    private SdkConnection(NamedPipeClientStream pipe, string applicationId, string sessionId, IActionHandler? actionHandler)
+    private SdkConnection(NamedPipeClientStream pipe, string applicationId, string sessionId, IActionHandler? actionHandler,
+        IDisplayPermissionObserver? permissionObserver)
     {
         this.pipe = pipe;
         this.applicationId = applicationId;
         SessionId = sessionId;
         this.actionHandler = actionHandler;
+        this.permissionObserver = permissionObserver;
         reader = ReadMessagesAsync();
         actionWorker = RunActionsAsync();
         heartbeatWorker = RunHeartbeatsAsync();
+        permissionWorker = RunPermissionCallbacksAsync();
     }
 
     public string SessionId { get; }
     public bool IsConnected => Volatile.Read(ref disposed) == 0;
+    public ProtocolResult InitialPublicationResult { get; private set; } = ProtocolResult.Success();
+    public void ActivatePermissionCallbacks() => permissionCallbacksReady.TrySetResult(true);
 
     public static async Task<SdkConnection> ConnectAsync(ServiceLaunch launch, IDeclarationProvider provider, CancellationToken cancellationToken = default, IActionHandler? actionHandler = null)
     {
@@ -62,17 +77,21 @@ internal sealed class SdkConnection : IAsyncDisposable
                 RequestId = request,
             }, deadline.Token).ConfigureAwait(false);
             var welcome = await LengthPrefixedJson.ReadAsync<ProtocolMessage>(pipe, deadline.Token).ConfigureAwait(false);
-            if (welcome.BrokerLoad is not null || welcome.Flyout is not null || welcome.Action is not null || welcome.ActionCompletion is not null || welcome.Heartbeat is not null || welcome.Registration is not null) throw new ProtocolException("InvalidWelcome");
+            if (welcome.BrokerLoad is not null || welcome.Flyout is not null || welcome.Action is not null || welcome.ActionCompletion is not null || welcome.Heartbeat is not null || welcome.Registration is not null || welcome.Permissions is not null || welcome.Result?.ActivityRejections is not null) throw new ProtocolException("InvalidWelcome");
             if (welcome.Kind == MessageKind.Result && welcome.Result?.Accepted == false)
                 throw new ProtocolException(welcome.Result.Code);
             if (welcome.Version != ProtocolLimits.Version || welcome.Kind != MessageKind.Welcome || welcome.RequestId != request ||
                 welcome.ApplicationId != launch.ApplicationId || string.IsNullOrWhiteSpace(welcome.SessionId) || welcome.SessionId.Length > 256 ||
                 welcome.Ticket != "" || welcome.StartRequestId != "" || welcome.Declaration is not null || welcome.State is not null || welcome.Result is not null)
                 throw new ProtocolException("InvalidWelcome");
-            client = new SdkConnection(pipe, launch.ApplicationId, welcome.SessionId, actionHandler ?? provider as IActionHandler);
+            client = new SdkConnection(pipe, launch.ApplicationId, welcome.SessionId, actionHandler ?? provider as IActionHandler, provider as IDisplayPermissionObserver);
             var snapshot = await provider.GetSnapshotAsync(deadline.Token).WaitAsync(deadline.Token).ConfigureAwait(false);
+            client.liveEntries = snapshot.Declaration?.FeatureGroups?.Where(group => group is not null)
+                .SelectMany(group => (group.Components ?? []).Where(component => component is not null && component.DynamicContent?.Kind == DynamicContentKind.LiveIsland)
+                    .Select(component => (group.FeatureGroupId, component.ComponentId))).ToHashSet() ?? [];
             var declaration = await client.SendAsync(new ProtocolMessage { Kind = MessageKind.Declare, Declaration = snapshot.Declaration, State = snapshot.State }, deadline.Token).ConfigureAwait(false);
             if (!declaration.Accepted) throw new ProtocolException(declaration.Code);
+            client.InitialPublicationResult = declaration;
             return client;
         }
         catch
@@ -111,7 +130,7 @@ internal sealed class SdkConnection : IAsyncDisposable
                 message = message with { Flyout = request with { RequestId = message.RequestId, RequestSequence = ++flyoutSequence } };
             }
             var completion = new TaskCompletionSource<ProtocolResult>(TaskCreationOptions.RunContinuationsAsynchronously);
-            lock (responseGate) { pendingResponse = completion; pendingRequestId = message.RequestId; }
+            lock (responseGate) { pendingResponse = completion; pendingRequestId = message.RequestId; pendingPublication = message.State; }
             await WriteAsync(message, deadline.Token).ConfigureAwait(false);
             try { return await completion.Task.WaitAsync(deadline.Token).ConfigureAwait(false); }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && completion.Task.IsFaulted)
@@ -129,7 +148,7 @@ internal sealed class SdkConnection : IAsyncDisposable
         }
         finally
         {
-            lock (responseGate) { pendingResponse = null; pendingRequestId = null; }
+            lock (responseGate) { pendingResponse = null; pendingRequestId = null; pendingPublication = null; }
             requestGate.Release();
         }
     }
@@ -150,19 +169,30 @@ internal sealed class SdkConnection : IAsyncDisposable
             while (!lifetime.IsCancellationRequested)
             {
                 var message = await LengthPrefixedJson.ReadAsync<ProtocolMessage>(pipe, lifetime.Token, Timeout.InfiniteTimeSpan).ConfigureAwait(false);
+                if (message.Kind == MessageKind.DisplayPermissions && message.ApplicationId == applicationId && message.SessionId != SessionId)
+                    continue;
                 if (message.Version != ProtocolLimits.Version || message.ApplicationId != applicationId || message.SessionId != SessionId ||
                     !ValidIdentity(message.RequestId) || message.Ticket != "" || message.StartRequestId != "" ||
                     message.Declaration is not null || message.State is not null || message.BrokerLoad is not null || message.Flyout is not null || message.ActionCompletion is not null || message.Heartbeat is not null || message.Registration is not null)
                     throw new ProtocolException("InvalidResponse");
-                if (message.Kind == MessageKind.Result && message.Action is null && ValidResult(message.Result))
+                if (message.Kind == MessageKind.Result && message.Action is null && message.Permissions is null && ValidResult(message.Result))
                 {
                     lock (responseGate)
                     {
                         if (message.RequestId != pendingRequestId || pendingResponse is null) throw new ProtocolException("InvalidResponse");
-                        pendingResponse.TrySetResult(message.Result!);
+                        if (!ValidAdmissionResult(message.Result!, pendingPublication)) throw new ProtocolException("InvalidResponse");
+                        pendingResponse.TrySetResult(message.Result! with { ActivityRejections = message.Result!.ActivityRejections is { } rejected ? Array.AsReadOnly(rejected.ToArray()) : null });
                     }
                 }
-                else if (message.Kind == MessageKind.ActionRequest && message.Result is null && message.Action is { } action &&
+                else if (message.Kind == MessageKind.DisplayPermissions && message.Action is null && message.Result is null)
+                {
+                    var snapshot = message.Permissions;
+                    if (!ValidPermissions(snapshot)) throw new ProtocolException("InvalidDisplayPermissions");
+                    if (snapshot!.Revision <= lastPermissionRevision) continue;
+                    lastPermissionRevision = snapshot.Revision;
+                    permissions.Writer.TryWrite(snapshot with { Entries = Array.AsReadOnly(snapshot.Entries.ToArray()) });
+                }
+                else if (message.Kind == MessageKind.ActionRequest && message.Permissions is null && message.Result is null && message.Action is { } action &&
                     action.RequestId == message.RequestId && action.Sequence > 0 && action.Slot is not null && action.Slot.ApplicationId == applicationId && action.Parameter is not null)
                 {
                     // Replayed sequences never execute twice, even after a result has left the queue.
@@ -201,7 +231,7 @@ internal sealed class SdkConnection : IAsyncDisposable
                     completion = actionHandler is null
                         ? new(action.RequestId, action.Sequence, ProtocolResult.Reject("ActionNotAvailable", "应用未提供动作处理器"))
                         : await actionHandler.HandleAsync(action, lifetime.Token).WaitAsync(lifetime.Token).ConfigureAwait(false);
-                    if (completion is null || completion.RequestId != action.RequestId || completion.Sequence != action.Sequence || !ValidResult(completion.Result))
+                    if (completion is null || completion.RequestId != action.RequestId || completion.Sequence != action.Sequence || !ValidResult(completion.Result) || completion.Result.ActivityRejections is not null || completion.Result.Code == "AcceptedWithActivityRejections")
                         completion = new(action.RequestId, action.Sequence, ProtocolResult.Reject("InvalidActionResult", "动作返回无效结果"));
                 }
                 catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { break; }
@@ -220,6 +250,50 @@ internal sealed class SdkConnection : IAsyncDisposable
             Stop();
             while (actions.Reader.TryRead(out _)) { }
         }
+    }
+
+    private bool ValidPermissions(DisplayPermissionSnapshot? snapshot)
+    {
+        if (snapshot is null || snapshot.Revision <= 0 || snapshot.Entries is null ||
+            snapshot.Entries.Count > DisplayPermissionLimits.MaximumEntriesPerApplication || snapshot.Entries.Count != liveEntries.Count) return false;
+        var seen = new HashSet<(string?, string?)>();
+        return snapshot.Entries.All(entry => entry is not null && ValidIdentity(entry.FeatureGroupId) && ValidIdentity(entry.ComponentId) &&
+            liveEntries.Contains((entry.FeatureGroupId, entry.ComponentId)) && seen.Add((entry.FeatureGroupId, entry.ComponentId)));
+    }
+
+    private bool ValidAdmissionResult(ProtocolResult result, ApplicationState? publication)
+    {
+        if (result.ActivityRejections is null) return result.Code != "AcceptedWithActivityRejections";
+        var rejected = result.ActivityRejections;
+        if (!result.Accepted || result.Code != "AcceptedWithActivityRejections" || publication is null ||
+            rejected.Count is <= 0 or > DynamicContentLimits.MaximumActivitiesPerApplication) return false;
+        var seen = new HashSet<(string, string, string)>();
+        return rejected.All(item => item is not null && item.ApplicationId == applicationId &&
+            ValidIdentity(item.FeatureGroupId) && ValidIdentity(item.ComponentId) && ValidIdentity(item.ActivityId) && item.Code == "DisplayNotAllowed" &&
+            seen.Add((item.FeatureGroupId, item.ComponentId, item.ActivityId)) &&
+            publication.DynamicEntries?.Any(entry => entry.FeatureGroupId == item.FeatureGroupId && entry.ComponentId == item.ComponentId &&
+                entry.Content.Activities.Any(activity => activity.ActivityId == item.ActivityId && !activity.Ended)) == true);
+    }
+
+    private async Task RunPermissionCallbacksAsync()
+    {
+        try
+        {
+            await permissionCallbacksReady.Task.WaitAsync(lifetime.Token).ConfigureAwait(false);
+            await foreach (var snapshot in permissions.Reader.ReadAllAsync(lifetime.Token).ConfigureAwait(false))
+            {
+                if (permissionObserver is null) continue;
+                lifetime.Token.ThrowIfCancellationRequested();
+                var previousContext = permissionCallbackContext.Value;
+                permissionCallbackContext.Value = this;
+                try { await permissionObserver.OnDisplayPermissionsChangedAsync(snapshot, lifetime.Token).WaitAsync(lifetime.Token).ConfigureAwait(false); }
+                catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { break; }
+                catch (Exception) { /* Provider callback failures cannot block transport or other services. */ }
+                finally { permissionCallbackContext.Value = previousContext; }
+            }
+        }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
+        finally { while (permissions.Reader.TryRead(out _)) { } }
     }
 
     private async Task RunHeartbeatsAsync()
@@ -264,6 +338,7 @@ internal sealed class SdkConnection : IAsyncDisposable
         if (Interlocked.Exchange(ref disposed, 1) != 0) return;
         lifetime.Cancel();
         actions.Writer.TryComplete();
+        permissions.Writer.TryComplete();
         pipe.Dispose();
         lock (responseGate) pendingResponse?.TrySetCanceled();
     }
@@ -271,7 +346,7 @@ internal sealed class SdkConnection : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         Stop();
-        await Task.WhenAll(reader, actionWorker, heartbeatWorker).ConfigureAwait(false);
+        await Task.WhenAll(reader, actionWorker, heartbeatWorker, permissionWorker).ConfigureAwait(false);
         lifetime.Dispose();
     }
 }

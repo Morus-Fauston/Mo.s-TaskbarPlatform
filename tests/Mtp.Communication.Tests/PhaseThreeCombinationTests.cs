@@ -52,6 +52,7 @@ public sealed class PhaseThreeCombinationTests(ITestOutputHelper output)
             Assert.Equal(2, host.States.Snapshots.Count);
             Assert.All(host.States.Snapshots, snapshot => { Assert.True(snapshot.IsInteractive); Assert.NotNull(snapshot.Declaration); Assert.Equal(0, snapshot.State!.Revision); });
             output.WriteLine($"hostPid={Environment.ProcessId}; brokerPid={host.BrokerProcessId}; dynamicPid={dynamicPid}; flyoutPid={flyoutPid}; dynamicSession={dynamicSession}; flyoutSession={flyoutSession}");
+            Assert.True(host.States.SetEntryDisplayAllowed("dynamic", "main", "island", true).Accepted);
             await ContinueAsync(dynamicDirectory, "ready", timeout.Token);
 
             using var addedMarker = await MarkerAsync(dynamicDirectory, "added", timeout.Token);

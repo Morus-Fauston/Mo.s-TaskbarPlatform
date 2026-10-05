@@ -59,7 +59,7 @@ public sealed class BrokerServer : IAsyncDisposable
         var accepted = await LengthPrefixedJson.ReadAsync<ProtocolMessage>(control, token).ConfigureAwait(false);
         if (accepted.Version != ProtocolLimits.Version || accepted.Kind != MessageKind.Welcome ||
             accepted.ApplicationId != "" || accepted.SessionId != "" || accepted.RequestId != "" ||
-            accepted.Ticket != "" || accepted.StartRequestId != "" || accepted.Declaration is not null || accepted.State is not null || accepted.Result is not null || accepted.BrokerLoad is not null || accepted.Flyout is not null || accepted.Action is not null || accepted.ActionCompletion is not null || accepted.Heartbeat is not null || accepted.Registration is not null)
+            accepted.Ticket != "" || accepted.StartRequestId != "" || accepted.Declaration is not null || accepted.State is not null || accepted.Result is not null || accepted.BrokerLoad is not null || accepted.Flyout is not null || accepted.Action is not null || accepted.ActionCompletion is not null || accepted.Heartbeat is not null || accepted.Registration is not null || accepted.Permissions is not null)
             throw new ProtocolException("HostHandshakeRejected");
 
         var listeners = new List<NamedPipeServerStream>();
@@ -161,6 +161,7 @@ public sealed class BrokerServer : IAsyncDisposable
                 if (!heartbeats.StartSession(application, session!).Accepted) throw new ProtocolException("InvalidHeartbeatSession");
             }
             connection.OrdinaryWorker = ProcessOrdinaryRequestsAsync(connection);
+            connection.PermissionWorker = SendDisplayPermissionsAsync(connection);
             await connection.WriteAsync(welcome, handshake.Token).ConfigureAwait(false);
             while (!token.IsCancellationRequested)
             {
@@ -226,7 +227,7 @@ public sealed class BrokerServer : IAsyncDisposable
                     connection.Outstanding.Clear();
                 }
                 connection.Stop();
-                await connection.OrdinaryWorker.ConfigureAwait(false);
+                await Task.WhenAll(connection.OrdinaryWorker, connection.PermissionWorker).ConfigureAwait(false);
                 Task[] sends;
                 lock (gate) sends = connection.ActionSends.ToArray();
                 await Task.WhenAll(sends).ConfigureAwait(false);
@@ -273,11 +274,15 @@ public sealed class BrokerServer : IAsyncDisposable
             if (message.Kind == MessageKind.Declare)
             {
                 lock (gate)
-                    if (IsCurrent(connection)) connection.Declaration = result.Result?.Accepted == true ? message.Declaration : null;
+                    if (IsCurrent(connection))
+                    {
+                        connection.Declaration = result.Result?.Accepted == true ? message.Declaration : null;
+                    }
             }
             if (message.Kind == MessageKind.Declare && result.Result?.Accepted == true)
                 await NotifySessionReadyAsync(connection).ConfigureAwait(false);
             await connection.WriteAsync(result, connection.Token, releaseOrdinary: true).ConfigureAwait(false);
+            if (message.Kind == MessageKind.Declare && result.Result?.Accepted == true) connection.DeclarationReady.TrySetResult(true);
         }
         catch (Exception exception) when (exception is IOException or OperationCanceledException or ObjectDisposedException) { connection.Stop(); }
     }
@@ -304,7 +309,7 @@ public sealed class BrokerServer : IAsyncDisposable
     {
         if (message.Version != ProtocolLimits.Version || !ValidIdentity(message.RequestId) ||
             message.Ticket != "" || message.StartRequestId != "" || message.Result is not null || message.Declaration is not null ||
-            message.State is not null || message.BrokerLoad is not null || message.Flyout is not null || message.ActionCompletion is not null || message.Heartbeat is not null || message.Registration is not null ||
+            message.State is not null || message.BrokerLoad is not null || message.Flyout is not null || message.ActionCompletion is not null || message.Heartbeat is not null || message.Registration is not null || message.Permissions is not null ||
             message.Action is not { } action || action.RequestId != message.RequestId || action.Sequence <= 0)
             throw new ProtocolException("InvalidHostAction");
         ProtocolResult? rejection = null;
@@ -392,6 +397,64 @@ public sealed class BrokerServer : IAsyncDisposable
         result.Message is not null && result.Message.Length <= ProtocolLimits.MaximumTextLength &&
         (result.Path is null || result.Path.Length <= ProtocolLimits.MaximumTextLength);
 
+    private static bool ValidAdmissionResult(ProtocolResult result, ProtocolMessage original)
+    {
+        if (result.ActivityRejections is null) return result.Code != "AcceptedWithActivityRejections";
+        var rejected = result.ActivityRejections;
+        if (!result.Accepted || result.Code != "AcceptedWithActivityRejections" || original.Kind is not (MessageKind.Declare or MessageKind.State) || original.State is null ||
+            rejected.Count is <= 0 or > DynamicContentLimits.MaximumActivitiesPerApplication) return false;
+        var seen = new HashSet<(string, string, string)>();
+        return rejected.All(item => item is not null && item.ApplicationId == original.ApplicationId &&
+            ValidIdentity(item.FeatureGroupId) && ValidIdentity(item.ComponentId) && ValidIdentity(item.ActivityId) && item.Code == "DisplayNotAllowed" &&
+            seen.Add((item.FeatureGroupId, item.ComponentId, item.ActivityId)) &&
+            original.State.DynamicEntries?.Any(entry => entry.FeatureGroupId == item.FeatureGroupId && entry.ComponentId == item.ComponentId &&
+                entry.Content.Activities.Any(activity => activity.ActivityId == item.ActivityId && !activity.Ended)) == true);
+    }
+
+    private void QueueDisplayPermissions(ProtocolMessage message)
+    {
+        if (message.Version != ProtocolLimits.Version || !ValidIdentity(message.ApplicationId) || !ValidIdentity(message.SessionId) || !ValidIdentity(message.RequestId) ||
+            message.Ticket != "" || message.StartRequestId != "" || message.Result is not null || message.Declaration is not null || message.State is not null ||
+            message.BrokerLoad is not null || message.Flyout is not null || message.Action is not null || message.ActionCompletion is not null || message.Heartbeat is not null || message.Registration is not null ||
+            message.Permissions is not { Revision: > 0, Entries: not null } snapshot || snapshot.Entries.Count > DisplayPermissionLimits.MaximumEntriesPerApplication)
+            throw new ProtocolException("InvalidDisplayPermissions");
+        var identities = new HashSet<(string, string)>();
+        if (snapshot.Entries.Any(entry => entry is null || !ValidIdentity(entry.FeatureGroupId) || !ValidIdentity(entry.ComponentId) || !identities.Add((entry.FeatureGroupId, entry.ComponentId))))
+            throw new ProtocolException("InvalidDisplayPermissions");
+        lock (gate)
+        {
+            if (!connections.TryGetValue(message.ApplicationId, out var connection) || connection.SessionId != message.SessionId || snapshot.Revision <= connection.LastPermissionRevision) return;
+            connection.LastPermissionRevision = snapshot.Revision;
+            connection.Permissions.Writer.TryWrite(message with { Permissions = snapshot with { Entries = Array.AsReadOnly(snapshot.Entries.ToArray()) } });
+        }
+    }
+
+    private async Task SendDisplayPermissionsAsync(ServiceConnection connection)
+    {
+        try
+        {
+            await foreach (var message in connection.Permissions.Reader.ReadAllAsync(connection.Token).ConfigureAwait(false))
+            {
+                // Host may enqueue the initial snapshot concurrently with its declaration result.
+                // Waiting here keeps the control reader free to complete that result first.
+                await connection.DeclarationReady.Task.WaitAsync(connection.Token).ConfigureAwait(false);
+                lock (gate)
+                {
+                    if (!IsCurrent(connection)) return;
+                    if (connection.Declaration?.FeatureGroups is not { } groups) continue;
+                    var entries = groups
+                        .SelectMany(group => (group.Components ?? []).Where(component => component.DynamicContent?.Kind == DynamicContentKind.LiveIsland)
+                            .Select(component => (group.FeatureGroupId, component.ComponentId))).ToHashSet();
+                    if (message.Permissions!.Entries.Count != entries.Count || message.Permissions.Entries.Any(entry => !entries.Contains((entry.FeatureGroupId, entry.ComponentId))))
+                        throw new ProtocolException("InvalidDisplayPermissions");
+                }
+                await connection.WriteAsync(message, connection.Token).ConfigureAwait(false);
+            }
+        }
+        catch (Exception error) when (error is IOException or OperationCanceledException or ObjectDisposedException) { connection.Stop(); }
+        finally { while (connection.Permissions.Reader.TryRead(out _)) { } }
+    }
+
     private sealed class ServiceConnection(string applicationId, string sessionId, Stream pipe, CancellationToken token)
     {
         private readonly SemaphoreSlim writer = new(1, 1);
@@ -411,6 +474,11 @@ public sealed class BrokerServer : IAsyncDisposable
         public Channel<ProtocolMessage> Requests { get; } = Channel.CreateBounded<ProtocolMessage>(
             new BoundedChannelOptions(1) { SingleReader = true, SingleWriter = true });
         public Task OrdinaryWorker { get; set; } = Task.CompletedTask;
+        public Task PermissionWorker { get; set; } = Task.CompletedTask;
+        public TaskCompletionSource<bool> DeclarationReady { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public long LastPermissionRevision { get; set; }
+        public Channel<ProtocolMessage> Permissions { get; } = Channel.CreateBounded<ProtocolMessage>(
+            new BoundedChannelOptions(1) { SingleReader = true, SingleWriter = true, FullMode = BoundedChannelFullMode.DropOldest });
         public bool TrySubmit(ProtocolMessage message)
         {
             if (Interlocked.CompareExchange(ref ordinaryBusy, 1, 0) != 0) return false;
@@ -445,6 +513,7 @@ public sealed class BrokerServer : IAsyncDisposable
             if (Interlocked.Exchange(ref stopped, 1) != 0) return;
             lifetime.Cancel();
             Requests.Writer.TryComplete();
+            Permissions.Writer.TryComplete();
             pipe.Dispose();
         }
         public void DisposeLifetime() => lifetime.Dispose();
@@ -456,7 +525,7 @@ public sealed class BrokerServer : IAsyncDisposable
         if (hello.Version != ProtocolLimits.Version) return ProtocolResult.Reject("UnsupportedVersion", "协议版本不支持");
         if (hello.Kind != MessageKind.Hello || !ValidIdentity(hello.ApplicationId) || !ValidIdentity(hello.StartRequestId) || !ValidIdentity(hello.RequestId) ||
             string.IsNullOrWhiteSpace(hello.Ticket) || hello.Ticket.Length > 256 || hello.SessionId != "" ||
-            hello.Declaration is not null || hello.State is not null || hello.Result is not null || hello.BrokerLoad is not null || hello.Flyout is not null || hello.Action is not null || hello.ActionCompletion is not null || hello.Heartbeat is not null || hello.Registration is not null)
+            hello.Declaration is not null || hello.State is not null || hello.Result is not null || hello.BrokerLoad is not null || hello.Flyout is not null || hello.Action is not null || hello.ActionCompletion is not null || hello.Heartbeat is not null || hello.Registration is not null || hello.Permissions is not null)
             return ProtocolResult.Reject("InvalidHandshake", "连接声明无效");
         lock (gate)
         {
@@ -502,6 +571,7 @@ public sealed class BrokerServer : IAsyncDisposable
             var result = await completion.Task.WaitAsync(deadline.Token).ConfigureAwait(false);
             if (result.ApplicationId != message.ApplicationId || result.SessionId != message.SessionId)
                 throw new ProtocolException("InvalidHostResponse");
+            if (!ValidAdmissionResult(result.Result!, message)) throw new ProtocolException("InvalidHostResponse");
             return new ProtocolMessage { Kind = MessageKind.Result, ApplicationId = message.ApplicationId, SessionId = message.SessionId, RequestId = message.RequestId, Result = result.Result };
         }
         finally { lock (gate) pending.Remove(correlation); }
@@ -527,6 +597,11 @@ public sealed class BrokerServer : IAsyncDisposable
             while (!token.IsCancellationRequested)
             {
                 var message = await LengthPrefixedJson.ReadAsync<ProtocolMessage>(control, token, Timeout.InfiniteTimeSpan).ConfigureAwait(false);
+                if (message.Kind == MessageKind.DisplayPermissions)
+                {
+                    QueueDisplayPermissions(message);
+                    continue;
+                }
                 if (message.Kind == MessageKind.RegisterLaunch)
                 {
                     // Keep the sole control reader available for forwarded service results.
@@ -540,8 +615,8 @@ public sealed class BrokerServer : IAsyncDisposable
                     await DispatchActionAsync(message, token).ConfigureAwait(false);
                     continue;
                 }
-                if (message.Version != ProtocolLimits.Version || message.Kind != MessageKind.Result || message.Result is null || !ValidIdentity(message.RequestId) ||
-                    message.Ticket != "" || message.StartRequestId != "" || message.Declaration is not null || message.State is not null || message.BrokerLoad is not null || message.Flyout is not null || message.Action is not null || message.ActionCompletion is not null || message.Heartbeat is not null || message.Registration is not null)
+                if (message.Version != ProtocolLimits.Version || message.Kind != MessageKind.Result || !ValidResult(message.Result) || !ValidIdentity(message.RequestId) ||
+                    message.Ticket != "" || message.StartRequestId != "" || message.Declaration is not null || message.State is not null || message.BrokerLoad is not null || message.Flyout is not null || message.Action is not null || message.ActionCompletion is not null || message.Heartbeat is not null || message.Registration is not null || message.Permissions is not null)
                     throw new ProtocolException("InvalidHostResponse");
                 TaskCompletionSource<ProtocolMessage>? completion;
                 lock (gate) pending.TryGetValue(message.RequestId, out completion);
@@ -569,7 +644,7 @@ public sealed class BrokerServer : IAsyncDisposable
         if (message.Version != ProtocolLimits.Version || !ValidIdentity(message.RequestId) || !ValidIdentity(message.ApplicationId) ||
             message.SessionId != "" || message.Ticket != "" || message.StartRequestId != "" || message.Declaration is not null ||
             message.State is not null || message.Result is not null || message.BrokerLoad is not null || message.Flyout is not null ||
-            message.Action is not null || message.ActionCompletion is not null || message.Heartbeat is not null || registration is null ||
+            message.Action is not null || message.ActionCompletion is not null || message.Heartbeat is not null || message.Permissions is not null || registration is null ||
             registration.ApplicationId != message.ApplicationId || !ValidIdentity(registration.StartRequestId) || !ValidIdentity(registration.Ticket))
             result = ProtocolResult.Reject("InvalidRegistration", "恢复登记字段无效");
         else if (registration.ExpiresAt <= now || registration.ExpiresAt > now.AddSeconds(ProtocolLimits.TicketLifetimeSeconds))
@@ -614,7 +689,7 @@ public sealed class BrokerServer : IAsyncDisposable
     private static bool ValidIdentity(string? value) => !string.IsNullOrWhiteSpace(value) && value.Length <= 256 && value == value.Trim();
     private static bool ValidServicePayload(ProtocolMessage message)
     {
-        if (!ValidIdentity(message.RequestId) || message.Ticket != "" || message.StartRequestId != "" || message.Result is not null || message.BrokerLoad is not null || message.Registration is not null)
+        if (!ValidIdentity(message.RequestId) || message.Ticket != "" || message.StartRequestId != "" || message.Result is not null || message.BrokerLoad is not null || message.Registration is not null || message.Permissions is not null)
             return false;
         if (message.Kind == MessageKind.Heartbeat)
             return message.Declaration is null && message.State is null && message.Flyout is null && message.Action is null && message.ActionCompletion is null &&
@@ -622,7 +697,7 @@ public sealed class BrokerServer : IAsyncDisposable
         if (message.Heartbeat is not null || message.Registration is not null) return false;
         if (message.Kind == MessageKind.ActionCompleted)
             return message.Action is null && message.Declaration is null && message.State is null && message.Flyout is null &&
-                message.ActionCompletion is { } completion && completion.RequestId == message.RequestId && completion.Sequence > 0 && ValidResult(completion.Result);
+                message.ActionCompletion is { } completion && completion.RequestId == message.RequestId && completion.Sequence > 0 && ValidResult(completion.Result) && completion.Result.ActivityRejections is null && completion.Result.Code != "AcceptedWithActivityRejections";
         if (message.Action is not null || message.ActionCompletion is not null || message.Heartbeat is not null || message.Registration is not null) return false;
         return message.Kind switch
         {

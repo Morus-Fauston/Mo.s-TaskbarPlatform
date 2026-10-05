@@ -13,7 +13,7 @@ public static class ProtocolLimits
     public const int TicketLifetimeSeconds = 30;
 }
 
-public enum MessageKind { Hello, Welcome, Declare, State, Result, Disconnected, FlyoutRequest, ActionRequest, ActionCompleted, Heartbeat, RegisterLaunch, SessionReady }
+public enum MessageKind { Hello, Welcome, Declare, State, Result, Disconnected, FlyoutRequest, ActionRequest, ActionCompleted, Heartbeat, RegisterLaunch, SessionReady, DisplayPermissions }
 
 /// <summary>Internal wire envelope. SDK applications use the provider API instead.</summary>
 public sealed record ProtocolMessage
@@ -34,6 +34,7 @@ public sealed record ProtocolMessage
     public ActionCompletion? ActionCompletion { get; init; }
     public HeartbeatPulse? Heartbeat { get; init; }
     public LaunchRegistration? Registration { get; init; }
+    public DisplayPermissionSnapshot? Permissions { get; init; }
 }
 
 public sealed record HeartbeatPulse(long Sequence, DateTimeOffset SentAt);
@@ -41,7 +42,8 @@ public sealed record HeartbeatPulse(long Sequence, DateTimeOffset SentAt);
 /// <summary>Broker-owned bounded forwarding diagnostics; service submissions cannot supply this field.</summary>
 public sealed record BrokerLoad(int PendingRequests, int PeakPendingRequests);
 
-public sealed record ProtocolResult(bool Accepted, string Code, string Message, string? Path = null)
+public sealed record ProtocolResult(bool Accepted, string Code, string Message, string? Path = null,
+    IReadOnlyList<ActivityAdmissionRejection>? ActivityRejections = null)
 {
     public static ProtocolResult Success(string code = "Accepted") => new(true, code, "已接收");
     public static ProtocolResult Reject(string code, string message, string? path = null) => new(false, code, message, path);

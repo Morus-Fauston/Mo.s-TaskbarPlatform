@@ -57,6 +57,7 @@ public sealed class DeclarationValidator
         var dynamicValidator = new DynamicContentValidator();
         var flyoutEntries = new List<ValidatedFlyoutEntry>();
         var declaredActions = new List<ValidatedActionSlot>();
+        var liveIslandEntries = 0;
 
         for (var featureIndex = 0; featureIndex < declaration.FeatureGroups.Count; featureIndex++)
         {
@@ -135,6 +136,8 @@ public sealed class DeclarationValidator
                         ActionEntryKind.Component, component.ComponentId!, slot.ActionSlotId!), slot.ParameterKind));
                 if (component.DynamicContent is not null)
                 {
+                    if (component.DynamicContent.Kind == DynamicContentKind.LiveIsland && ++liveIslandEntries > DisplayPermissionLimits.MaximumEntriesPerApplication)
+                        return BudgetFailure(componentPath);
                     var dynamicResult = dynamicValidator.ValidateDeclaration(component.DynamicContent,
                         featureIdentity.CreateChild(componentId), ref remainingNodes);
                     if (!dynamicResult.IsSuccess)

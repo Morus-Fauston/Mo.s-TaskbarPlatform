@@ -35,6 +35,7 @@ public sealed class BrokerStateStore
     private readonly HashSet<string> declaredApplications = new(StringComparer.Ordinal);
     private readonly HashSet<string> validDeclarations = new(StringComparer.Ordinal);
     private readonly HashSet<string> awaitingReady = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, DisplayPermissionSnapshot> permissions = new(StringComparer.Ordinal);
     private readonly DeclarationValidator validator = new();
     private readonly TimeProvider clock;
 
@@ -53,12 +54,55 @@ public sealed class BrokerStateStore
 
     public IReadOnlyList<BrokerApplicationSnapshot> Snapshots
     {
-        get { lock (sync) return Array.AsReadOnly(snapshots.Values.ToArray()); }
+        get { lock (sync) { TickActivitiesCore(); return Array.AsReadOnly(snapshots.Values.ToArray()); } }
     }
 
     public BrokerApplicationSnapshot? GetSnapshot(string applicationId)
     {
-        lock (sync) return snapshots.GetValueOrDefault(applicationId);
+        lock (sync) { TickActivitiesCore(); return snapshots.GetValueOrDefault(applicationId); }
+    }
+
+    public DisplayPermissionSnapshot? GetDisplayPermissions(string applicationId)
+    {
+        lock (sync) return validDeclarations.Contains(applicationId) && snapshots.GetValueOrDefault(applicationId)?.IsConnected == true
+            ? permissions.GetValueOrDefault(applicationId) : null;
+    }
+
+    public ProtocolResult SetEntryDisplayAllowed(string applicationId, string featureGroupId, string componentId, bool allowed)
+    {
+        lock (sync)
+        {
+            if (!validDeclarations.Contains(applicationId) || !permissions.TryGetValue(applicationId, out var current))
+                return ProtocolResult.Reject("DeclarationRequired", "当前会话声明尚未确认");
+            var entry = current.Entries.FirstOrDefault(value => value.FeatureGroupId == featureGroupId && value.ComponentId == componentId);
+            if (entry is null) return ProtocolResult.Reject("UnknownEntry", "入口不是当前已声明实况岛");
+            if (entry.Allowed == allowed) return ProtocolResult.Success("PermissionUnchanged");
+            if (current.Revision == long.MaxValue) return ProtocolResult.Reject("PermissionRevisionExhausted", "显示许可序号已耗尽");
+            permissions[applicationId] = new(current.Revision + 1, Array.AsReadOnly(current.Entries.Select(value =>
+                value == entry ? value with { Allowed = allowed } : value).ToArray()));
+            return ProtocolResult.Success();
+        }
+    }
+
+    public void TickActivities() { lock (sync) TickActivitiesCore(); }
+
+    private void TickActivitiesCore()
+    {
+        var now = clock.GetUtcNow();
+        foreach (var pair in snapshots.ToArray())
+            if (pair.Value.Declaration is { } declaration && pair.Value.State is { } state)
+            {
+                var pruned = ActivityLifecycle.Prune(declaration, state, now);
+                if (!ReferenceEquals(pruned, state)) snapshots[pair.Key] = pair.Value with { State = pruned };
+            }
+    }
+
+    private DisplayPermissionSnapshot SynchronizePermissions(string applicationId, ValidatedApplicationDeclaration declaration)
+    {
+        var previous = permissions.GetValueOrDefault(applicationId);
+        var entries = ActivityLifecycle.IslandKeys(declaration).Select(key => new EntryDisplayPermission(key.Group, key.Component,
+            previous?.Entries.Any(value => value.FeatureGroupId == key.Group && value.ComponentId == key.Component && value.Allowed) == true)).ToArray();
+        return permissions[applicationId] = new(previous?.Revision ?? 1, Array.AsReadOnly(entries));
     }
 
     public ProtocolResult RequireSessionReady(string applicationId)
@@ -79,14 +123,16 @@ public sealed class BrokerStateStore
     {
         lock (sync)
         {
+            TickActivitiesCore();
             var previous = snapshots.GetValueOrDefault(applicationId);
             if (previous is null || previous.SessionId != sessionId || !previous.IsInteractive || !previous.IsConnected || previous.Declaration is null)
                 return ProtocolResult.Reject("ActionNotAvailable", "动作会话或声明已失效");
             var error = ValidateState(state, previous.Declaration, out var frozen);
             if (error is not null) return error;
             if (state.Revision <= previous.State!.Revision) return ProtocolResult.Success("StateAlreadyCurrent");
-            snapshots[applicationId] = previous with { State = frozen, LastError = null };
-            return ProtocolResult.Success();
+            var admitted = ActivityLifecycle.Admit(applicationId, previous.Declaration, frozen!, previous.State, permissions[applicationId], clock.GetUtcNow());
+            snapshots[applicationId] = previous with { State = admitted.State, LastError = null };
+            return admitted.Result;
         }
     }
 
@@ -100,6 +146,7 @@ public sealed class BrokerStateStore
                     Kind = MessageKind.Result,
                     Result = ProtocolResult.Reject("InvalidEnvelope", "消息缺失")
                 };
+            TickActivitiesCore();
             var result = HandleCore(message);
             return new ProtocolMessage
             {
@@ -116,6 +163,8 @@ public sealed class BrokerStateStore
     {
         if (message.Version != ProtocolLimits.Version)
             return ProtocolResult.Reject("UnsupportedVersion", "协议版本不受支持");
+        if (message.Result?.ActivityRejections is not null)
+            return ProtocolResult.Reject("InvalidEnvelope", "准入拒绝明细只能由Host生成");
         if (!ValidEnvelopeId(message.ApplicationId) || !ValidEnvelopeId(message.SessionId) ||
             message.RequestId is null || message.RequestId.Length > DeclarationValidator.MaximumIdLength)
             return ProtocolResult.Reject("InvalidEnvelope", "消息标识缺失或超出预算");
@@ -128,6 +177,8 @@ public sealed class BrokerStateStore
                 return ProtocolResult.Reject("DuplicateSession", "会话已登记");
             declaredApplications.Remove(message.ApplicationId);
             validDeclarations.Remove(message.ApplicationId);
+            if (permissions.TryGetValue(message.ApplicationId, out var previousPermissions))
+                permissions[message.ApplicationId] = previousPermissions with { Revision = 1 };
             snapshots[message.ApplicationId] = new(message.ApplicationId, message.SessionId,
                 previous?.Declaration, previous?.State, true, false, null);
             return ProtocolResult.Success();
@@ -155,7 +206,7 @@ public sealed class BrokerStateStore
         {
             if (message.Declaration is not null || message.State is not null || message.Result is not null ||
                 message.Action is not null || message.ActionCompletion is not null || message.Heartbeat is not null ||
-                message.Flyout is not null || message.Registration is not null || message.BrokerLoad is not null ||
+                message.Flyout is not null || message.Registration is not null || message.Permissions is not null || message.BrokerLoad is not null ||
                 message.Ticket != "" || message.StartRequestId != "")
                 return ProtocolResult.Reject("InvalidEnvelope", "就绪通知包含不允许的载荷");
             if (!validDeclarations.Contains(message.ApplicationId))
@@ -175,8 +226,9 @@ public sealed class BrokerStateStore
             if (stateError is not null) return stateError;
             if (message.State!.Revision <= previous.State!.Revision)
                 return ProtocolResult.Reject("StaleRevision", "状态序号必须递增");
-            snapshots[message.ApplicationId] = previous with { State = frozen, LastError = null };
-            return ProtocolResult.Success();
+            var admitted = ActivityLifecycle.Admit(message.ApplicationId, previous.Declaration, frozen!, previous.State, permissions[message.ApplicationId], clock.GetUtcNow());
+            snapshots[message.ApplicationId] = previous with { State = admitted.State, LastError = null };
+            return admitted.Result;
         }
         if (message.Kind == MessageKind.Declare)
         {
@@ -189,17 +241,19 @@ public sealed class BrokerStateStore
                 return RejectDeclaration(previous, ProtocolResult.Reject(declaration.Error!.Code, declaration.Error.Message, declaration.Error.Path));
             var stateError = ValidateState(message.State, declaration.Value!, out var frozen);
             if (stateError is not null) return RejectDeclaration(previous, stateError);
+            var currentPermissions = SynchronizePermissions(message.ApplicationId, declaration.Value!);
+            var admitted = ActivityLifecycle.Admit(message.ApplicationId, declaration.Value!, frozen!, previous.State, currentPermissions, clock.GetUtcNow());
             declaredApplications.Add(message.ApplicationId);
             validDeclarations.Add(message.ApplicationId);
             snapshots[message.ApplicationId] = previous with
             {
                 Declaration = declaration.Value,
-                State = frozen,
+                State = admitted.State,
                 IsInteractive = !awaitingReady.Contains(message.ApplicationId),
                 LastError = null
             };
             FlyoutRequests.SynchronizeDeclaration(snapshots[message.ApplicationId], declaration.Value!.FlyoutEntries);
-            return ProtocolResult.Success();
+            return admitted.Result;
         }
         return ProtocolResult.Reject("UnsupportedMessage", "消息类型不受支持");
     }
