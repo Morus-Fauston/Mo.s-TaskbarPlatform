@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Mtp.Contracts;
 using Mtp.Platform.Core;
 
 namespace Mtp.Host;
@@ -27,7 +28,9 @@ public sealed class HostDisplayController
     private readonly HostDeclarationLoader declarationLoader;
     private readonly ComponentDisplayPreferenceManager preferenceManager;
     private IReadOnlyList<HostComponentDisplayModel> components = Array.Empty<HostComponentDisplayModel>();
-    private BrokerApplicationSnapshot? brokerSnapshot;
+    private IReadOnlyDictionary<string, BrokerApplicationSnapshot> brokerSnapshots =
+        new Dictionary<string, BrokerApplicationSnapshot>(StringComparer.Ordinal);
+    private bool preferencesLoaded;
 
     public HostDisplayController(
         IDeclarationSource declarationSource,
@@ -42,10 +45,36 @@ public sealed class HostDisplayController
     public void ApplyBrokerSnapshot(BrokerApplicationSnapshot snapshot)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
-        if (snapshot.Declaration is null) return;
-        if (brokerSnapshot is null) preferenceManager.Load();
-        brokerSnapshot = snapshot;
-        components = BuildComponents(snapshot.Declaration);
+        var next = new Dictionary<string, BrokerApplicationSnapshot>(brokerSnapshots, StringComparer.Ordinal)
+        {
+            [snapshot.ApplicationId] = snapshot
+        };
+        ApplyBrokerSnapshots(next.Values.ToArray());
+    }
+
+    /// <summary>UI-thread entry point replacing a complete batch with only the latest accepted state per application.</summary>
+    public void ApplyBrokerSnapshots(IReadOnlyList<BrokerApplicationSnapshot> snapshots)
+    {
+        ArgumentNullException.ThrowIfNull(snapshots);
+        if (snapshots.Count > ProtocolLimits.MaximumApplications)
+            throw new ArgumentException("Snapshot batch exceeds the application budget.", nameof(snapshots));
+        var next = new Dictionary<string, BrokerApplicationSnapshot>(StringComparer.Ordinal);
+        foreach (var snapshot in snapshots)
+        {
+            if (snapshot is null || !next.TryAdd(snapshot.ApplicationId, snapshot))
+                throw new ArgumentException("Snapshot batch contains a missing or duplicate application.", nameof(snapshots));
+        }
+        if (next.Count == brokerSnapshots.Count &&
+            next.All(pair => brokerSnapshots.TryGetValue(pair.Key, out var current) && ReferenceEquals(pair.Value, current)))
+            return;
+        if (!preferencesLoaded)
+        {
+            preferenceManager.Load();
+            preferencesLoaded = true;
+        }
+        var nextComponents = BuildComponents(next);
+        brokerSnapshots = next;
+        components = nextComponents;
     }
 
     public HostDisplayLoadResult Load()
@@ -62,7 +91,8 @@ public sealed class HostDisplayController
         }
 
         var preferenceResult = preferenceManager.Load();
-        components = BuildComponents(declarationResult.Current);
+        preferencesLoaded = true;
+        components = BuildComponents(brokerSnapshots);
 
         return new HostDisplayLoadResult(
             declarationResult.Accepted,
@@ -76,11 +106,7 @@ public sealed class HostDisplayController
     {
         ArgumentNullException.ThrowIfNull(identity);
 
-        var declaration = brokerSnapshot?.Declaration ?? declarationLoader.SnapshotStore.Current;
-        var declaredComponent = declaration?
-            .FeatureGroups
-            .SelectMany(featureGroup => featureGroup.Components)
-            .FirstOrDefault(component => component.Identity == identity);
+        var declaredComponent = components.FirstOrDefault(component => component.Identity == identity);
         if (declaredComponent is null)
         {
             return CoreResult<HostComponentDisplayModel>.Failure(
@@ -93,18 +119,27 @@ public sealed class HostDisplayController
             return CoreResult<HostComponentDisplayModel>.Failure(saveResult.Error!);
         }
 
-        components = BuildComponents(declaration!);
+        components = BuildComponents(brokerSnapshots);
         return CoreResult<HostComponentDisplayModel>.Success(
             components.First(component => component.Identity == identity));
     }
 
-    private IReadOnlyList<HostComponentDisplayModel> BuildComponents(ValidatedApplicationDeclaration declaration) =>
-        Array.AsReadOnly(declaration.FeatureGroups
-            .SelectMany(featureGroup => featureGroup.Components)
-            .Select(component => Project(component))
-            .ToArray());
+    private IReadOnlyList<HostComponentDisplayModel> BuildComponents(IReadOnlyDictionary<string, BrokerApplicationSnapshot> snapshots)
+    {
+        var models = new Dictionary<StableIdentity, HostComponentDisplayModel>();
+        if (declarationLoader.SnapshotStore.Current is { } local)
+            foreach (var component in local.FeatureGroups.SelectMany(group => group.Components))
+                models[component.Identity] = Project(component, null);
+        foreach (var snapshot in snapshots.Values)
+        {
+            if (snapshot.Declaration is null) continue;
+            foreach (var component in snapshot.Declaration.FeatureGroups.SelectMany(group => group.Components))
+                models[component.Identity] = Project(component, snapshot);
+        }
+        return Array.AsReadOnly(models.Values.ToArray());
+    }
 
-    private HostComponentDisplayModel Project(Component component)
+    private HostComponentDisplayModel Project(Component component, BrokerApplicationSnapshot? brokerSnapshot)
     {
         var model = HostComponentDisplayModel.From(component, preferenceManager.Current.IsVisible(component.Identity));
         if (brokerSnapshot is null) return model;

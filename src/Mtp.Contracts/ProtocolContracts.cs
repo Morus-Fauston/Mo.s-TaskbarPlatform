@@ -28,7 +28,11 @@ public sealed record ProtocolMessage
     public ApplicationDeclaration? Declaration { get; init; }
     public ApplicationState? State { get; init; }
     public ProtocolResult? Result { get; init; }
+    public BrokerLoad? BrokerLoad { get; init; }
 }
+
+/// <summary>Broker-owned bounded forwarding diagnostics; service submissions cannot supply this field.</summary>
+public sealed record BrokerLoad(int PendingRequests, int PeakPendingRequests);
 
 public sealed record ProtocolResult(bool Accepted, string Code, string Message, string? Path = null)
 {

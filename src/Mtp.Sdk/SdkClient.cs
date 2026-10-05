@@ -68,6 +68,7 @@ public sealed class SdkClient : IAsyncDisposable
                 RequestId = request,
             }, deadline.Token).ConfigureAwait(false);
             var welcome = await LengthPrefixedJson.ReadAsync<ProtocolMessage>(pipe, deadline.Token).ConfigureAwait(false);
+            if (welcome.BrokerLoad is not null) throw new ProtocolException("InvalidWelcome");
             if (welcome.Kind == MessageKind.Result && welcome.Result?.Accepted == false)
                 throw new ProtocolException(welcome.Result.Code);
             if (welcome.Version != ProtocolLimits.Version || welcome.Kind != MessageKind.Welcome || welcome.RequestId != request ||
@@ -108,7 +109,7 @@ public sealed class SdkClient : IAsyncDisposable
             var result = await LengthPrefixedJson.ReadAsync<ProtocolMessage>(pipe, deadline.Token).ConfigureAwait(false);
             if (result.Version != ProtocolLimits.Version || result.Kind != MessageKind.Result || result.RequestId != message.RequestId ||
                 result.ApplicationId != applicationId || result.SessionId != SessionId || result.Result is null ||
-                result.Ticket != "" || result.StartRequestId != "" || result.Declaration is not null || result.State is not null)
+                result.Ticket != "" || result.StartRequestId != "" || result.Declaration is not null || result.State is not null || result.BrokerLoad is not null)
                 throw new ProtocolException("InvalidResponse");
             return result.Result;
         }

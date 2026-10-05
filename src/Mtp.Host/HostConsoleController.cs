@@ -19,7 +19,8 @@ internal sealed class HostConsoleController
     private HostBrokerSession? communication;
     private readonly CancellationTokenSource communicationLifetime = new();
     private Task? communicationStartup;
-    public HostComponentDisplayModel? Component => display.CurrentComponents.FirstOrDefault();
+    public HostComponentDisplayModel? Component => display.CurrentComponents.FirstOrDefault(value => value.Identity.Segments[0].Value == "counter")
+        ?? display.CurrentComponents.FirstOrDefault();
     public TaskbarDockPreferences Preferences { get; private set; }
     public IslandDisplaySession Session { get; }
     public HostTestController Tests { get; }
@@ -61,7 +62,7 @@ internal sealed class HostConsoleController
         refreshing = true;
         try
         {
-            if (communication?.States.GetSnapshot("counter") is { } snapshot) display.ApplyBrokerSnapshot(snapshot);
+            if (communication is not null) display.ApplyBrokerSnapshots(communication.States.Snapshots);
             if (communication?.LastError is { } connectionError) AddError(new(connectionError, "平台通信不可用，已保留最后确认读数。"));
             var prepared = adapter.Prepare(Preferences, Component, Tests.Configuration, SimulateUnavailable);
             Session.SetIntent(Component?.IsVisible == true);

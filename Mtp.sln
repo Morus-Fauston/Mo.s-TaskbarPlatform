@@ -39,6 +39,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Mtp.Transport.Tests", "test
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Mtp.Communication.Tests", "tests\Mtp.Communication.Tests\Mtp.Communication.Tests.csproj", "{D90A58FC-3A0F-46A1-BEB8-3CAB6A328170}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Mtp.Communication.ProcessProbe", "tests\Mtp.Communication.ProcessProbe\Mtp.Communication.ProcessProbe.csproj", "{9BDD3BFA-59E8-454C-9E13-94EF927C882F}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -229,6 +231,18 @@ Global
 		{D90A58FC-3A0F-46A1-BEB8-3CAB6A328170}.Release|x64.Build.0 = Release|Any CPU
 		{D90A58FC-3A0F-46A1-BEB8-3CAB6A328170}.Release|x86.ActiveCfg = Release|Any CPU
 		{D90A58FC-3A0F-46A1-BEB8-3CAB6A328170}.Release|x86.Build.0 = Release|Any CPU
+		{9BDD3BFA-59E8-454C-9E13-94EF927C882F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{9BDD3BFA-59E8-454C-9E13-94EF927C882F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{9BDD3BFA-59E8-454C-9E13-94EF927C882F}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{9BDD3BFA-59E8-454C-9E13-94EF927C882F}.Debug|x64.Build.0 = Debug|Any CPU
+		{9BDD3BFA-59E8-454C-9E13-94EF927C882F}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{9BDD3BFA-59E8-454C-9E13-94EF927C882F}.Debug|x86.Build.0 = Debug|Any CPU
+		{9BDD3BFA-59E8-454C-9E13-94EF927C882F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{9BDD3BFA-59E8-454C-9E13-94EF927C882F}.Release|Any CPU.Build.0 = Release|Any CPU
+		{9BDD3BFA-59E8-454C-9E13-94EF927C882F}.Release|x64.ActiveCfg = Release|Any CPU
+		{9BDD3BFA-59E8-454C-9E13-94EF927C882F}.Release|x64.Build.0 = Release|Any CPU
+		{9BDD3BFA-59E8-454C-9E13-94EF927C882F}.Release|x86.ActiveCfg = Release|Any CPU
+		{9BDD3BFA-59E8-454C-9E13-94EF927C882F}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -249,5 +263,6 @@ Global
 		{8A4C961F-0F0D-4F40-B1B6-18BDF90A3BEC} = {5D20AA90-6969-D8BD-9DCD-8634F4692FDA}
 		{0B9583E0-FAD2-4169-9020-179EF3F184A5} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 		{D90A58FC-3A0F-46A1-BEB8-3CAB6A328170} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
+		{9BDD3BFA-59E8-454C-9E13-94EF927C882F} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 	EndGlobalSection
 EndGlobal

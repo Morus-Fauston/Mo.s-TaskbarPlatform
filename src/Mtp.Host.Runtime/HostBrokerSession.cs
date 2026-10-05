@@ -41,6 +41,7 @@ public sealed class HostBrokerSession : IAsyncDisposable
     private Task? receive;
     private int disposed;
     private string? lastError;
+    private int peakPendingRequests;
     private readonly IProcessTermination processTermination;
 
     private HostBrokerSession(IReadOnlyCollection<string> applications, IProcessTermination processTermination)
@@ -60,6 +61,7 @@ public sealed class HostBrokerSession : IAsyncDisposable
     public BrokerStateStore States { get; }
     public int BrokerProcessId => broker?.Id ?? throw new InvalidOperationException("Broker not started.");
     public string? LastError => Volatile.Read(ref lastError);
+    public int PeakPendingRequests => Volatile.Read(ref peakPendingRequests);
     public IReadOnlyList<int> ServiceProcessIds
     {
         get { lock (services) return services.Values.Select(p => p.Id).ToArray(); }
@@ -97,7 +99,8 @@ public sealed class HostBrokerSession : IAsyncDisposable
         }
     }
 
-    public async Task<int> StartServiceAsync(string applicationId, string executablePath, CancellationToken cancellationToken = default)
+    public async Task<int> StartServiceAsync(string applicationId, string executablePath, CancellationToken cancellationToken = default,
+        IReadOnlyList<string>? arguments = null)
     {
         await lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -107,7 +110,7 @@ public sealed class HostBrokerSession : IAsyncDisposable
             lock (services)
                 if (services.ContainsKey(applicationId)) throw new InvalidOperationException("ApplicationAlreadyStarted");
             if (DateTimeOffset.UtcNow >= registration.ExpiresAt) throw new InvalidOperationException("TicketExpired");
-            var process = StartOwned(executablePath);
+            var process = StartOwned(executablePath, arguments);
             lock (services) services.Add(applicationId, process);
             try
             {
@@ -133,6 +136,13 @@ public sealed class HostBrokerSession : IAsyncDisposable
             while (!lifetime.IsCancellationRequested)
             {
                 var message = await LengthPrefixedJson.ReadAsync<ProtocolMessage>(control, lifetime.Token, Timeout.InfiniteTimeSpan).ConfigureAwait(false);
+                if (message.BrokerLoad is { } load)
+                {
+                    if (load.PendingRequests < 0 || load.PeakPendingRequests < load.PendingRequests ||
+                        load.PeakPendingRequests > ProtocolLimits.MaximumPendingRequests || load.PeakPendingRequests < PeakPendingRequests)
+                        throw new IOException("InvalidBrokerLoad");
+                    Volatile.Write(ref peakPendingRequests, load.PeakPendingRequests);
+                }
                 var response = States.Handle(message);
                 if (message.Kind != MessageKind.Disconnected)
                     await LengthPrefixedJson.WriteAsync(control, response, lifetime.Token).ConfigureAwait(false);
@@ -149,9 +159,11 @@ public sealed class HostBrokerSession : IAsyncDisposable
         }
     }
 
-    private Process StartOwned(string path)
+    private Process StartOwned(string path, IReadOnlyList<string>? arguments = null)
     {
         if (!File.Exists(path)) throw new FileNotFoundException("Registered runtime executable missing.", path);
+        if (arguments is not null && (arguments.Count > 16 || arguments.Any(value => value is null || value.Length > 1024)))
+            throw new ArgumentException("Registered process arguments exceed the launch budget.", nameof(arguments));
         var info = new ProcessStartInfo
         {
             FileName = path.EndsWith(".dll", StringComparison.OrdinalIgnoreCase) ? "dotnet" : path,
@@ -162,6 +174,8 @@ public sealed class HostBrokerSession : IAsyncDisposable
             RedirectStandardError = true,
         };
         if (path.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)) info.ArgumentList.Add(Path.GetFullPath(path));
+        if (arguments is not null)
+            foreach (var argument in arguments) info.ArgumentList.Add(argument);
         var process = Process.Start(info) ?? throw new IOException("ProcessStartFailed");
         drains.Add(DrainAsync(process.StandardOutput));
         drains.Add(DrainAsync(process.StandardError));
