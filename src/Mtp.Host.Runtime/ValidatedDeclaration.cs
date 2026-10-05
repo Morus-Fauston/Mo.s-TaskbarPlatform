@@ -13,7 +13,8 @@ public sealed class ValidatedApplicationDeclaration
     internal ValidatedApplicationDeclaration(
         StableIdentity identity,
         IEnumerable<ValidatedFeatureGroup> featureGroups,
-        IEnumerable<ValidatedDynamicContentDeclaration>? dynamicContents = null)
+        IEnumerable<ValidatedDynamicContentDeclaration>? dynamicContents = null,
+        IEnumerable<ValidatedFlyoutEntry>? flyoutEntries = null)
     {
         Identity = identity ?? throw new ArgumentNullException(nameof(identity));
         if (identity.Parent is not null)
@@ -29,12 +30,14 @@ public sealed class ValidatedApplicationDeclaration
 
         FeatureGroups = Array.AsReadOnly(groups);
         DynamicContents = Array.AsReadOnly((dynamicContents ?? []).ToArray());
+        FlyoutEntries = Array.AsReadOnly((flyoutEntries ?? []).ToArray());
     }
 
     public StableIdentity Identity { get; }
 
     public IReadOnlyList<ValidatedFeatureGroup> FeatureGroups { get; }
     public IReadOnlyList<ValidatedDynamicContentDeclaration> DynamicContents { get; }
+    public IReadOnlyList<ValidatedFlyoutEntry> FlyoutEntries { get; }
 }
 
 /// <summary>

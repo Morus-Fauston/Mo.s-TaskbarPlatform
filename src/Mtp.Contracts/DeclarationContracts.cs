@@ -15,7 +15,9 @@ public sealed record ApplicationDeclaration(
 public sealed record FeatureGroupDeclaration(
     string? FeatureGroupId,
     IReadOnlyList<ComponentDeclaration>? Components,
-    IReadOnlyList<TaskbarFlyoutDeclaration>? TaskbarFlyouts);
+    IReadOnlyList<TaskbarFlyoutDeclaration>? TaskbarFlyouts,
+    IReadOnlyList<HintEntryDeclaration>? Hints = null,
+    IReadOnlyList<EventChannelDeclaration>? EventChannels = null);
 
 /// <summary>
 /// A component declaration with action bindings.

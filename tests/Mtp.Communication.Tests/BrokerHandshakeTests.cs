@@ -16,6 +16,7 @@ public sealed class BrokerHandshakeTests(ITestOutputHelper output)
     [InlineData("wrong-ticket", "InvalidTicket")]
     [InlineData("expired", "TicketExpired")]
     [InlineData("unsupported-version", "UnsupportedVersion")]
+    [InlineData("mixed-flyout", "InvalidHandshake")]
     public async Task Independent_broker_rejects_invalid_launch_identity(string scenario, string expectedCode)
     {
         await using var broker = await BrokerFixture.StartAsync(output, expired: scenario == "expired");
@@ -27,6 +28,7 @@ public sealed class BrokerHandshakeTests(ITestOutputHelper output)
             "wrong-start" => hello with { StartRequestId = "unregistered-start" },
             "wrong-ticket" => hello with { Ticket = "not-the-ticket" },
             "unsupported-version" => hello with { Version = ProtocolLimits.Version + 1 },
+            "mixed-flyout" => hello with { Flyout = new("injected", 1, "main", "event", FlyoutKind.EventGroup, 0) },
             _ => hello,
         };
         await using var service = await broker.ConnectServiceAsync();
@@ -102,6 +104,29 @@ public sealed class BrokerHandshakeTests(ITestOutputHelper output)
         output.WriteLine($"brokerPid={broker.ProcessId}; hostControlClosed=true; pendingHandshakeEnded=true");
     }
 
+    [Fact]
+    public async Task Host_exit_releases_an_in_flight_flyout_request()
+    {
+        await using var broker = await BrokerFixture.StartAsync(output);
+        await using var service = await broker.ConnectServiceAsync();
+        var welcome = await broker.ExchangeAsync(service, broker.Hello());
+        Assert.Equal(MessageKind.Welcome, welcome.Kind);
+        var pending = broker.ExchangeAsync(service, new ProtocolMessage
+        {
+            Kind = MessageKind.FlyoutRequest,
+            ApplicationId = welcome.ApplicationId,
+            SessionId = welcome.SessionId,
+            RequestId = "awaiting-flyout",
+            Flyout = new("logical-request", 1, "main", "panel", FlyoutKind.TaskbarGroup, 0)
+        });
+        await broker.FlyoutForwarded.WaitAsync(broker.Token);
+        Assert.False(pending.IsCompleted);
+        await broker.CloseHostAndWaitForExitAsync();
+        await Assert.ThrowsAnyAsync<IOException>(async () => await pending);
+        Assert.True(pending.IsCompleted);
+        output.WriteLine("pendingFlyoutEnded=true; brokerExited=true");
+    }
+
     private sealed class BrokerFixture : IAsyncDisposable
     {
         private readonly ITestOutputHelper output;
@@ -111,6 +136,7 @@ public sealed class BrokerHandshakeTests(ITestOutputHelper output)
         private readonly LaunchRegistration registration;
         private readonly bool acknowledgeWelcomes;
         private readonly TaskCompletionSource<bool> welcomeForwarded = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource<bool> flyoutForwarded = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private Process? process;
         private Task? hostPump;
         private Task? stdoutDrain;
@@ -134,6 +160,7 @@ public sealed class BrokerHandshakeTests(ITestOutputHelper output)
         public bool HasExited => process!.HasExited;
         public CancellationToken Token => deadline.Token;
         public Task WelcomeForwarded => welcomeForwarded.Task;
+        public Task FlyoutForwarded => flyoutForwarded.Task;
 
         public static async Task<BrokerFixture> StartAsync(ITestOutputHelper output, bool expired = false, bool acknowledgeWelcomes = true)
         {
@@ -214,6 +241,11 @@ public sealed class BrokerHandshakeTests(ITestOutputHelper output)
                 {
                     var message = await LengthPrefixedJson.ReadAsync<ProtocolMessage>(control, Token, Timeout.InfiniteTimeSpan);
                     if (message.Kind == MessageKind.Disconnected) continue;
+                    if (message.Kind == MessageKind.FlyoutRequest)
+                    {
+                        flyoutForwarded.TrySetResult(true);
+                        continue;
+                    }
                     Assert.Equal(MessageKind.Welcome, message.Kind);
                     welcomeForwarded.TrySetResult(true);
                     if (acknowledgeWelcomes)

@@ -17,6 +17,7 @@ public sealed class SdkClient : IAsyncDisposable
     private readonly SemaphoreSlim requestGate = new(1, 1);
     private readonly CancellationTokenSource lifetime = new();
     private int disposed;
+    private long flyoutSequence;
 
     private SdkClient(NamedPipeClientStream pipe, string applicationId, string sessionId)
     {
@@ -68,7 +69,7 @@ public sealed class SdkClient : IAsyncDisposable
                 RequestId = request,
             }, deadline.Token).ConfigureAwait(false);
             var welcome = await LengthPrefixedJson.ReadAsync<ProtocolMessage>(pipe, deadline.Token).ConfigureAwait(false);
-            if (welcome.BrokerLoad is not null) throw new ProtocolException("InvalidWelcome");
+            if (welcome.BrokerLoad is not null || welcome.Flyout is not null) throw new ProtocolException("InvalidWelcome");
             if (welcome.Kind == MessageKind.Result && welcome.Result?.Accepted == false)
                 throw new ProtocolException(welcome.Result.Code);
             if (welcome.Version != ProtocolLimits.Version || welcome.Kind != MessageKind.Welcome || welcome.RequestId != request ||
@@ -95,6 +96,12 @@ public sealed class SdkClient : IAsyncDisposable
         return SendAsync(new ProtocolMessage { Kind = MessageKind.State, State = state }, cancellationToken);
     }
 
+    public Task<ProtocolResult> RequestFlyoutAsync(FlyoutRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        return SendAsync(new ProtocolMessage { Kind = MessageKind.FlyoutRequest, Flyout = request }, cancellationToken);
+    }
+
     private async Task<ProtocolResult> SendAsync(ProtocolMessage message, CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
@@ -105,11 +112,16 @@ public sealed class SdkClient : IAsyncDisposable
         try
         {
             message = message with { ApplicationId = applicationId, SessionId = SessionId, RequestId = Guid.NewGuid().ToString("N") };
+            if (message.Flyout is { } request)
+            {
+                if (flyoutSequence == long.MaxValue) throw new ProtocolException("RequestSequenceExhausted");
+                message = message with { Flyout = request with { RequestId = message.RequestId, RequestSequence = ++flyoutSequence } };
+            }
             await LengthPrefixedJson.WriteAsync(pipe, message, deadline.Token).ConfigureAwait(false);
             var result = await LengthPrefixedJson.ReadAsync<ProtocolMessage>(pipe, deadline.Token).ConfigureAwait(false);
             if (result.Version != ProtocolLimits.Version || result.Kind != MessageKind.Result || result.RequestId != message.RequestId ||
                 result.ApplicationId != applicationId || result.SessionId != SessionId || result.Result is null ||
-                result.Ticket != "" || result.StartRequestId != "" || result.Declaration is not null || result.State is not null || result.BrokerLoad is not null)
+                result.Ticket != "" || result.StartRequestId != "" || result.Declaration is not null || result.State is not null || result.BrokerLoad is not null || result.Flyout is not null)
                 throw new ProtocolException("InvalidResponse");
             return result.Result;
         }

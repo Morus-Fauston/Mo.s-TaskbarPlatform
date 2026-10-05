@@ -55,6 +55,7 @@ public sealed class DeclarationValidator
         var featureGroupIds = new HashSet<StableId>();
         var dynamicContents = new List<ValidatedDynamicContentDeclaration>();
         var dynamicValidator = new DynamicContentValidator();
+        var flyoutEntries = new List<ValidatedFlyoutEntry>();
 
         for (var featureIndex = 0; featureIndex < declaration.FeatureGroups.Count; featureIndex++)
         {
@@ -171,13 +172,40 @@ public sealed class DeclarationValidator
                 }
 
                 taskbarFlyouts.Add(new ValidatedTaskbarFlyout(flyoutIdentity, actionSlots));
+                flyoutEntries.Add(new ValidatedFlyoutEntry(flyoutIdentity, FlyoutKind.TaskbarGroup));
+            }
+
+            var hints = feature.Hints ?? [];
+            var events = feature.EventChannels ?? [];
+            if (!ConsumeNodes(hints.Count, MaximumEntriesPerKind, ref remainingNodes) ||
+                !ConsumeNodes(events.Count, MaximumEntriesPerKind, ref remainingNodes))
+                return BudgetFailure(featurePath);
+            foreach (var hint in hints)
+            {
+                if (hint is null || hint.Kind is not (FlyoutKind.ShortHint or FlyoutKind.InteractiveHint))
+                    return Failure("unsupported_structure", "Hint type must be ordinary or interactive.", featurePath + ".hints");
+                if (!TryCreateId(hint.EntryId, featurePath + ".hints", "hint", out var hintId, out idError))
+                    return CoreResult<ValidatedApplicationDeclaration>.Failure(idError!);
+                if (!entryIds.Add(hintId))
+                    return Failure("hierarchy_conflict", "Entry identities must be unique within the feature group.", featurePath + ".hints");
+                flyoutEntries.Add(new ValidatedFlyoutEntry(featureIdentity.CreateChild(hintId), hint.Kind));
+            }
+            foreach (var channel in events)
+            {
+                if (channel?.ClosePolicy is null || !Enum.IsDefined(channel.ClosePolicy.Value))
+                    return Failure("unsupported_structure", "Event channel close policy is required.", featurePath + ".eventChannels");
+                if (!TryCreateId(channel.ChannelId, featurePath + ".eventChannels", "event channel", out var channelId, out idError))
+                    return CoreResult<ValidatedApplicationDeclaration>.Failure(idError!);
+                if (!entryIds.Add(channelId))
+                    return Failure("hierarchy_conflict", "Entry identities must be unique within the feature group.", featurePath + ".eventChannels");
+                flyoutEntries.Add(new ValidatedFlyoutEntry(featureIdentity.CreateChild(channelId), FlyoutKind.EventGroup, channel.ClosePolicy));
             }
 
             featureGroups.Add(new ValidatedFeatureGroup(featureIdentity, components, taskbarFlyouts));
         }
 
         return CoreResult<ValidatedApplicationDeclaration>.Success(
-            new ValidatedApplicationDeclaration(applicationIdentity, featureGroups, dynamicContents));
+            new ValidatedApplicationDeclaration(applicationIdentity, featureGroups, dynamicContents, flyoutEntries));
     }
 
     public CoreResult<ValidatedApplicationDeclaration> ValidateJson(string json)

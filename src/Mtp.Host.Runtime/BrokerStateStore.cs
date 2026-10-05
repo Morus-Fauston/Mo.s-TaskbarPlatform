@@ -44,7 +44,10 @@ public sealed class BrokerStateStore
             throw new ArgumentException("Invalid application registration budget or identity.", nameof(registeredApplicationIds));
         registered = new HashSet<string>(registeredApplicationIds, StringComparer.Ordinal);
         clock = timeProvider ?? TimeProvider.System;
+        FlyoutRequests = new FlyoutRequestRouter(clock);
     }
+
+    public FlyoutRequestRouter FlyoutRequests { get; }
 
     public IReadOnlyList<BrokerApplicationSnapshot> Snapshots
     {
@@ -110,6 +113,9 @@ public sealed class BrokerStateStore
             return ProtocolResult.Success();
         }
         if (!previous.IsConnected) return ProtocolResult.Reject("Disconnected", "应用连接已中断");
+        if (message.Kind == MessageKind.FlyoutRequest)
+            return FlyoutRequests.Handle(message.ApplicationId, message.SessionId, message.Flyout,
+                previous, previous.Declaration?.FlyoutEntries ?? []);
         if (message.Kind == MessageKind.State)
         {
             if (!previous.IsInteractive || previous.Declaration is null)
@@ -140,6 +146,7 @@ public sealed class BrokerStateStore
                 IsInteractive = true,
                 LastError = null
             };
+            FlyoutRequests.SynchronizeDeclaration(snapshots[message.ApplicationId], declaration.Value!.FlyoutEntries);
             return ProtocolResult.Success();
         }
         return ProtocolResult.Reject("UnsupportedMessage", "消息类型不受支持");

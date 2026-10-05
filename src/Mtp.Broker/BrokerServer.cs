@@ -50,7 +50,7 @@ public sealed class BrokerServer : IAsyncDisposable
         var accepted = await LengthPrefixedJson.ReadAsync<ProtocolMessage>(control, token).ConfigureAwait(false);
         if (accepted.Version != ProtocolLimits.Version || accepted.Kind != MessageKind.Welcome ||
             accepted.ApplicationId != "" || accepted.SessionId != "" || accepted.RequestId != "" ||
-            accepted.Ticket != "" || accepted.StartRequestId != "" || accepted.Declaration is not null || accepted.State is not null || accepted.Result is not null || accepted.BrokerLoad is not null)
+            accepted.Ticket != "" || accepted.StartRequestId != "" || accepted.Declaration is not null || accepted.State is not null || accepted.Result is not null || accepted.BrokerLoad is not null || accepted.Flyout is not null)
             throw new ProtocolException("HostHandshakeRejected");
 
         var listeners = new List<NamedPipeServerStream>();
@@ -176,7 +176,7 @@ public sealed class BrokerServer : IAsyncDisposable
         if (hello.Version != ProtocolLimits.Version) return ProtocolResult.Reject("UnsupportedVersion", "协议版本不支持");
         if (hello.Kind != MessageKind.Hello || !ValidIdentity(hello.ApplicationId) || !ValidIdentity(hello.StartRequestId) || !ValidIdentity(hello.RequestId) ||
             string.IsNullOrWhiteSpace(hello.Ticket) || hello.Ticket.Length > 256 || hello.SessionId != "" ||
-            hello.Declaration is not null || hello.State is not null || hello.Result is not null || hello.BrokerLoad is not null)
+            hello.Declaration is not null || hello.State is not null || hello.Result is not null || hello.BrokerLoad is not null || hello.Flyout is not null)
             return ProtocolResult.Reject("InvalidHandshake", "连接声明无效");
         lock (gate)
         {
@@ -242,7 +242,7 @@ public sealed class BrokerServer : IAsyncDisposable
             {
                 var message = await LengthPrefixedJson.ReadAsync<ProtocolMessage>(control, token, Timeout.InfiniteTimeSpan).ConfigureAwait(false);
                 if (message.Version != ProtocolLimits.Version || message.Kind != MessageKind.Result || message.Result is null || !ValidIdentity(message.RequestId) ||
-                    message.Ticket != "" || message.StartRequestId != "" || message.Declaration is not null || message.State is not null || message.BrokerLoad is not null)
+                    message.Ticket != "" || message.StartRequestId != "" || message.Declaration is not null || message.State is not null || message.BrokerLoad is not null || message.Flyout is not null)
                     throw new ProtocolException("InvalidHostResponse");
                 TaskCompletionSource<ProtocolMessage>? completion;
                 lock (gate) pending.TryGetValue(message.RequestId, out completion);
@@ -268,8 +268,9 @@ public sealed class BrokerServer : IAsyncDisposable
             return false;
         return message.Kind switch
         {
-            MessageKind.Declare => message.Declaration is not null && message.State is not null,
-            MessageKind.State => message.Declaration is null && message.State is not null,
+            MessageKind.Declare => message.Declaration is not null && message.State is not null && message.Flyout is null,
+            MessageKind.State => message.Declaration is null && message.State is not null && message.Flyout is null,
+            MessageKind.FlyoutRequest => message.Declaration is null && message.State is null && message.Flyout is not null,
             _ => false,
         };
     }

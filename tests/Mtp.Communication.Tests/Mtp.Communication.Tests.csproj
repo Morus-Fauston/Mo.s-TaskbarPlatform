@@ -16,6 +16,7 @@
     <ProjectReference Include="../../samples/Mtp.CounterService/Mtp.CounterService.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="../Mtp.Communication.ProcessProbe/Mtp.Communication.ProcessProbe.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="../Mtp.DynamicContent.ProcessProbe/Mtp.DynamicContent.ProcessProbe.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="../Mtp.Flyout.ProcessProbe/Mtp.Flyout.ProcessProbe.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
   <Import Project="../../build/CommunicationRuntimes.targets" />
   <Target Name="CopyCommunicationProbe" AfterTargets="Build">
@@ -35,5 +36,14 @@
       <_DynamicProbeFiles Include="@(_DynamicProbeAssembly);@(_DynamicProbeAssembly->'%(RootDir)%(Directory)Mtp.DynamicContent.ProcessProbe.deps.json');@(_DynamicProbeAssembly->'%(RootDir)%(Directory)Mtp.DynamicContent.ProcessProbe.runtimeconfig.json');@(_DynamicProbeAssembly->'%(RootDir)%(Directory)Mtp.Contracts.dll');@(_DynamicProbeAssembly->'%(RootDir)%(Directory)Mtp.Transport.dll');@(_DynamicProbeAssembly->'%(RootDir)%(Directory)Mtp.Sdk.dll')" />
     </ItemGroup>
     <Copy SourceFiles="@(_DynamicProbeFiles)" DestinationFolder="$(OutDir)DynamicContentProcessProbe" />
+  </Target>
+  <Target Name="CopyFlyoutProbe" AfterTargets="Build">
+    <MSBuild Projects="../Mtp.Flyout.ProcessProbe/Mtp.Flyout.ProcessProbe.csproj" Targets="GetTargetPath" Properties="Configuration=$(Configuration);TargetFramework=net10.0">
+      <Output TaskParameter="TargetOutputs" ItemName="_FlyoutProbeAssembly" />
+    </MSBuild>
+    <ItemGroup>
+      <_FlyoutProbeFiles Include="@(_FlyoutProbeAssembly);@(_FlyoutProbeAssembly->'%(RootDir)%(Directory)Mtp.Flyout.ProcessProbe.deps.json');@(_FlyoutProbeAssembly->'%(RootDir)%(Directory)Mtp.Flyout.ProcessProbe.runtimeconfig.json');@(_FlyoutProbeAssembly->'%(RootDir)%(Directory)Mtp.Contracts.dll');@(_FlyoutProbeAssembly->'%(RootDir)%(Directory)Mtp.Transport.dll');@(_FlyoutProbeAssembly->'%(RootDir)%(Directory)Mtp.Sdk.dll')" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_FlyoutProbeFiles)" DestinationFolder="$(OutDir)FlyoutProcessProbe" />
   </Target>
 </Project>
