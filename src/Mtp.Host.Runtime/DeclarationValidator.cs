@@ -53,6 +53,8 @@ public sealed class DeclarationValidator
         var applicationIdentity = new StableIdentity(applicationId);
         var featureGroups = new List<ValidatedFeatureGroup>(declaration.FeatureGroups.Count);
         var featureGroupIds = new HashSet<StableId>();
+        var dynamicContents = new List<ValidatedDynamicContentDeclaration>();
+        var dynamicValidator = new DynamicContentValidator();
 
         for (var featureIndex = 0; featureIndex < declaration.FeatureGroups.Count; featureIndex++)
         {
@@ -126,6 +128,14 @@ public sealed class DeclarationValidator
                     featureIdentity.CreateChild(componentId),
                     CapabilityState.Available,
                     actionSlots));
+                if (component.DynamicContent is not null)
+                {
+                    var dynamicResult = dynamicValidator.ValidateDeclaration(component.DynamicContent,
+                        featureIdentity.CreateChild(componentId), ref remainingNodes);
+                    if (!dynamicResult.IsSuccess)
+                        return CoreResult<ValidatedApplicationDeclaration>.Failure(dynamicResult.Error!);
+                    dynamicContents.Add(dynamicResult.Value!);
+                }
             }
 
             var taskbarFlyouts = new List<ValidatedTaskbarFlyout>(feature.TaskbarFlyouts.Count);
@@ -167,7 +177,7 @@ public sealed class DeclarationValidator
         }
 
         return CoreResult<ValidatedApplicationDeclaration>.Success(
-            new ValidatedApplicationDeclaration(applicationIdentity, featureGroups));
+            new ValidatedApplicationDeclaration(applicationIdentity, featureGroups, dynamicContents));
     }
 
     public CoreResult<ValidatedApplicationDeclaration> ValidateJson(string json)

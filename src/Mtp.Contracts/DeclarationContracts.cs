@@ -22,7 +22,8 @@ public sealed record FeatureGroupDeclaration(
 /// </summary>
 public sealed record ComponentDeclaration(
     string? ComponentId,
-    IReadOnlyList<ActionSlotDeclaration>? ActionSlots);
+    IReadOnlyList<ActionSlotDeclaration>? ActionSlots,
+    DynamicContentDeclaration? DynamicContent = null);
 
 /// <summary>
 /// A taskbar-operation flyout declaration with action bindings.

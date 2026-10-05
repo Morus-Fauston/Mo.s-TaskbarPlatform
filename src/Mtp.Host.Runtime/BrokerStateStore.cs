@@ -34,14 +34,16 @@ public sealed class BrokerStateStore
     private readonly Dictionary<string, BrokerApplicationSnapshot> snapshots = new(StringComparer.Ordinal);
     private readonly HashSet<string> declaredApplications = new(StringComparer.Ordinal);
     private readonly DeclarationValidator validator = new();
+    private readonly TimeProvider clock;
 
-    public BrokerStateStore(IReadOnlyCollection<string> registeredApplicationIds)
+    public BrokerStateStore(IReadOnlyCollection<string> registeredApplicationIds, TimeProvider? timeProvider = null)
     {
         ArgumentNullException.ThrowIfNull(registeredApplicationIds);
         if (registeredApplicationIds.Count > ProtocolLimits.MaximumApplications ||
             registeredApplicationIds.Any(id => string.IsNullOrWhiteSpace(id) || id.Length > DeclarationValidator.MaximumIdLength))
             throw new ArgumentException("Invalid application registration budget or identity.", nameof(registeredApplicationIds));
         registered = new HashSet<string>(registeredApplicationIds, StringComparer.Ordinal);
+        clock = timeProvider ?? TimeProvider.System;
     }
 
     public IReadOnlyList<BrokerApplicationSnapshot> Snapshots
@@ -112,11 +114,11 @@ public sealed class BrokerStateStore
         {
             if (!previous.IsInteractive || previous.Declaration is null)
                 return ProtocolResult.Reject("DeclarationRequired", "完整声明尚未确认");
-            var stateError = ValidateState(message.State, previous.Declaration);
+            var stateError = ValidateState(message.State, previous.Declaration, out var frozen);
             if (stateError is not null) return stateError;
             if (message.State!.Revision <= previous.State!.Revision)
                 return ProtocolResult.Reject("StaleRevision", "状态序号必须递增");
-            snapshots[message.ApplicationId] = previous with { State = Freeze(message.State), LastError = null };
+            snapshots[message.ApplicationId] = previous with { State = frozen, LastError = null };
             return ProtocolResult.Success();
         }
         if (message.Kind == MessageKind.Declare)
@@ -128,13 +130,13 @@ public sealed class BrokerStateStore
             var declaration = validator.Validate(message.Declaration);
             if (!declaration.IsSuccess)
                 return RejectDeclaration(previous, ProtocolResult.Reject(declaration.Error!.Code, declaration.Error.Message, declaration.Error.Path));
-            var stateError = ValidateState(message.State, declaration.Value!);
+            var stateError = ValidateState(message.State, declaration.Value!, out var frozen);
             if (stateError is not null) return RejectDeclaration(previous, stateError);
             declaredApplications.Add(message.ApplicationId);
             snapshots[message.ApplicationId] = previous with
             {
                 Declaration = declaration.Value,
-                State = Freeze(message.State!),
+                State = frozen,
                 IsInteractive = true,
                 LastError = null
             };
@@ -149,15 +151,14 @@ public sealed class BrokerStateStore
         return error;
     }
 
-    private static ApplicationState Freeze(ApplicationState state) =>
-        new(state.Revision, Array.AsReadOnly(state.Components.ToArray()));
-
     private static bool ValidEnvelopeId(string? value) =>
         !string.IsNullOrWhiteSpace(value) && value.Length <= DeclarationValidator.MaximumIdLength &&
         string.Equals(value, value.Trim(), StringComparison.Ordinal);
 
-    private static ProtocolResult? ValidateState(ApplicationState? state, ValidatedApplicationDeclaration declaration)
+    private ProtocolResult? ValidateState(ApplicationState? state, ValidatedApplicationDeclaration declaration,
+        out ApplicationState? frozen)
     {
+        frozen = null;
         if (state is null || state.Revision < 0 || state.Components is null ||
             state.Components.Count > ProtocolLimits.MaximumStateEntries)
             return ProtocolResult.Reject("InvalidState", "状态缺失或超出预算", "state");
@@ -172,6 +173,35 @@ public sealed class BrokerStateStore
                 (reading.Number is double number && !double.IsFinite(number)))
                 return ProtocolResult.Reject("InvalidState", "状态含无效或重复入口及读数", "state.components");
         }
+        var dynamicEntries = state.DynamicEntries ?? [];
+        if (dynamicEntries.Count > ProtocolLimits.MaximumStateEntries)
+            return ProtocolResult.Reject("InvalidState", "动态入口超出预算", "state.dynamicEntries");
+        var dynamicSeen = new HashSet<(string, string)>();
+        var frozenEntries = new List<DynamicEntryState>();
+        var dynamicValidator = new DynamicContentValidator();
+        int activityCount = 0, itemCount = 0;
+        var now = clock.GetUtcNow();
+        foreach (var entry in dynamicEntries)
+        {
+            if (entry is null || !dynamicSeen.Add((entry.FeatureGroupId, entry.ComponentId)))
+                return ProtocolResult.Reject("InvalidState", "动态入口缺失或重复", "state.dynamicEntries");
+            var structure = declaration.DynamicContents.FirstOrDefault(value =>
+                value.ComponentIdentity.Segments[1].Value == entry.FeatureGroupId &&
+                value.ComponentIdentity.Segments[2].Value == entry.ComponentId);
+            if (structure is null || entry.Content?.Activities is null || entry.Content.Items is null)
+                return ProtocolResult.Reject("InvalidState", "动态入口未声明或集合缺失", "state.dynamicEntries");
+            // Subtract from fixed limits before summing so adversarial counts cannot overflow.
+            if (entry.Content.Activities.Count > DynamicContentLimits.MaximumActivitiesPerApplication - activityCount ||
+                entry.Content.Items.Count > DynamicContentLimits.MaximumItemsPerApplication - itemCount)
+                return ProtocolResult.Reject("dynamic_budget_exceeded", "应用动态集合超出预算", "state.dynamicEntries");
+            activityCount += entry.Content.Activities.Count;
+            itemCount += entry.Content.Items.Count;
+            var checkedContent = dynamicValidator.ValidateState(structure, entry.Content, now);
+            if (!checkedContent.IsSuccess)
+                return ProtocolResult.Reject(checkedContent.Error!.Code, checkedContent.Error.Message, checkedContent.Error.Path);
+            frozenEntries.Add(entry with { Content = checkedContent.Value!.Content });
+        }
+        frozen = new(state.Revision, Array.AsReadOnly(state.Components.ToArray()), Array.AsReadOnly(frozenEntries.ToArray()));
         return null;
     }
 }

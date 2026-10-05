@@ -41,7 +41,8 @@ public sealed record ProtocolResult(bool Accepted, string Code, string Message, 
 }
 
 public sealed record ComponentReading(string FeatureGroupId, string ComponentId, string Text, double? Number = null);
-public sealed record ApplicationState(long Revision, IReadOnlyList<ComponentReading> Components);
+public sealed record ApplicationState(long Revision, IReadOnlyList<ComponentReading> Components,
+    IReadOnlyList<DynamicEntryState>? DynamicEntries = null);
 public sealed record ApplicationSnapshot(ApplicationDeclaration Declaration, ApplicationState State);
 
 /// <summary>Host-created launch credentials, passed on inherited standard input, never command lines.</summary>

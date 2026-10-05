@@ -15,6 +15,7 @@
     <ProjectReference Include="../../src/Mtp.Broker/Mtp.Broker.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="../../samples/Mtp.CounterService/Mtp.CounterService.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="../Mtp.Communication.ProcessProbe/Mtp.Communication.ProcessProbe.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="../Mtp.DynamicContent.ProcessProbe/Mtp.DynamicContent.ProcessProbe.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
   <Import Project="../../build/CommunicationRuntimes.targets" />
   <Target Name="CopyCommunicationProbe" AfterTargets="Build">
@@ -25,5 +26,14 @@
       <_CommunicationProbeFiles Include="@(_CommunicationProbeAssembly);@(_CommunicationProbeAssembly->'%(RootDir)%(Directory)Mtp.Communication.ProcessProbe.deps.json');@(_CommunicationProbeAssembly->'%(RootDir)%(Directory)Mtp.Communication.ProcessProbe.runtimeconfig.json');@(_CommunicationProbeAssembly->'%(RootDir)%(Directory)Mtp.Contracts.dll');@(_CommunicationProbeAssembly->'%(RootDir)%(Directory)Mtp.Transport.dll');@(_CommunicationProbeAssembly->'%(RootDir)%(Directory)Mtp.Sdk.dll')" />
     </ItemGroup>
     <Copy SourceFiles="@(_CommunicationProbeFiles)" DestinationFolder="$(OutDir)CommunicationProcessProbe" />
+  </Target>
+  <Target Name="CopyDynamicContentProbe" AfterTargets="Build">
+    <MSBuild Projects="../Mtp.DynamicContent.ProcessProbe/Mtp.DynamicContent.ProcessProbe.csproj" Targets="GetTargetPath" Properties="Configuration=$(Configuration);TargetFramework=net10.0">
+      <Output TaskParameter="TargetOutputs" ItemName="_DynamicProbeAssembly" />
+    </MSBuild>
+    <ItemGroup>
+      <_DynamicProbeFiles Include="@(_DynamicProbeAssembly);@(_DynamicProbeAssembly->'%(RootDir)%(Directory)Mtp.DynamicContent.ProcessProbe.deps.json');@(_DynamicProbeAssembly->'%(RootDir)%(Directory)Mtp.DynamicContent.ProcessProbe.runtimeconfig.json');@(_DynamicProbeAssembly->'%(RootDir)%(Directory)Mtp.Contracts.dll');@(_DynamicProbeAssembly->'%(RootDir)%(Directory)Mtp.Transport.dll');@(_DynamicProbeAssembly->'%(RootDir)%(Directory)Mtp.Sdk.dll')" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_DynamicProbeFiles)" DestinationFolder="$(OutDir)DynamicContentProcessProbe" />
   </Target>
 </Project>
