@@ -59,6 +59,22 @@ public sealed class BrokerStateStore
         lock (sync) return snapshots.GetValueOrDefault(applicationId);
     }
 
+    /// <summary>A matched action may finish after a newer ordinary update; it never rolls readings back.</summary>
+    public ProtocolResult ApplyActionState(string applicationId, string sessionId, ApplicationState state)
+    {
+        lock (sync)
+        {
+            var previous = snapshots.GetValueOrDefault(applicationId);
+            if (previous is null || previous.SessionId != sessionId || !previous.IsInteractive || !previous.IsConnected || previous.Declaration is null)
+                return ProtocolResult.Reject("ActionNotAvailable", "动作会话或声明已失效");
+            var error = ValidateState(state, previous.Declaration, out var frozen);
+            if (error is not null) return error;
+            if (state.Revision <= previous.State!.Revision) return ProtocolResult.Success("StateAlreadyCurrent");
+            snapshots[applicationId] = previous with { State = frozen, LastError = null };
+            return ProtocolResult.Success();
+        }
+    }
+
     public ProtocolMessage Handle(ProtocolMessage message)
     {
         lock (sync)

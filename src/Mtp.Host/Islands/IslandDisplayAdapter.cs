@@ -8,14 +8,16 @@ internal sealed class IslandDisplayAdapter : IIslandSessionAdapter
 {
     private readonly Func<TaskbarDockPreferences, CoreResult<IslandTarget>> capture;
     private readonly Action<string, object?> record;
+    private readonly Func<Mtp.Contracts.ActionSlotReference, Task>? invokeAction;
     private ContentIslandHost? host;
     private IslandTarget? target;
     private PixelRect bounds;
     private bool placementCurrent;
     private HostComponentDisplayModel? component;
     private HostTestConfiguration config = new();
-    public IslandDisplayAdapter(Func<TaskbarDockPreferences, CoreResult<IslandTarget>> capture, Action<string, object?> record)
-    { this.capture = capture; this.record = record; }
+    public IslandDisplayAdapter(Func<TaskbarDockPreferences, CoreResult<IslandTarget>> capture, Action<string, object?> record,
+        Func<Mtp.Contracts.ActionSlotReference, Task>? invokeAction = null)
+    { this.capture = capture; this.record = record; this.invokeAction = invokeAction; }
     public bool IsAlive => host?.IsAlive == true;
     public string MaterialStatus => host?.MaterialStatus ?? "未创建内容岛";
     public bool PopupOpen => host?.PopupOpen == true;
@@ -60,7 +62,7 @@ internal sealed class IslandDisplayAdapter : IIslandSessionAdapter
     {
         if (target is null || component is null) return CoreResult<bool>.Failure(new("island_target_missing", "声明或任务栏定位条件不可用。"));
         if (host is not null) return CoreResult<bool>.Failure(new("island_cleanup_pending", "旧内容岛尚未释放。"));
-        host = new ContentIslandHost(record);
+        host = new ContentIslandHost(record, invokeAction);
         host.Lost += OnLost;
         try
         {

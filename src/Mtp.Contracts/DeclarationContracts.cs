@@ -37,4 +37,4 @@ public sealed record TaskbarFlyoutDeclaration(
 /// <summary>
 /// A named action slot under a component or taskbar-operation flyout.
 /// </summary>
-public sealed record ActionSlotDeclaration(string? ActionSlotId);
+public sealed record ActionSlotDeclaration(string? ActionSlotId, ActionParameterKind ParameterKind = ActionParameterKind.None);

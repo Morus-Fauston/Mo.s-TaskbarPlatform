@@ -252,6 +252,8 @@ public sealed class BrokerHandshakeTests(ITestOutputHelper output)
                         await LengthPrefixedJson.WriteAsync(control, new ProtocolMessage
                         {
                             Kind = MessageKind.Result,
+                            ApplicationId = message.ApplicationId,
+                            SessionId = message.SessionId,
                             RequestId = message.RequestId,
                             Result = ProtocolResult.Success(),
                         }, Token);

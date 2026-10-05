@@ -12,7 +12,10 @@ public sealed record HostComponentDisplayModel(
     string Text,
     CapabilityStatus Status,
     string StatusLabel,
-    bool IsVisible)
+    bool IsVisible,
+    Mtp.Contracts.ActionSlotReference? Action = null,
+    bool CanInvokeAction = false,
+    bool ActionBusy = false)
 {
     public static HostComponentDisplayModel From(Component component)
         => From(component, true);

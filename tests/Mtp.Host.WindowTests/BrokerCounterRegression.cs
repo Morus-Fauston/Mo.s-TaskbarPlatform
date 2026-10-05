@@ -88,6 +88,23 @@ internal static class BrokerCounterRegression
                 "Rendered reading has no corresponding accepted Broker state.");
             log($"PASS: independent Counter/SDK -> Broker -> production Host timer -> native island; reading={next}; acceptedRevision={confirmed.State!.Revision}; nativeText={label.Text}; sameHwnd={handle}");
 
+            var actionButton = Descendants(island.ContentRoot!).OfType<Button>()
+                .SingleOrDefault(button => AutomationProperties.GetAutomationId(button) == "MtpDeclaredAction");
+            Check(actionButton is not null && actionButton.IsEnabled, "Declared counter action has no enabled native button.");
+            var beforeAction = communication.States.GetSnapshot("counter")!.State!;
+            var previousDelta = beforeAction.Components.Single().Number!.Value - beforeAction.Revision;
+            var peer = new Microsoft.UI.Xaml.Automation.Peers.ButtonAutomationPeer(actionButton!);
+            ((Microsoft.UI.Xaml.Automation.Provider.IInvokeProvider)peer.GetPattern(
+                Microsoft.UI.Xaml.Automation.Peers.PatternInterface.Invoke)).Invoke();
+            await WaitUntilAsync(() => communication.States.GetSnapshot("counter")?.State is { } state &&
+                state.Components.Single().Number - state.Revision == previousDelta + 9 &&
+                TryReading(controller, out var current) && current >= next + 10,
+                TimeSpan.FromSeconds(5), () => "Native action did not receive a confirmed counter increment: " + string.Join("; ", controller.Errors));
+            Check(island.Handle == handle && island.Bridge == bridge && island.IsAlive, "Action recreated the native island.");
+            Check(label.Text == controller.Component!.Text + " · " + controller.Component.StatusLabel,
+                "Action confirmation was not rendered in the native label.");
+            log($"PASS: real WinUI Button Invoke -> SDK handler -> confirmed reading {controller.Component.Text}; sameHwnd={handle}.");
+
             window.Close();
             await WaitUntilAsync(() => controller.Session.State == IslandDisplayState.Closed &&
                 !NativeWindows.IsWindow(handle) && !NativeWindows.IsWindow(bridge), TimeSpan.FromSeconds(5),

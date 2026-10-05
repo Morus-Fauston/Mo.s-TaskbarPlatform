@@ -13,7 +13,7 @@ public static class ProtocolLimits
     public const int TicketLifetimeSeconds = 30;
 }
 
-public enum MessageKind { Hello, Welcome, Declare, State, Result, Disconnected, FlyoutRequest }
+public enum MessageKind { Hello, Welcome, Declare, State, Result, Disconnected, FlyoutRequest, ActionRequest, ActionCompleted }
 
 /// <summary>Internal wire envelope. SDK applications use the provider API instead.</summary>
 public sealed record ProtocolMessage
@@ -30,6 +30,8 @@ public sealed record ProtocolMessage
     public ProtocolResult? Result { get; init; }
     public BrokerLoad? BrokerLoad { get; init; }
     public FlyoutRequest? Flyout { get; init; }
+    public ActionInvocation? Action { get; init; }
+    public ActionCompletion? ActionCompletion { get; init; }
 }
 
 /// <summary>Broker-owned bounded forwarding diagnostics; service submissions cannot supply this field.</summary>

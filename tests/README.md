@@ -47,3 +47,14 @@ dotnet test tests/Mtp.Host.Windows.Tests/Mtp.Host.Windows.Tests.csproj -c Releas
 - 格式检查：先 dotnet build Mtp.sln -c Debug，再 dotnet format Mtp.sln --verify-no-changes --no-restore，保证 WinUI 设计时引用元数据存在。
 
 真实启动、外观、点击热区、任务栏、多屏、DPI、自动隐藏与 Explorer 重启由维护者执行和确认；自动化通过不能勾选这些人工项。
+
+## 四期动作闭环
+
+计数器示例的受控动作将读数增加10，自动tick增加1；读数只在服务确认后更新。内容岛的“执行”按钮等待期间禁用并显示“等待确认”，确认失败保留最后值；完整错误提示窗口由五期提供。
+
+~~~powershell
+dotnet test tests/Mtp.Communication.Tests/Mtp.Communication.Tests.csproj -c Release --filter FullyQualifiedName~ActionProcessTests
+powershell -ExecutionPolicy Bypass -File tests/Mtp.Host.WindowTests/Run.ps1 -Scenario broker -EvidenceDirectory .scratch/四期开发/evidence/01/<新批次>
+~~~
+
+动作夹具包含真实双服务、业务失败、4个未终局请求预算、5秒超时、取消后迟到结果、旧会话/错序号/重复结果和并发发送。原生回归通过实际WinUI按钮AutomationPeer调用Click链，检查协议确认后的值以及同一HWND和退出清理；这不是人工点击或动画外观验收。

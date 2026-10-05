@@ -16,9 +16,12 @@ internal sealed class IslandContent : UserControl
     private readonly Button button = new() { Content = "+1", Padding = new Thickness(8, 0, 8, 0), MinHeight = 28, VerticalAlignment = VerticalAlignment.Center };
     private readonly Action<string, object?> record;
     private long clicks;
+    private Mtp.Contracts.ActionSlotReference? action;
+    private readonly Button actionButton = new() { Content = "执行", Padding = new Thickness(8, 0, 8, 0), MinHeight = 28, VerticalAlignment = VerticalAlignment.Center };
     public bool PopupOpen => popup.IsOpen;
 
-    public IslandContent(HostComponentDisplayModel component, HostTestConfiguration config, Action<string, object?> record)
+    public IslandContent(HostComponentDisplayModel component, HostTestConfiguration config, Action<string, object?> record,
+        Func<Mtp.Contracts.ActionSlotReference, Task>? invokeAction = null)
     {
         this.record = record;
         RequestedTheme = config.Theme switch { "light" => ElementTheme.Light, "dark" => ElementTheme.Dark, _ => ElementTheme.Default };
@@ -65,6 +68,23 @@ internal sealed class IslandContent : UserControl
             surface.Children.Add(button); surface.Children.Add(toggle); surface.Children.Add(slider);
             surface.Children.Add(popup);
         }
+        else if (invokeAction is not null)
+        {
+            surface.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            surface.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            surface.ColumnSpacing = 8;
+            Grid.SetColumn(actionButton, 1);
+            AutomationProperties.SetAutomationId(actionButton, "MtpDeclaredAction");
+            AutomationProperties.SetName(actionButton, "执行组件动作");
+            actionButton.Click += async (_, _) =>
+            {
+                if (action is not { } slot || !actionButton.IsEnabled) return;
+                actionButton.IsEnabled = false;
+                await invokeAction(slot);
+            };
+            surface.Children.Add(actionButton);
+            UpdateConfirmed(component);
+        }
         GotFocus += (_, _) => record("content-focus", new { automatic = true, human = "pending" });
     }
 
@@ -74,7 +94,14 @@ internal sealed class IslandContent : UserControl
         surface.Background = new SolidColorBrush(Color.FromArgb(config.Material == "none" ? (byte)(255 * config.Alpha) : (byte)0, shade, shade, shade));
     }
     public void Update(long value) => label.Text = (value + clicks).ToString(System.Globalization.CultureInfo.InvariantCulture);
-    public void UpdateConfirmed(HostComponentDisplayModel component) => label.Text = component.Text + " · " + component.StatusLabel;
+    public void UpdateConfirmed(HostComponentDisplayModel component)
+    {
+        label.Text = component.Text + " · " + component.StatusLabel;
+        action = component.Action;
+        actionButton.Visibility = action is null ? Visibility.Collapsed : Visibility.Visible;
+        actionButton.IsEnabled = component.CanInvokeAction;
+        actionButton.Content = component.ActionBusy ? "等待确认" : "执行";
+    }
     public void SetPopup(bool open) { popup.IsOpen = open; record("popup-request", open); }
     public void Release() => popup.IsOpen = false;
 }

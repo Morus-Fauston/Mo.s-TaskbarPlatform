@@ -6,6 +6,35 @@ namespace Mtp.Platform.Core.Tests;
 public sealed class BrokerStateStoreTests
 {
     [Fact]
+    public void Action_confirmation_keeps_newer_readings_and_still_validates_late_payloads()
+    {
+        var store = Ready();
+        Assert.True(store.Handle(Message(MessageKind.State) with { State = State(5, "latest") }).Result!.Accepted);
+        Assert.True(store.ApplyActionState("counter", "session-1", State(3, "older confirmation")).Accepted);
+        Assert.Equal("latest", store.GetSnapshot("counter")!.State!.Components[0].Text);
+        Assert.False(store.ApplyActionState("counter", "session-1", new(2, [new("controls", "foreign", "invalid")])).Accepted);
+        Assert.True(store.ApplyActionState("counter", "session-1", State(6, "confirmed")).Accepted);
+        Assert.Equal("confirmed", store.GetSnapshot("counter")!.State!.Components[0].Text);
+        Assert.False(store.ApplyActionState("counter", "old-session", State(7, "stale")).Accepted);
+        store.Handle(Message(MessageKind.Disconnected));
+        Assert.False(store.ApplyActionState("counter", "session-1", State(8, "disconnected")).Accepted);
+        Assert.Equal("confirmed", store.GetSnapshot("counter")!.State!.Components[0].Text);
+    }
+
+    [Fact]
+    public void Accepted_declaration_exports_fully_scoped_typed_action_slots()
+    {
+        var store = Ready();
+        var slots = store.GetSnapshot("counter")!.Declaration!.ActionSlots;
+        Assert.Contains(slots, item => item.Reference == new ActionSlotReference("counter", "controls", ActionEntryKind.Component, "reading", "increase") && item.ParameterKind == ActionParameterKind.None);
+        Assert.Contains(slots, item => item.Reference == new ActionSlotReference("counter", "controls", ActionEntryKind.TaskbarFlyout, "panel", "open"));
+        Assert.Throws<NotSupportedException>(() => ((IList<ValidatedActionSlot>)slots).Clear());
+        var bad = new ApplicationDeclaration("counter", [new("controls", [new("reading", [new("increase", (ActionParameterKind)999)])], [])]);
+        Assert.False(store.Handle(Message(MessageKind.Declare) with { Declaration = bad, State = State(0) }).Result!.Accepted);
+        Assert.False(store.GetSnapshot("counter")!.IsInteractive);
+    }
+
+    [Fact]
     public void RegisteredSessionPublishesValidatedDeclarationAndInitialReadingTogether()
     {
         var store = new BrokerStateStore(["counter"]);

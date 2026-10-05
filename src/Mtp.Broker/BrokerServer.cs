@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.IO.Pipes;
 using System.Security.Cryptography;
 using System.Text;
+using System.Threading.Channels;
 using Mtp.Contracts;
 using Mtp.Transport;
 
@@ -15,6 +16,7 @@ public sealed class BrokerServer : IAsyncDisposable
     private readonly ConcurrentDictionary<string, string> sessions = new(StringComparer.Ordinal);
     private readonly Dictionary<string, TaskCompletionSource<ProtocolMessage>> pending = new(StringComparer.Ordinal);
     private readonly object gate = new();
+    private readonly Dictionary<string, ServiceConnection> connections = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim writer = new(1, 1);
     private readonly CancellationTokenSource lifetime = new();
     private readonly NamedPipeClientStream control;
@@ -50,7 +52,7 @@ public sealed class BrokerServer : IAsyncDisposable
         var accepted = await LengthPrefixedJson.ReadAsync<ProtocolMessage>(control, token).ConfigureAwait(false);
         if (accepted.Version != ProtocolLimits.Version || accepted.Kind != MessageKind.Welcome ||
             accepted.ApplicationId != "" || accepted.SessionId != "" || accepted.RequestId != "" ||
-            accepted.Ticket != "" || accepted.StartRequestId != "" || accepted.Declaration is not null || accepted.State is not null || accepted.Result is not null || accepted.BrokerLoad is not null || accepted.Flyout is not null)
+            accepted.Ticket != "" || accepted.StartRequestId != "" || accepted.Declaration is not null || accepted.State is not null || accepted.Result is not null || accepted.BrokerLoad is not null || accepted.Flyout is not null || accepted.Action is not null || accepted.ActionCompletion is not null)
             throw new ProtocolException("HostHandshakeRejected");
 
         var listeners = new List<NamedPipeServerStream>();
@@ -104,6 +106,7 @@ public sealed class BrokerServer : IAsyncDisposable
     {
         string? application = null;
         string? session = null;
+        ServiceConnection? connection = null;
         try
         {
             using var handshake = CancellationTokenSource.CreateLinkedTokenSource(token);
@@ -131,32 +134,62 @@ public sealed class BrokerServer : IAsyncDisposable
                 await ReplyAsync(pipe, hello, confirmation.Result ?? ProtocolResult.Reject("HostUnavailable", "平台暂不可用"), handshake.Token).ConfigureAwait(false);
                 return;
             }
-            await LengthPrefixedJson.WriteAsync(pipe, welcome, handshake.Token).ConfigureAwait(false);
+            connection = new ServiceConnection(application, session, pipe, token);
+            lock (gate) connections.Add(application, connection);
+            connection.OrdinaryWorker = ProcessOrdinaryRequestsAsync(connection);
+            await connection.WriteAsync(welcome, handshake.Token).ConfigureAwait(false);
             while (!token.IsCancellationRequested)
             {
                 var message = await LengthPrefixedJson.ReadAsync<ProtocolMessage>(pipe, token, Timeout.InfiniteTimeSpan).ConfigureAwait(false);
                 if (message.Version != ProtocolLimits.Version)
                 {
-                    await ReplyAsync(pipe, message, ProtocolResult.Reject("UnsupportedVersion", "协议版本不支持"), token).ConfigureAwait(false);
+                    await connection.ReplyAsync(message, ProtocolResult.Reject("UnsupportedVersion", "协议版本不支持"), token).ConfigureAwait(false);
                     return;
                 }
                 if (message.ApplicationId != application || message.SessionId != session ||
                     !sessions.TryGetValue(application, out var current) || current != session)
                 {
-                    await ReplyAsync(pipe, message, ProtocolResult.Reject("SessionMismatch", "会话身份不匹配"), token).ConfigureAwait(false);
+                    await connection.ReplyAsync(message, ProtocolResult.Reject("SessionMismatch", "会话身份不匹配"), token).ConfigureAwait(false);
+                    continue;
+                }
+                if (message.Kind == MessageKind.ActionCompleted)
+                {
+                    if (!ValidServicePayload(message)) throw new ProtocolException("InvalidActionResult");
+                    await CompleteActionAsync(connection, message, token).ConfigureAwait(false);
                     continue;
                 }
                 if (!ValidServicePayload(message))
                 {
-                    await ReplyAsync(pipe, message, ProtocolResult.Reject("InvalidEnvelope", "消息字段与类型不匹配"), token).ConfigureAwait(false);
+                    await connection.ReplyAsync(message, ProtocolResult.Reject("InvalidEnvelope", "消息字段与类型不匹配"), token).ConfigureAwait(false);
                     continue;
                 }
-                var result = await ForwardAsync(message, token).ConfigureAwait(false);
-                await LengthPrefixedJson.WriteAsync(pipe, result, token).ConfigureAwait(false);
+                if (message.Kind == MessageKind.Declare) lock (gate) connection.Declaration = null;
+                if (!connection.TrySubmit(message))
+                {
+                    await connection.ReplyAsync(message, ProtocolResult.Reject("Busy", "上一条请求仍在等待确认"), token).ConfigureAwait(false);
+                    continue;
+                }
+
             }
         }
         finally
         {
+            if (connection is not null)
+            {
+                lock (gate)
+                {
+                    if (connections.TryGetValue(connection.ApplicationId, out var current) && ReferenceEquals(current, connection))
+                        connections.Remove(connection.ApplicationId);
+                    connection.Declaration = null;
+                    connection.Outstanding.Clear();
+                }
+                connection.Stop();
+                await connection.OrdinaryWorker.ConfigureAwait(false);
+                Task[] sends;
+                lock (gate) sends = connection.ActionSends.ToArray();
+                await Task.WhenAll(sends).ConfigureAwait(false);
+                connection.DisposeLifetime();
+            }
             if (application is not null && session is not null &&
                 sessions.TryRemove(new KeyValuePair<string, string>(application, session)))
             {
@@ -171,12 +204,189 @@ public sealed class BrokerServer : IAsyncDisposable
         }
     }
 
+    private async Task ProcessOrdinaryRequestsAsync(ServiceConnection connection)
+    {
+        try
+        {
+            await foreach (var message in connection.Requests.Reader.ReadAllAsync(connection.Token).ConfigureAwait(false))
+                await ForwardServiceRequestAsync(connection, message).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (connection.Token.IsCancellationRequested) { }
+        finally { while (connection.Requests.Reader.TryRead(out _)) { } }
+    }
+
+    private async Task ForwardServiceRequestAsync(ServiceConnection connection, ProtocolMessage message)
+    {
+        try
+        {
+            if (message.Kind == MessageKind.Declare) lock (gate) connection.Declaration = null;
+            var result = await ForwardAsync(message, connection.Token).ConfigureAwait(false);
+            if (message.Kind == MessageKind.Declare)
+            {
+                lock (gate)
+                    if (IsCurrent(connection)) connection.Declaration = result.Result?.Accepted == true ? message.Declaration : null;
+            }
+            await connection.WriteAsync(result, connection.Token, releaseOrdinary: true).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is IOException or OperationCanceledException or ObjectDisposedException) { connection.Stop(); }
+    }
+
+    private bool IsCurrent(ServiceConnection connection) => connections.TryGetValue(connection.ApplicationId, out var current) && ReferenceEquals(current, connection);
+
+    private async Task DispatchActionAsync(ProtocolMessage message, CancellationToken token)
+    {
+        if (message.Version != ProtocolLimits.Version || !ValidIdentity(message.RequestId) ||
+            message.Ticket != "" || message.StartRequestId != "" || message.Result is not null || message.Declaration is not null ||
+            message.State is not null || message.BrokerLoad is not null || message.Flyout is not null || message.ActionCompletion is not null ||
+            message.Action is not { } action || action.RequestId != message.RequestId || action.Sequence <= 0)
+            throw new ProtocolException("InvalidHostAction");
+        ProtocolResult? rejection = null;
+        ServiceConnection? connection;
+        lock (gate)
+        {
+            connections.TryGetValue(message.ApplicationId, out connection);
+            if (connection is null || connection.SessionId != message.SessionId || !ValidSlot(connection.Declaration, action))
+                rejection = ProtocolResult.Reject("ActionNotAvailable", "动作槽位当前不可用");
+            else if (action.Sequence <= connection.LastSequence)
+            {
+                // An in-flight duplicate must not terminate the original request or execute it again.
+                if (connection.Outstanding.TryGetValue(action.RequestId, out var original) && original.Sequence == action.Sequence) return;
+                rejection = ProtocolResult.Reject("DuplicateRequest", "动作序号已处理");
+            }
+            else
+            {
+                connection.LastSequence = action.Sequence;
+                if (connection.Outstanding.Count >= ActionLimits.MaximumOutstandingPerApplication || connection.Outstanding.ContainsKey(action.RequestId))
+                    rejection = ProtocolResult.Reject("Busy", "动作队列已满或请求标识重复");
+                else
+                {
+                    connection.Outstanding.Add(action.RequestId, action);
+                    // Start bounded sends without holding the Host reader behind a slow service.
+                    var send = SendActionAsync(connection, message);
+                    connection.ActionSends.RemoveAll(task => task.IsCompleted);
+                    connection.ActionSends.Add(send);
+                }
+            }
+        }
+        if (rejection is not null)
+            await WriteHostAsync(message with
+            {
+                Kind = MessageKind.ActionCompleted,
+                Action = null,
+                ActionCompletion = new(action.RequestId, action.Sequence, rejection)
+            }, token).ConfigureAwait(false);
+    }
+
+    private async Task SendActionAsync(ServiceConnection connection, ProtocolMessage message)
+    {
+        try { await connection.WriteAsync(message, connection.Token).ConfigureAwait(false); }
+        catch (Exception exception) when (exception is IOException or OperationCanceledException or ObjectDisposedException) { connection.Stop(); }
+    }
+
+    private async Task CompleteActionAsync(ServiceConnection connection, ProtocolMessage message, CancellationToken token)
+    {
+        var completion = message.ActionCompletion!;
+        lock (gate)
+        {
+            if (!IsCurrent(connection) || !connection.Outstanding.TryGetValue(message.RequestId, out var request) || request.Sequence != completion.Sequence) return;
+            connection.Outstanding.Remove(message.RequestId);
+            connection.LastCompletion = completion;
+        }
+        // Preserve the Host request identity; ordinary forwarding correlations do not apply to actions.
+        await WriteHostAsync(message, token).ConfigureAwait(false);
+    }
+
+    private static bool ValidSlot(ApplicationDeclaration? declaration, ActionInvocation action)
+    {
+        var slot = action.Slot;
+        var parameter = action.Parameter;
+        if (declaration is null || slot is null || parameter is null || slot.ApplicationId != declaration.ApplicationId ||
+            !ValidIdentity(slot.ApplicationId) || !ValidIdentity(slot.FeatureGroupId) || !ValidIdentity(slot.EntryId) || !ValidIdentity(slot.ActionSlotId)) return false;
+        var group = declaration.FeatureGroups?.FirstOrDefault(group => group.FeatureGroupId == slot.FeatureGroupId);
+        var slots = slot.EntryKind switch
+        {
+            ActionEntryKind.Component => group?.Components?.FirstOrDefault(entry => entry.ComponentId == slot.EntryId)?.ActionSlots,
+            ActionEntryKind.TaskbarFlyout => group?.TaskbarFlyouts?.FirstOrDefault(entry => entry.TaskbarFlyoutId == slot.EntryId)?.ActionSlots,
+            _ => null
+        };
+        var declared = slots?.FirstOrDefault(candidate => candidate.ActionSlotId == slot.ActionSlotId);
+        if (declared is null || parameter.Kind != declared.ParameterKind) return false;
+        return parameter.Kind switch
+        {
+            ActionParameterKind.None => parameter.Boolean is null && parameter.Number is null && parameter.Text is null,
+            ActionParameterKind.Boolean => parameter.Boolean is not null && parameter.Number is null && parameter.Text is null,
+            ActionParameterKind.Number => parameter.Boolean is null && parameter.Number is { } number && double.IsFinite(number) && parameter.Text is null,
+            ActionParameterKind.Text => parameter.Boolean is null && parameter.Number is null && parameter.Text is { Length: <= ProtocolLimits.MaximumTextLength },
+            _ => false
+        };
+    }
+
+    private static bool ValidResult(ProtocolResult? result) => result is not null && ValidIdentity(result.Code) &&
+        result.Message is not null && result.Message.Length <= ProtocolLimits.MaximumTextLength &&
+        (result.Path is null || result.Path.Length <= ProtocolLimits.MaximumTextLength);
+
+    private sealed class ServiceConnection(string applicationId, string sessionId, Stream pipe, CancellationToken token)
+    {
+        private readonly SemaphoreSlim writer = new(1, 1);
+        private readonly CancellationTokenSource lifetime = CancellationTokenSource.CreateLinkedTokenSource(token);
+        private int stopped;
+        public string ApplicationId { get; } = applicationId;
+        public string SessionId { get; } = sessionId;
+        public CancellationToken Token => lifetime.Token;
+        public ApplicationDeclaration? Declaration { get; set; }
+        public long LastSequence { get; set; }
+        public ActionCompletion? LastCompletion { get; set; }
+        public Dictionary<string, ActionInvocation> Outstanding { get; } = new(StringComparer.Ordinal);
+        public List<Task> ActionSends { get; } = [];
+        private int ordinaryBusy;
+        public Channel<ProtocolMessage> Requests { get; } = Channel.CreateBounded<ProtocolMessage>(
+            new BoundedChannelOptions(1) { SingleReader = true, SingleWriter = true });
+        public Task OrdinaryWorker { get; set; } = Task.CompletedTask;
+        public bool TrySubmit(ProtocolMessage message)
+        {
+            if (Interlocked.CompareExchange(ref ordinaryBusy, 1, 0) != 0) return false;
+            if (Requests.Writer.TryWrite(message)) return true;
+            Volatile.Write(ref ordinaryBusy, 0);
+            return false;
+        }
+        public async Task WriteAsync(ProtocolMessage message, CancellationToken token, bool releaseOrdinary = false)
+        {
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token, lifetime.Token);
+            deadline.CancelAfter(TimeSpan.FromSeconds(5));
+            await writer.WaitAsync(deadline.Token).ConfigureAwait(false);
+            try
+            {
+                // A peer may submit immediately after receiving this response. Release admission
+                // before bytes become visible; the one-slot channel and worker preserve ordering.
+                if (releaseOrdinary) Volatile.Write(ref ordinaryBusy, 0);
+                await LengthPrefixedJson.WriteAsync(pipe, message, deadline.Token).ConfigureAwait(false);
+            }
+            finally { writer.Release(); }
+        }
+        public Task ReplyAsync(ProtocolMessage message, ProtocolResult result, CancellationToken token) => WriteAsync(new ProtocolMessage
+        {
+            Kind = MessageKind.Result,
+            ApplicationId = message.ApplicationId,
+            SessionId = message.SessionId,
+            RequestId = message.RequestId,
+            Result = result
+        }, token);
+        public void Stop()
+        {
+            if (Interlocked.Exchange(ref stopped, 1) != 0) return;
+            lifetime.Cancel();
+            Requests.Writer.TryComplete();
+            pipe.Dispose();
+        }
+        public void DisposeLifetime() => lifetime.Dispose();
+    }
+
     private ProtocolResult? ValidateHello(ProtocolMessage hello)
     {
         if (hello.Version != ProtocolLimits.Version) return ProtocolResult.Reject("UnsupportedVersion", "协议版本不支持");
         if (hello.Kind != MessageKind.Hello || !ValidIdentity(hello.ApplicationId) || !ValidIdentity(hello.StartRequestId) || !ValidIdentity(hello.RequestId) ||
             string.IsNullOrWhiteSpace(hello.Ticket) || hello.Ticket.Length > 256 || hello.SessionId != "" ||
-            hello.Declaration is not null || hello.State is not null || hello.Result is not null || hello.BrokerLoad is not null || hello.Flyout is not null)
+            hello.Declaration is not null || hello.State is not null || hello.Result is not null || hello.BrokerLoad is not null || hello.Flyout is not null || hello.Action is not null || hello.ActionCompletion is not null)
             return ProtocolResult.Reject("InvalidHandshake", "连接声明无效");
         lock (gate)
         {
@@ -216,6 +426,8 @@ public sealed class BrokerServer : IAsyncDisposable
             deadline.CancelAfter(TimeSpan.FromSeconds(5));
             await WriteHostAsync(message with { RequestId = correlation }, deadline.Token, includeBrokerLoad: true).ConfigureAwait(false);
             var result = await completion.Task.WaitAsync(deadline.Token).ConfigureAwait(false);
+            if (result.ApplicationId != message.ApplicationId || result.SessionId != message.SessionId)
+                throw new ProtocolException("InvalidHostResponse");
             return new ProtocolMessage { Kind = MessageKind.Result, ApplicationId = message.ApplicationId, SessionId = message.SessionId, RequestId = message.RequestId, Result = result.Result };
         }
         finally { lock (gate) pending.Remove(correlation); }
@@ -241,8 +453,13 @@ public sealed class BrokerServer : IAsyncDisposable
             while (!token.IsCancellationRequested)
             {
                 var message = await LengthPrefixedJson.ReadAsync<ProtocolMessage>(control, token, Timeout.InfiniteTimeSpan).ConfigureAwait(false);
+                if (message.Kind == MessageKind.ActionRequest)
+                {
+                    await DispatchActionAsync(message, token).ConfigureAwait(false);
+                    continue;
+                }
                 if (message.Version != ProtocolLimits.Version || message.Kind != MessageKind.Result || message.Result is null || !ValidIdentity(message.RequestId) ||
-                    message.Ticket != "" || message.StartRequestId != "" || message.Declaration is not null || message.State is not null || message.BrokerLoad is not null || message.Flyout is not null)
+                    message.Ticket != "" || message.StartRequestId != "" || message.Declaration is not null || message.State is not null || message.BrokerLoad is not null || message.Flyout is not null || message.Action is not null || message.ActionCompletion is not null)
                     throw new ProtocolException("InvalidHostResponse");
                 TaskCompletionSource<ProtocolMessage>? completion;
                 lock (gate) pending.TryGetValue(message.RequestId, out completion);
@@ -266,6 +483,10 @@ public sealed class BrokerServer : IAsyncDisposable
     {
         if (!ValidIdentity(message.RequestId) || message.Ticket != "" || message.StartRequestId != "" || message.Result is not null || message.BrokerLoad is not null)
             return false;
+        if (message.Kind == MessageKind.ActionCompleted)
+            return message.Action is null && message.Declaration is null && message.State is null && message.Flyout is null &&
+                message.ActionCompletion is { } completion && completion.RequestId == message.RequestId && completion.Sequence > 0 && ValidResult(completion.Result);
+        if (message.Action is not null || message.ActionCompletion is not null) return false;
         return message.Kind switch
         {
             MessageKind.Declare => message.Declaration is not null && message.State is not null && message.Flyout is null,

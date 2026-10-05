@@ -17,6 +17,7 @@
     <ProjectReference Include="../Mtp.Communication.ProcessProbe/Mtp.Communication.ProcessProbe.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="../Mtp.DynamicContent.ProcessProbe/Mtp.DynamicContent.ProcessProbe.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="../Mtp.Flyout.ProcessProbe/Mtp.Flyout.ProcessProbe.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="../Mtp.Action.ProcessProbe/Mtp.Action.ProcessProbe.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
   <Import Project="../../build/CommunicationRuntimes.targets" />
   <Target Name="CopyCommunicationProbe" AfterTargets="Build">
@@ -45,5 +46,14 @@
       <_FlyoutProbeFiles Include="@(_FlyoutProbeAssembly);@(_FlyoutProbeAssembly->'%(RootDir)%(Directory)Mtp.Flyout.ProcessProbe.deps.json');@(_FlyoutProbeAssembly->'%(RootDir)%(Directory)Mtp.Flyout.ProcessProbe.runtimeconfig.json');@(_FlyoutProbeAssembly->'%(RootDir)%(Directory)Mtp.Contracts.dll');@(_FlyoutProbeAssembly->'%(RootDir)%(Directory)Mtp.Transport.dll');@(_FlyoutProbeAssembly->'%(RootDir)%(Directory)Mtp.Sdk.dll')" />
     </ItemGroup>
     <Copy SourceFiles="@(_FlyoutProbeFiles)" DestinationFolder="$(OutDir)FlyoutProcessProbe" />
+  </Target>
+  <Target Name="CopyActionProbe" AfterTargets="Build">
+    <MSBuild Projects="../Mtp.Action.ProcessProbe/Mtp.Action.ProcessProbe.csproj" Targets="GetTargetPath" Properties="Configuration=$(Configuration);TargetFramework=net10.0">
+      <Output TaskParameter="TargetOutputs" ItemName="_ActionProbeAssembly" />
+    </MSBuild>
+    <ItemGroup>
+      <_ActionProbeFiles Include="@(_ActionProbeAssembly);@(_ActionProbeAssembly->'%(RootDir)%(Directory)Mtp.Action.ProcessProbe.deps.json');@(_ActionProbeAssembly->'%(RootDir)%(Directory)Mtp.Action.ProcessProbe.runtimeconfig.json');@(_ActionProbeAssembly->'%(RootDir)%(Directory)Mtp.Contracts.dll');@(_ActionProbeAssembly->'%(RootDir)%(Directory)Mtp.Transport.dll');@(_ActionProbeAssembly->'%(RootDir)%(Directory)Mtp.Sdk.dll')" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_ActionProbeFiles)" DestinationFolder="$(OutDir)ActionProcessProbe" />
   </Target>
 </Project>

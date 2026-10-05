@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO.Pipes;
 using System.Security.Cryptography;
+using System.Threading.Channels;
 using Mtp.Contracts;
 using Mtp.Transport;
 
@@ -39,6 +40,12 @@ public sealed class HostBrokerSession : IAsyncDisposable
     private readonly string servicePipe;
     private Process? broker;
     private Task? receive;
+    private Task? actionClock;
+    private Task? actionDispatcher;
+    private readonly object actionDispatchGate = new();
+    private readonly Channel<ProtocolMessage> actionDispatch = Channel.CreateBounded<ProtocolMessage>(
+        new BoundedChannelOptions(ProtocolLimits.MaximumPendingRequests) { SingleReader = true });
+    private readonly SemaphoreSlim controlWriter = new(1, 1);
     private int disposed;
     private string? lastError;
     private int peakPendingRequests;
@@ -59,6 +66,7 @@ public sealed class HostBrokerSession : IAsyncDisposable
 
     private string HostPipeName { get; }
     public BrokerStateStore States { get; }
+    public ActionRequestTracker Actions { get; } = new();
     public int BrokerProcessId => broker?.Id ?? throw new InvalidOperationException("Broker not started.");
     public string? LastError => Volatile.Read(ref lastError);
     public int PeakPendingRequests => Volatile.Read(ref peakPendingRequests);
@@ -89,6 +97,8 @@ public sealed class HostBrokerSession : IAsyncDisposable
             var ready = await LengthPrefixedJson.ReadAsync<ProtocolMessage>(session.control, deadline.Token).ConfigureAwait(false);
             if (ready.Kind != MessageKind.Welcome || ready.RequestId != "broker-ready") throw new IOException("BrokerNotReady");
             session.receive = session.ReceiveAsync();
+            session.actionClock = session.RunActionClockAsync();
+            session.actionDispatcher = session.DispatchActionsAsync();
             return session;
         }
         catch (Exception startError)
@@ -129,6 +139,91 @@ public sealed class HostBrokerSession : IAsyncDisposable
         finally { lifecycle.Release(); }
     }
 
+    public async Task<ProtocolResult> SendActionAsync(ActionSlotReference slot, ActionParameter parameter,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(slot);
+        ArgumentNullException.ThrowIfNull(parameter);
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
+        if (cancellationToken.IsCancellationRequested) return ProtocolResult.Reject("ActionCancelled", "操作已取消");
+        BrokerApplicationSnapshot current;
+        ActionReservation reserved;
+        lock (actionDispatchGate)
+        {
+            current = States.GetSnapshot(slot.ApplicationId)!;
+            if (current is null) return ProtocolResult.Reject("ActionNotAvailable", "应用未连接");
+            reserved = Actions.Begin(current, slot, parameter, parameter);
+            if (!reserved.Accepted) return reserved.Result;
+            var request = reserved.Invocation!;
+            if (!actionDispatch.Writer.TryWrite(new ProtocolMessage
+            {
+                Kind = MessageKind.ActionRequest,
+                ApplicationId = current.ApplicationId,
+                SessionId = current.SessionId,
+                RequestId = request.RequestId,
+                Action = request
+            }))
+                Actions.FailDispatch(current.ApplicationId, current.SessionId, request.RequestId, ProtocolResult.Reject("Busy", "动作派发队列不可用"));
+        }
+        var invocation = reserved.Invocation!;
+        using var cancelled = cancellationToken.Register(() => Actions.Cancel(current.ApplicationId, current.SessionId, invocation.RequestId));
+        return await reserved.Completion.ConfigureAwait(false);
+    }
+
+    private async Task DispatchActionsAsync()
+    {
+        try
+        {
+            await foreach (var message in actionDispatch.Reader.ReadAllAsync(lifetime.Token).ConfigureAwait(false))
+            {
+                // Reservation and enqueue share one lock, so wire order follows sequence order.
+                // User cancellation ends waiting without truncating a frame or replaying an action.
+                using var dispatch = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+                dispatch.CancelAfter(TimeSpan.FromSeconds(5));
+                await WriteControlAsync(message, dispatch.Token).ConfigureAwait(false);
+            }
+        }
+        catch (Exception error) when (error is IOException or OperationCanceledException or ObjectDisposedException)
+        {
+            if (!lifetime.IsCancellationRequested) Volatile.Write(ref lastError, "BrokerUnavailable");
+            control.Dispose();
+            DisconnectApplications();
+        }
+        finally
+        {
+            actionDispatch.Writer.TryComplete();
+            while (actionDispatch.Reader.TryRead(out _)) { }
+        }
+    }
+
+    private async Task WriteControlAsync(ProtocolMessage message, CancellationToken token)
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
+        deadline.CancelAfter(TimeSpan.FromSeconds(5));
+        await controlWriter.WaitAsync(deadline.Token).ConfigureAwait(false);
+        try { await LengthPrefixedJson.WriteAsync(control, message, deadline.Token).ConfigureAwait(false); }
+        catch (Exception error) when (error is IOException or OperationCanceledException or ObjectDisposedException)
+        {
+            // A partial frame must never be followed by another write on this connection.
+            control.Dispose();
+            throw;
+        }
+        finally { controlWriter.Release(); }
+    }
+
+    private async Task RunActionClockAsync()
+    {
+        try
+        {
+            while (!lifetime.IsCancellationRequested)
+            {
+                await Task.Delay(250, lifetime.Token).ConfigureAwait(false);
+                Actions.Tick();
+            }
+        }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
+    }
+
     private async Task ReceiveAsync()
     {
         try
@@ -136,6 +231,20 @@ public sealed class HostBrokerSession : IAsyncDisposable
             while (!lifetime.IsCancellationRequested)
             {
                 var message = await LengthPrefixedJson.ReadAsync<ProtocolMessage>(control, lifetime.Token, Timeout.InfiniteTimeSpan).ConfigureAwait(false);
+                if (message.Kind == MessageKind.ActionCompleted)
+                {
+                    if (message.Version != ProtocolLimits.Version || message.ActionCompletion is not { } completion ||
+                        message.RequestId != completion.RequestId || string.IsNullOrWhiteSpace(message.ApplicationId) ||
+                        message.ApplicationId.Length > DeclarationValidator.MaximumIdLength || string.IsNullOrWhiteSpace(message.SessionId) ||
+                        message.SessionId.Length > DeclarationValidator.MaximumIdLength || message.Action is not null ||
+                        message.Result is not null || message.Declaration is not null || message.State is not null ||
+                        message.Flyout is not null || message.BrokerLoad is not null || !string.IsNullOrEmpty(message.Ticket) ||
+                        !string.IsNullOrEmpty(message.StartRequestId))
+                        throw new IOException("InvalidActionCompletionEnvelope");
+                    Actions.Receive(message.ApplicationId, message.SessionId, completion, States.GetSnapshot(message.ApplicationId),
+                        state => States.ApplyActionState(message.ApplicationId, message.SessionId, state));
+                    continue;
+                }
                 if (message.BrokerLoad is { } load)
                 {
                     if (load.PendingRequests < 0 || load.PeakPendingRequests < load.PendingRequests ||
@@ -143,9 +252,13 @@ public sealed class HostBrokerSession : IAsyncDisposable
                         throw new IOException("InvalidBrokerLoad");
                     Volatile.Write(ref peakPendingRequests, load.PeakPendingRequests);
                 }
+                var previous = States.GetSnapshot(message.ApplicationId);
                 var response = States.Handle(message);
+                if (response.Result?.Accepted == true &&
+                    (message.Kind == MessageKind.Disconnected || (message.Kind == MessageKind.Welcome && previous is not null)))
+                    Actions.EndSession(message.ApplicationId, previous?.SessionId ?? message.SessionId);
                 if (message.Kind != MessageKind.Disconnected)
-                    await LengthPrefixedJson.WriteAsync(control, response, lifetime.Token).ConfigureAwait(false);
+                    await WriteControlAsync(response, lifetime.Token).ConfigureAwait(false);
             }
         }
         catch (Exception error) when (error is IOException or OperationCanceledException or ObjectDisposedException)
@@ -154,8 +267,17 @@ public sealed class HostBrokerSession : IAsyncDisposable
         }
         finally
         {
-            foreach (var snapshot in States.Snapshots)
-                States.Handle(new ProtocolMessage { Kind = MessageKind.Disconnected, ApplicationId = snapshot.ApplicationId, SessionId = snapshot.SessionId });
+            DisconnectApplications();
+            actionDispatch.Writer.TryComplete();
+        }
+    }
+
+    private void DisconnectApplications()
+    {
+        foreach (var snapshot in States.Snapshots)
+        {
+            States.Handle(new ProtocolMessage { Kind = MessageKind.Disconnected, ApplicationId = snapshot.ApplicationId, SessionId = snapshot.SessionId });
+            Actions.EndSession(snapshot.ApplicationId, snapshot.SessionId);
         }
     }
 
@@ -209,10 +331,16 @@ public sealed class HostBrokerSession : IAsyncDisposable
             if (disposed == 2) return;
             Interlocked.Exchange(ref disposed, 1);
             await lifetime.CancelAsync().ConfigureAwait(false);
+            Actions.Shutdown();
+            actionDispatch.Writer.TryComplete();
             control.Dispose();
             var failures = new List<Exception>();
             if (receive is not null)
                 try { await receive.ConfigureAwait(false); } catch (Exception error) { failures.Add(error); }
+            if (actionClock is not null)
+                try { await actionClock.ConfigureAwait(false); } catch (Exception error) { failures.Add(error); }
+            if (actionDispatcher is not null)
+                try { await actionDispatcher.ConfigureAwait(false); } catch (Exception error) { failures.Add(error); }
             KeyValuePair<string, Process>[] owned;
             lock (services) owned = services.ToArray();
             foreach (var pair in owned)

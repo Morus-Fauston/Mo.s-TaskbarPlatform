@@ -56,6 +56,7 @@ public sealed class DeclarationValidator
         var dynamicContents = new List<ValidatedDynamicContentDeclaration>();
         var dynamicValidator = new DynamicContentValidator();
         var flyoutEntries = new List<ValidatedFlyoutEntry>();
+        var declaredActions = new List<ValidatedActionSlot>();
 
         for (var featureIndex = 0; featureIndex < declaration.FeatureGroups.Count; featureIndex++)
         {
@@ -129,6 +130,9 @@ public sealed class DeclarationValidator
                     featureIdentity.CreateChild(componentId),
                     CapabilityState.Available,
                     actionSlots));
+                foreach (var slot in component.ActionSlots!)
+                    declaredActions.Add(new ValidatedActionSlot(new(declaration.ApplicationId!, feature.FeatureGroupId!,
+                        ActionEntryKind.Component, component.ComponentId!, slot.ActionSlotId!), slot.ParameterKind));
                 if (component.DynamicContent is not null)
                 {
                     var dynamicResult = dynamicValidator.ValidateDeclaration(component.DynamicContent,
@@ -172,6 +176,9 @@ public sealed class DeclarationValidator
                 }
 
                 taskbarFlyouts.Add(new ValidatedTaskbarFlyout(flyoutIdentity, actionSlots));
+                foreach (var slot in flyout.ActionSlots!)
+                    declaredActions.Add(new ValidatedActionSlot(new(declaration.ApplicationId!, feature.FeatureGroupId!,
+                        ActionEntryKind.TaskbarFlyout, flyout.TaskbarFlyoutId!, slot.ActionSlotId!), slot.ParameterKind));
                 flyoutEntries.Add(new ValidatedFlyoutEntry(flyoutIdentity, FlyoutKind.TaskbarGroup));
             }
 
@@ -205,7 +212,7 @@ public sealed class DeclarationValidator
         }
 
         return CoreResult<ValidatedApplicationDeclaration>.Success(
-            new ValidatedApplicationDeclaration(applicationIdentity, featureGroups, dynamicContents, flyoutEntries));
+            new ValidatedApplicationDeclaration(applicationIdentity, featureGroups, dynamicContents, flyoutEntries, declaredActions));
     }
 
     public CoreResult<ValidatedApplicationDeclaration> ValidateJson(string json)
@@ -298,6 +305,12 @@ public sealed class DeclarationValidator
             {
                 actionSlots = Array.Empty<ActionSlot>();
                 error = new StructuredError("unsupported_structure", "An action slot entry cannot be null.", slotPath);
+                return false;
+            }
+            if (!Enum.IsDefined(declaration.ParameterKind))
+            {
+                actionSlots = Array.Empty<ActionSlot>();
+                error = new StructuredError("unsupported_parameter", "The action parameter kind is not supported.", slotPath);
                 return false;
             }
 

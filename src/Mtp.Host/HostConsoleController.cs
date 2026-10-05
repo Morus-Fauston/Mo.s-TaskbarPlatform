@@ -1,4 +1,5 @@
 using Microsoft.UI.Xaml;
+using Mtp.Contracts;
 using Mtp.Host.Islands;
 using Mtp.Platform.Core;
 
@@ -19,8 +20,22 @@ internal sealed class HostConsoleController
     private HostBrokerSession? communication;
     private readonly CancellationTokenSource communicationLifetime = new();
     private Task? communicationStartup;
-    public HostComponentDisplayModel? Component => display.CurrentComponents.FirstOrDefault(value => value.Identity.Segments[0].Value == "counter")
-        ?? display.CurrentComponents.FirstOrDefault();
+    public HostComponentDisplayModel? Component
+    {
+        get
+        {
+            var model = display.CurrentComponents.FirstOrDefault(value => value.Identity.Segments[0].Value == "counter")
+                ?? display.CurrentComponents.FirstOrDefault();
+            if (model is null || communication is null) return model;
+            var id = model.Identity.Segments;
+            var snapshot = communication.States.GetSnapshot(id[0].Value);
+            var action = snapshot?.Declaration?.ActionSlots.FirstOrDefault(slot =>
+                slot.Reference.EntryKind == ActionEntryKind.Component && slot.Reference.FeatureGroupId == id[1].Value &&
+                slot.Reference.EntryId == id[2].Value && slot.ParameterKind == ActionParameterKind.None)?.Reference;
+            var busy = action is not null && communication.Actions.GetPending(id[0].Value).Any(item => item.Slot == action && item.IsBusy);
+            return model with { Action = action, CanInvokeAction = snapshot?.IsInteractive == true && action is not null && !busy, ActionBusy = busy };
+        }
+    }
     public TaskbarDockPreferences Preferences { get; private set; }
     public IslandDisplaySession Session { get; }
     public HostTestController Tests { get; }
@@ -44,7 +59,7 @@ internal sealed class HostConsoleController
         Preferences = preferences.Value ?? new(); PreferenceError = preferences.Error;
         foreach (var error in loaded.Errors) AddError(error);
         if (PreferenceError is not null) AddError(PreferenceError);
-        adapter = new IslandDisplayAdapter(capture, (kind, value) => Tests?.Observe(kind, value));
+        adapter = new IslandDisplayAdapter(capture, (kind, value) => Tests?.Observe(kind, value), InvokeActionAsync);
         Session = new IslandDisplaySession(adapter);
         Tests = new HostTestController(adapter, Reconfigure, () => new { Component, Preferences, State = Session.State.ToString(), Target }, evidenceRoot, () => !Preview.IsOpen);
         Tests.Changed += Notify;
@@ -55,6 +70,21 @@ internal sealed class HostConsoleController
             monitor = new(action => dispatcher.TryEnqueue(() => action()), Refresh, () => environment.ObservedTaskbar);
         timer.Tick += (_, _) => Refresh();
         timer.Start();
+    }
+    private async Task InvokeActionAsync(ActionSlotReference slot)
+    {
+        if (closing || communication is null) return;
+        try
+        {
+            var pending = communication.SendActionAsync(slot, new ActionParameter(), communicationLifetime.Token);
+            Refresh();
+            var result = await pending;
+            if (!result.Accepted) AddError(new(result.Code, result.Message));
+            Tests.Observe("declared-action-result", new { slot, result.Code, result.Accepted });
+        }
+        catch (Exception error) when (error is IOException or OperationCanceledException or ObjectDisposedException)
+        { if (!closing) AddError(new("ActionNotAvailable", "动作通道不可用，保留最后确认值。")); }
+        finally { Refresh(); }
     }
     public void Refresh()
     {
