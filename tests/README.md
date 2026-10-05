@@ -139,3 +139,5 @@ HostBrokerSession.GetLifecycleSnapshot和SdkClient.GetLifecycleSnapshot读取实
 五期计时实况岛：`Mtp.Host.exe --timer-demo`，在设置允许timers和controls。Host以单调时钟本地推进正/倒计时，提供方仅在业务动作或许可恢复发布；空白区域展开，内部按钮暂停/恢复或批量切换。`powershell -ExecutionPolicy Bypass -File tests/Mtp.Host.WindowTests/Run.ps1 -Scenario timer -EvidenceDirectory <独立证据目录>`验证真实SDK消息计数、固定宽度、原位展开/反向/批量、停零/超时、减少动画、旧句柄与清理，使用独立`timer-pass`结束标记。
 
 纯采样边界位于`TimerPresentationSamplerTests`；样例业务使用`dotnet test tests/Mtp.TimerDemo.Tests/Mtp.TimerDemo.Tests.csproj -nr:false`，项目已纳入解决方案。`HostBrokerSession.ReceivedStateMessages`是Host实际收到的State计数；Heartbeat计数仅反映Host收到的消息，不代表SDK向Broker发送的心跳总量。Windows自有窗口自动化不代替真实任务栏、多屏或人工动画体验验收。
+
+五期预置模板：`Mtp.Host.exe --preset-demo`，允许presets和controls。`powershell -ExecutionPolicy Bypass -File tests/Mtp.Host.WindowTests/Run.ps1 -Scenario preset -EvidenceDirectory <独立证据目录>`通过真实SDK验证数字/环/条、独立进度依据、组合字段、不确定忙碌、文字实测滚动、反向与减少动画、活动结束和清理。纯状态命令为`dotnet test tests/Mtp.PresetDemo.Tests/Mtp.PresetDemo.Tests.csproj -nr:false`，采样见`PresetMotionSamplerTests`；计数UIA明确已完成数量或当前项序号，图形不从计数推比例。原生记录`preset-pass`及对应中间采样；截图只保留稳定终态。

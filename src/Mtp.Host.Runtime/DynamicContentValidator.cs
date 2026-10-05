@@ -141,7 +141,7 @@ public sealed class DynamicContentValidator
 
     private static bool ValidPresentation(ItemPresentation? presentation)
     {
-        if (presentation?.Width is null || !Enum.IsDefined(presentation.Template)) return false;
+        if (presentation?.Width is null || !Enum.IsDefined(presentation.Template) || !Enum.IsDefined(presentation.Variant)) return false;
         var width = presentation.Width;
         if (width.Tier is { } tier ? !Enum.IsDefined(tier) || width.Slots is not null :
             width.Slots is not (>= 1 and <= DynamicContentLimits.MaximumSlots)) return false;
@@ -150,11 +150,13 @@ public sealed class DynamicContentValidator
         if (fields == ContentFields.None || (fields & ~all) != 0) return false;
         return presentation.Template switch
         {
-            PresetTemplate.Timer => fields == ContentFields.Timer,
-            PresetTemplate.Progress => fields == ContentFields.Progress,
-            PresetTemplate.Counter => fields == ContentFields.Counter,
-            PresetTemplate.Status => fields == ContentFields.Status,
-            PresetTemplate.Composite => ((int)fields & ((int)fields - 1)) != 0,
+            PresetTemplate.Timer => fields == ContentFields.Timer && presentation.Variant != PresetVariant.Bar,
+            PresetTemplate.Progress => fields == ContentFields.Progress && presentation.Variant != PresetVariant.Text,
+            PresetTemplate.Counter => fields == (presentation.Variant is PresetVariant.Ring or PresetVariant.Bar
+                ? ContentFields.Counter | ContentFields.Progress : ContentFields.Counter),
+            PresetTemplate.Status => fields == ContentFields.Status && presentation.Variant is PresetVariant.Default or PresetVariant.Text,
+            PresetTemplate.Composite => ((int)fields & ((int)fields - 1)) != 0 &&
+                (presentation.Variant is PresetVariant.Default or PresetVariant.Text || fields.HasFlag(ContentFields.Progress)),
             _ => false
         };
     }

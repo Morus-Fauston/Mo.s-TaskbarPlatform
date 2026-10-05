@@ -13,7 +13,7 @@ public sealed record TaskbarGroupAnimationFrame(long Generation, long Revision, 
 /// <summary>Owned by one render driver; callers supply monotonic time. No timers, tasks or native objects.</summary>
 public sealed class TaskbarGroupAnimation
 {
-    public static readonly TimeSpan Duration = TimeSpan.FromMilliseconds(220);
+    public static readonly TimeSpan Duration = HostAnimationTiming.Duration;
     public const int MaximumRetiredItems = 2048;
     public long Generation { get; private set; } = 1;
     public long Revision { get; private set; }
@@ -108,7 +108,7 @@ public sealed class TaskbarGroupAnimation
             Finish();
             return FinalFrame();
         }
-        var amount = 1 - Math.Pow(1 - progress, 3);
+        var amount = HostAnimationTiming.EaseOutCubic(progress);
         var components = _components.Select(x => new TaskbarComponentPlacement(x.Key, Interpolate(x.From, x.To, amount))).ToArray();
         var items = _items.Select(x =>
         {

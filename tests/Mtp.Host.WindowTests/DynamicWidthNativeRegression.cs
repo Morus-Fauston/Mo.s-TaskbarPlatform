@@ -87,7 +87,7 @@ internal static class DynamicWidthNativeRegression
             Check(Math.Abs(readingFrame.WidthDip - baseline.WidthDip) < 0.001 && readingFrame.Items.Select(item => item.Bounds).SequenceEqual(baseline.Items.Select(item => item.Bounds)),
                 "Reading-only update changed geometry.");
             Check(ReferenceEquals(firstButton, Find<Button>(island.ContentRoot!, ItemId(firstKey))), "Reading-only update replaced its native control.");
-            Check(AutomationProperties.GetName(firstButton) == Snapshot(adapter).ItemsByKey[firstKey].Item.Fields.Counter!.Value.ToString(CultureInfo.InvariantCulture),
+            Check(AutomationProperties.GetName(firstButton) == $"已完成{Snapshot(adapter).ItemsByKey[firstKey].Item.Fields.Counter!.Value}个",
                 "Native item text did not match its confirmed reading.");
             await ConsoleScreenshot.SaveAsync(island.ContentRoot!, Path.Combine(root, "dynamic-initial.png")).WaitAsync(TimeSpan.FromSeconds(2));
 
@@ -199,7 +199,8 @@ internal static class DynamicWidthNativeRegression
             await Until(() => !host.Tests.IsRunning && host.Session.State == IslandDisplayState.Embedded && TryFrame(adapter) is { IsComplete: true },
                 "Stopping diagnostics did not restore the latest group intent.");
             var restoredHandle = adapter.Handle;
-            Check(settings.SetVisibility(leftIdentity, false).IsSuccess, "Could not hide restored static group.");
+            var hideRestored = settings.SetVisibility(leftIdentity, false);
+            Check(hideRestored.IsSuccess, "Could not hide restored static group: " + JsonSerializer.Serialize(hideRestored.Error));
             await Until(() => host.Session.State == IslandDisplayState.Hidden && adapter.Handle == 0 && !NativeWindows.IsWindow(restoredHandle),
                 "Mode roundtrip leaked its restored native owner.");
             log("dynamic-mode-pass: unchanged configuration replaced group with diagnostic surface; Stop restored group; final visibility cleared owner.");

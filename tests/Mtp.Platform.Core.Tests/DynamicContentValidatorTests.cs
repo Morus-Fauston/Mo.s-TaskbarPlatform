@@ -26,6 +26,34 @@ public sealed class DynamicContentValidatorTests
     private static DynamicContentDeclaration Ordinary() => new(DynamicContentKind.OrdinaryItems,
         [new("progress", true, new(PresetTemplate.Progress, ContentFields.Progress, new(WidthTier.Small)))]);
 
+    [Theory]
+    [InlineData(PresetTemplate.Counter, PresetVariant.Text, ContentFields.Counter, true)]
+    [InlineData(PresetTemplate.Counter, PresetVariant.Ring, ContentFields.Counter | ContentFields.Progress, true)]
+    [InlineData(PresetTemplate.Counter, PresetVariant.Bar, ContentFields.Counter | ContentFields.Progress, true)]
+    [InlineData(PresetTemplate.Counter, PresetVariant.Ring, ContentFields.Counter, false)]
+    [InlineData(PresetTemplate.Counter, PresetVariant.Default, ContentFields.Counter | ContentFields.Progress, false)]
+    [InlineData(PresetTemplate.Progress, PresetVariant.Bar, ContentFields.Progress, true)]
+    [InlineData(PresetTemplate.Progress, PresetVariant.Text, ContentFields.Progress, false)]
+    [InlineData(PresetTemplate.Status, PresetVariant.Text, ContentFields.Status, true)]
+    [InlineData(PresetTemplate.Status, PresetVariant.Ring, ContentFields.Status, false)]
+    [InlineData(PresetTemplate.Timer, PresetVariant.Ring, ContentFields.Timer, true)]
+    [InlineData(PresetTemplate.Timer, PresetVariant.Text, ContentFields.Timer, true)]
+    [InlineData(PresetTemplate.Timer, PresetVariant.Bar, ContentFields.Timer, false)]
+    [InlineData(PresetTemplate.Composite, PresetVariant.Text, ContentFields.Counter | ContentFields.Status, true)]
+    [InlineData(PresetTemplate.Composite, PresetVariant.Ring, ContentFields.Counter | ContentFields.Progress, true)]
+    [InlineData(PresetTemplate.Composite, PresetVariant.Bar, ContentFields.Timer | ContentFields.Progress | ContentFields.Status, true)]
+    [InlineData(PresetTemplate.Composite, PresetVariant.Bar, ContentFields.Counter | ContentFields.Status, false)]
+    [InlineData(PresetTemplate.Composite, PresetVariant.Default, ContentFields.Status, false)]
+    [InlineData(PresetTemplate.Counter, (PresetVariant)99, ContentFields.Counter, false)]
+    public void PresetVariantsOnlyAdmitExplicitFieldSemantics(PresetTemplate template, PresetVariant variant, ContentFields fields, bool accepted)
+    {
+        var budget = 100;
+        var result = new DynamicContentValidator().ValidateDeclaration(new(DynamicContentKind.OrdinaryItems,
+            [new("variant", false, new(template, fields, new(WidthTier.Large), variant))]), Entry, ref budget);
+        Assert.Equal(accepted, result.IsSuccess);
+        if (!accepted) Assert.Equal(100, budget);
+    }
+
     private static DynamicItemState ProgressItem(string id) => new(id, "progress", [],
         new(Progress: new(ProgressMode.Determinate, 2, 5)));
 

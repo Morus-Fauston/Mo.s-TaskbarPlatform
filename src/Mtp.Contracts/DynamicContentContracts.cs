@@ -16,6 +16,7 @@ public static class DynamicContentLimits
 public enum DynamicContentKind { OrdinaryItems, LiveIsland }
 public enum DynamicGrouping { Together, Separate, UserChoice }
 public enum PresetTemplate { Timer, Progress, Counter, Status, Composite }
+public enum PresetVariant { Default, Text, Ring, Bar }
 [Flags]
 public enum ContentFields { None = 0, Timer = 1, Progress = 2, Counter = 4, Status = 8 }
 public enum WidthTier { Small, Medium, Large }
@@ -28,7 +29,8 @@ public enum StatusMarker { Normal, Attention, Error }
 
 /// <summary>Exactly one Host width tier or bounded slot capacity; never a provider pixel width.</summary>
 public sealed record ContentWidth(WidthTier? Tier = null, int? Slots = null);
-public sealed record ItemPresentation(PresetTemplate Template, ContentFields Fields, ContentWidth Width);
+public sealed record ItemPresentation(PresetTemplate Template, ContentFields Fields, ContentWidth Width,
+    PresetVariant Variant = PresetVariant.Default);
 public sealed record ItemStructureDeclaration(
     string StructureId,
     bool IsRepeated,

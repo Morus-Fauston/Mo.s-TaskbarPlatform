@@ -184,6 +184,9 @@ internal sealed class ContentIslandHost
         NativeWindows.Show(host, frame.WidthDip > 0);
     }
     public void UpdateTimerReadings(IReadOnlyList<TimerDisplayReading> readings) { if (IsAlive) content?.ApplyTimerReadings(readings); }
+    public IReadOnlyList<PresetTextMeasurement> GetPresetMeasurements() => IsAlive ? content?.GetPresetMeasurements() ?? [] : [];
+    public void UpdatePresetReadings(IReadOnlyList<PresetMotionReading> readings, bool reducedMotion) { if (IsAlive) content?.ApplyPresetReadings(readings, reducedMotion); }
+    public ItemActivationTrigger? GetItemTrigger(ItemInteractionHandle handle, string? control) => IsAlive ? content?.GetItemTrigger(handle, control) : null;
     public void Update(long value) { if (IsAlive) content?.Update(value); }
     public void UpdateConfirmed(HostComponentDisplayModel component) { if (IsAlive) content?.UpdateConfirmed(component); }
     public void Observe() => record("island-observed", new

@@ -10,11 +10,14 @@ try
     bool dynamic = args.Contains("--dynamic", StringComparer.Ordinal);
     bool templates = args.Contains("--templates", StringComparer.Ordinal);
     bool timers = args.Contains("--timers", StringComparer.Ordinal);
-    if ((dynamic ? 1 : 0) + (templates ? 1 : 0) + (timers ? 1 : 0) > 1) throw new ArgumentException("ConflictingDemoModes");
+    bool presets = args.Contains("--presets", StringComparer.Ordinal);
+    if ((dynamic ? 1 : 0) + (templates ? 1 : 0) + (timers ? 1 : 0) + (presets ? 1 : 0) > 1) throw new ArgumentException("ConflictingDemoModes");
     Func<ApplicationState>? readTick = null;
     TimerDemoProvider? timerProvider = null;
+    PresetDemoProvider? presetProvider = null;
     await using var client = await SdkClient.ConnectFromStandardInputAsync(applicationId =>
     {
+        if (presets) return presetProvider = new PresetDemoProvider(applicationId);
         if (timers) return timerProvider = new TimerDemoProvider(applicationId);
         if (dynamic)
         {
@@ -27,10 +30,11 @@ try
         return (IDeclarationProvider)counter;
     }, shutdown.Token);
     timerProvider?.Bind(client);
+    presetProvider?.Bind(client);
     for (var tick = 1; tick <= iterations; tick++)
     {
         await Task.Delay(interval, shutdown.Token);
-        if (timerProvider is not null) continue; // Local Host time never turns into SDK publication or renewal.
+        if (timerProvider is not null || presetProvider is not null) continue; // Local Host time never turns into SDK publication or renewal.
         var result = await client.PublishAsync(readTick!(), shutdown.Token);
         // A newer action confirmation can overtake an already captured automatic tick.
         if (!result.Accepted && result.Code is not ("StaleRevision" or "Reconnecting" or "Unavailable")) { Console.Error.WriteLine("CounterRejected:" + result.Code); return 2; }

@@ -13,10 +13,16 @@ internal sealed class IslandDisplayAdapter : IIslandSessionAdapter
     private readonly Func<ItemInteractionHandle, string?, Task>? activate;
     private readonly TaskbarGroupAnimation animation = new();
     private readonly TimerPresentationSampler timerReadings = new();
+    private readonly PresetMotionSampler presetMotion = new();
     private bool timersAdvancing;
+    private bool presetsAnimating;
     private IReadOnlyList<TimerDisplayReading> appliedTimerReadings = [];
+    private IReadOnlyList<PresetMotionReading> appliedPresetReadings = [];
     internal IReadOnlyList<TimerDisplayReading> GetTimerReadings() => appliedTimerReadings;
+    internal IReadOnlyList<PresetMotionReading> GetPresetReadings() => appliedPresetReadings;
     internal bool TimerDriverRunning => frameTimer.IsEnabled;
+    internal TaskbarDockGeometry? Geometry => target?.Geometry;
+    internal ItemActivationTrigger? GetItemTrigger(ItemInteractionHandle handle, string? control) => host?.GetItemTrigger(handle, control);
     private readonly System.Diagnostics.Stopwatch clock = System.Diagnostics.Stopwatch.StartNew();
     private readonly Microsoft.UI.Xaml.DispatcherTimer frameTimer = new() { Interval = TimeSpan.FromMilliseconds(16) };
     private readonly Windows.UI.ViewManagement.UISettings uiSettings = new();
@@ -156,7 +162,7 @@ internal sealed class IslandDisplayAdapter : IIslandSessionAdapter
         if (!synchronized.Accepted) throw new InvalidOperationException(synchronized.Message);
         animation.Retarget(GroupSnapshot.Layout, clock.Elapsed, ReduceMotion(), animation.Generation);
         AdvanceGroup();
-        if (lastFrame?.IsComplete == false || timersAdvancing) frameTimer.Start();
+        if (lastFrame?.IsComplete == false || timersAdvancing || presetsAnimating) frameTimer.Start();
     }
     private void AdvanceGroup()
     {
@@ -164,7 +170,8 @@ internal sealed class IslandDisplayAdapter : IIslandSessionAdapter
         { frameTimer.Stop(); return; }
         try
         {
-            if (ReduceMotion()) animation.Retarget(GroupSnapshot.Layout, clock.Elapsed, true, animation.Generation);
+            bool reduced = ReduceMotion();
+            if (reduced) animation.Retarget(GroupSnapshot.Layout, clock.Elapsed, true, animation.Generation);
             var frame = animation.Sample(clock.Elapsed);
             var placement = TaskbarGroupPlacement.Calculate(target.Geometry, Math.Max(96d / target.Geometry.Dpi, frame.WidthDip), frame.HeightDip, rightGap);
             if (!placement.IsSuccess) throw new InvalidOperationException(placement.Error!.Message);
@@ -174,9 +181,14 @@ internal sealed class IslandDisplayAdapter : IIslandSessionAdapter
             host.UpdateTimerReadings(readings);
             appliedTimerReadings = readings;
             timersAdvancing = readings.Any(value => value.IsAdvancing);
+            var synchronized = presetMotion.Synchronize(GroupSnapshot.Items, host.GetPresetMeasurements(), clock.Elapsed, reduced);
+            if (!synchronized.Accepted) throw new InvalidOperationException(synchronized.Message);
+            appliedPresetReadings = presetMotion.Sample(clock.Elapsed, reduced);
+            host.UpdatePresetReadings(appliedPresetReadings, reduced);
+            presetsAnimating = appliedPresetReadings.Any(value => value.IsAnimating);
             lastFrame = frame;
-            frameTimer.Interval = frame.IsComplete ? TimeSpan.FromMilliseconds(100) : TimeSpan.FromMilliseconds(16);
-            if (frame.IsComplete && !timersAdvancing) frameTimer.Stop();
+            frameTimer.Interval = frame.IsComplete && !presetsAnimating ? TimeSpan.FromMilliseconds(100) : TimeSpan.FromMilliseconds(16);
+            if (frame.IsComplete && !timersAdvancing && !presetsAnimating) frameTimer.Stop();
         }
         catch (Exception error)
         {
@@ -196,8 +208,11 @@ internal sealed class IslandDisplayAdapter : IIslandSessionAdapter
         frameTimer.Stop();
         animation.Clear();
         timerReadings.Clear();
+        presetMotion.Clear();
         timersAdvancing = false;
+        presetsAnimating = false;
         appliedTimerReadings = [];
+        appliedPresetReadings = [];
         lastFrame = null;
         if (host is null) return CoreResult<bool>.Success(true);
         try { host.Close(); host.Lost -= OnLost; host = null; return CoreResult<bool>.Success(true); }

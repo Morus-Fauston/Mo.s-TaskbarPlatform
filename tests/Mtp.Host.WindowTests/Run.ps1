@@ -1,5 +1,5 @@
 ﻿param(
-    [ValidateSet('all', 'broker', 'template', 'settings', 'dynamic', 'timer')][string]$Scenario = 'all',
+    [ValidateSet('all', 'broker', 'template', 'settings', 'dynamic', 'timer', 'preset')][string]$Scenario = 'all',
     [string]$OutputDirectory = "$PSScriptRoot/bin/window-regression",
     [string]$EvidenceDirectory = "$PSScriptRoot/../../.scratch/二期开发/evidence/HostWindowRegression/run-$(Get-Date -Format 'yyyyMMdd-HHmmss-fff')-$([Guid]::NewGuid().ToString('N').Substring(0, 8))"
 )
@@ -24,6 +24,7 @@ $run.StartInfo.WindowStyle = 'Hidden'
 if ($Scenario -eq 'broker') { $run.StartInfo.Arguments = '--broker-only' }
 if ($Scenario -eq 'template') { $run.StartInfo.Arguments = '--template-only' }
 if ($Scenario -eq 'timer') { $run.StartInfo.Arguments = '--timer-only' }
+if ($Scenario -eq 'preset') { $run.StartInfo.Arguments = '--preset-only' }
 if ($Scenario -eq 'dynamic') { $run.StartInfo.Arguments = '--dynamic-only' }
 if ($Scenario -eq 'settings') { $run.StartInfo.Arguments = '--settings-only' }
 try {
@@ -54,7 +55,7 @@ finally {
         }
     }
     foreach ($directory in Get-ChildItem -LiteralPath $outputPath -Directory) {
-        if ($directory.Name -notin $previousDirectories -and ($directory.Name -like 'console-*' -or $directory.Name -like 'display-selection-*' -or $directory.Name -like 'broker-*' -or $directory.Name -like 'template-*' -or $directory.Name -like 'settings-*' -or $directory.Name -like 'dynamic-*' -or $directory.Name -like 'timer-*')) {
+        if ($directory.Name -notin $previousDirectories -and ($directory.Name -like 'console-*' -or $directory.Name -like 'display-selection-*' -or $directory.Name -like 'broker-*' -or $directory.Name -like 'template-*' -or $directory.Name -like 'settings-*' -or $directory.Name -like 'dynamic-*' -or $directory.Name -like 'timer-*' -or $directory.Name -like 'preset-*')) {
             Copy-Item -LiteralPath $directory.FullName -Destination $evidencePath -Recurse
         }
     }

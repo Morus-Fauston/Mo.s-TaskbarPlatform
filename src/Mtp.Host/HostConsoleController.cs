@@ -296,21 +296,21 @@ internal sealed class HostConsoleController
         Refresh();
     }
     public void Retry() { Refresh(); Session.Retry(); Refresh(); }
-    public Task StartCounterAsync(string brokerPath, string counterPath, bool templates = false, bool dynamic = false, bool timers = false)
+    public Task StartCounterAsync(string brokerPath, string counterPath, bool templates = false, bool dynamic = false, bool timers = false, bool presets = false)
     {
-        if ((templates ? 1 : 0) + (dynamic ? 1 : 0) + (timers ? 1 : 0) > 1) throw new ArgumentException("一次只能启动一种演示。");
+        if ((templates ? 1 : 0) + (dynamic ? 1 : 0) + (timers ? 1 : 0) + (presets ? 1 : 0) > 1) throw new ArgumentException("一次只能启动一种演示。");
         if (communicationStartup is not null) return communicationStartup;
-        dynamicDemo = dynamic || timers;
+        dynamicDemo = dynamic || timers || presets;
         if (templates)
         {
             var registration = images.Register("counter", "status", ImageResourceFormat.Png,
                 Path.Combine(AppContext.BaseDirectory, "Assets", "template-status.png"));
             if (!registration.Accepted) AddError(new(registration.Code, registration.Message));
         }
-        communicationStartup = StartCounterCoreAsync(brokerPath, counterPath, templates, dynamic, timers);
+        communicationStartup = StartCounterCoreAsync(brokerPath, counterPath, templates, dynamic, timers, presets);
         return communicationStartup;
     }
-    private async Task StartCounterCoreAsync(string brokerPath, string counterPath, bool templates, bool dynamic, bool timers)
+    private async Task StartCounterCoreAsync(string brokerPath, string counterPath, bool templates, bool dynamic, bool timers, bool presets)
     {
         HostBrokerSession? started = null;
         try
@@ -318,7 +318,7 @@ internal sealed class HostConsoleController
             started = await HostBrokerSession.StartAsync(brokerPath, ["counter"], communicationLifetime.Token).ConfigureAwait(false);
             communication = started;
             await started.StartServiceAsync("counter", counterPath, communicationLifetime.Token,
-                dynamic ? ["--dynamic"] : templates ? ["--templates"] : timers ? ["--timers"] : null).ConfigureAwait(false);
+                dynamic ? ["--dynamic"] : templates ? ["--templates"] : timers ? ["--timers"] : presets ? ["--presets"] : null).ConfigureAwait(false);
             if (communicationLifetime.IsCancellationRequested)
             {
                 await started.DisposeAsync().ConfigureAwait(false);

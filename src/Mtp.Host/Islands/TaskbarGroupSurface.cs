@@ -243,4 +243,21 @@ internal sealed class TaskbarGroupSurface : UserControl, IDisposable
         foreach (var reading in readings)
             if (items.TryGetValue(reading.Key, out var visual)) visual.UpdateTimer(reading);
     }
+
+    public IReadOnlyList<PresetTextMeasurement> GetPresetMeasurements() => disposed || previousSnapshot is null ? [] :
+        Array.AsReadOnly(previousSnapshot.ItemsByKey.Keys.Where(items.ContainsKey).Select(key => items[key].GetMeasurement()).ToArray());
+
+    public void ApplyPresetReadings(IReadOnlyList<PresetMotionReading> readings, bool reducedMotion)
+    {
+        if (disposed) return;
+        foreach (var reading in readings)
+            if (items.TryGetValue(reading.Key, out var visual)) visual.UpdatePreset(reading, reducedMotion);
+    }
+
+    public ItemActivationTrigger? GetItemTrigger(ItemInteractionHandle handle, string? control)
+    {
+        if (disposed || previousSnapshot is null) return null;
+        var pair = previousSnapshot.ItemsByKey.FirstOrDefault(pair => pair.Value.Handle == handle);
+        return pair.Key is not null && items.TryGetValue(pair.Key, out var visual) ? visual.GetTrigger(handle, control) : null;
+    }
 }

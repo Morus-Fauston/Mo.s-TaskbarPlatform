@@ -167,6 +167,9 @@ internal sealed class IslandContent : UserControl
         group.Apply(snapshot, frame);
     }
     public void ApplyTimerReadings(IReadOnlyList<TimerDisplayReading> readings) => group?.ApplyTimerReadings(readings);
+    public IReadOnlyList<PresetTextMeasurement> GetPresetMeasurements() => group?.GetPresetMeasurements() ?? [];
+    public void ApplyPresetReadings(IReadOnlyList<PresetMotionReading> readings, bool reducedMotion) => group?.ApplyPresetReadings(readings, reducedMotion);
+    public ItemActivationTrigger? GetItemTrigger(ItemInteractionHandle handle, string? control) => group?.GetItemTrigger(handle, control);
     public void SetPopup(bool open) { popup.IsOpen = open; record("popup-request", open); }
     public void Release() { group?.Dispose(); group = null; popup.IsOpen = false; template?.Dispose(); template = null; templateIdentity = null; }
 }
