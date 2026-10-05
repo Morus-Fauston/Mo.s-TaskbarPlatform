@@ -10,8 +10,13 @@ internal sealed class IslandDisplayAdapter : IIslandSessionAdapter
     private readonly Action<string, object?> record;
     private readonly Func<Mtp.Contracts.ActionSlotReference, Task>? invokeAction;
     private readonly Func<HostComponentDisplayModel, Templates.TemplateRenderer?>? createTemplate;
-    private readonly Action<ItemInteractionHandle, string?>? activate;
+    private readonly Func<ItemInteractionHandle, string?, Task>? activate;
     private readonly TaskbarGroupAnimation animation = new();
+    private readonly TimerPresentationSampler timerReadings = new();
+    private bool timersAdvancing;
+    private IReadOnlyList<TimerDisplayReading> appliedTimerReadings = [];
+    internal IReadOnlyList<TimerDisplayReading> GetTimerReadings() => appliedTimerReadings;
+    internal bool TimerDriverRunning => frameTimer.IsEnabled;
     private readonly System.Diagnostics.Stopwatch clock = System.Diagnostics.Stopwatch.StartNew();
     private readonly Microsoft.UI.Xaml.DispatcherTimer frameTimer = new() { Interval = TimeSpan.FromMilliseconds(16) };
     private readonly Windows.UI.ViewManagement.UISettings uiSettings = new();
@@ -33,7 +38,7 @@ internal sealed class IslandDisplayAdapter : IIslandSessionAdapter
     public IslandDisplayAdapter(Func<TaskbarDockPreferences, CoreResult<IslandTarget>> capture, Action<string, object?> record,
         Func<Mtp.Contracts.ActionSlotReference, Task>? invokeAction = null,
         Func<HostComponentDisplayModel, Templates.TemplateRenderer?>? createTemplate = null,
-        Action<ItemInteractionHandle, string?>? activate = null)
+        Func<ItemInteractionHandle, string?, Task>? activate = null)
     {
         this.capture = capture; this.record = record; this.invokeAction = invokeAction; this.createTemplate = createTemplate; this.activate = activate;
         frameTimer.Tick += (_, _) => AdvanceGroup();
@@ -147,9 +152,11 @@ internal sealed class IslandDisplayAdapter : IIslandSessionAdapter
     }
     private void RetargetGroup()
     {
-        animation.Retarget(GroupSnapshot!.Layout, clock.Elapsed, ReduceMotion(), animation.Generation);
+        var synchronized = timerReadings.Synchronize(GroupSnapshot!.Items, DateTimeOffset.UtcNow, clock.Elapsed);
+        if (!synchronized.Accepted) throw new InvalidOperationException(synchronized.Message);
+        animation.Retarget(GroupSnapshot.Layout, clock.Elapsed, ReduceMotion(), animation.Generation);
         AdvanceGroup();
-        if (lastFrame?.IsComplete == false) frameTimer.Start();
+        if (lastFrame?.IsComplete == false || timersAdvancing) frameTimer.Start();
     }
     private void AdvanceGroup()
     {
@@ -163,8 +170,13 @@ internal sealed class IslandDisplayAdapter : IIslandSessionAdapter
             if (!placement.IsSuccess) throw new InvalidOperationException(placement.Error!.Message);
             host!.Move(placement.Value);
             host.UpdateGroup(GroupSnapshot, frame);
+            var readings = timerReadings.Sample(clock.Elapsed);
+            host.UpdateTimerReadings(readings);
+            appliedTimerReadings = readings;
+            timersAdvancing = readings.Any(value => value.IsAdvancing);
             lastFrame = frame;
-            if (frame.IsComplete) frameTimer.Stop();
+            frameTimer.Interval = frame.IsComplete ? TimeSpan.FromMilliseconds(100) : TimeSpan.FromMilliseconds(16);
+            if (frame.IsComplete && !timersAdvancing) frameTimer.Stop();
         }
         catch (Exception error)
         {
@@ -183,6 +195,9 @@ internal sealed class IslandDisplayAdapter : IIslandSessionAdapter
     {
         frameTimer.Stop();
         animation.Clear();
+        timerReadings.Clear();
+        timersAdvancing = false;
+        appliedTimerReadings = [];
         lastFrame = null;
         if (host is null) return CoreResult<bool>.Success(true);
         try { host.Close(); host.Lost -= OnLost; host = null; return CoreResult<bool>.Success(true); }

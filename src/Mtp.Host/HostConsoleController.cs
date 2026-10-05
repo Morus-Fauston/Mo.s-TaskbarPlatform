@@ -190,7 +190,7 @@ internal sealed class HostConsoleController
         { if (IsCurrent()) AddError(new("ActionNotAvailable", "动作通道不可用，保留最后确认值。")); }
         finally { if (IsCurrent()) Refresh(); }
     }
-    private void ActivateItem(ItemInteractionHandle handle, string? control)
+    private async Task ActivateItem(ItemInteractionHandle handle, string? control)
     {
         if (closing || communication is null || display.ItemActivations is null) return;
         ItemActivationSource? source = control switch
@@ -203,7 +203,7 @@ internal sealed class HostConsoleController
         if (source is null) { AddError(new("InvalidActivationSource", "项控件来源无效。")); Refresh(); return; }
         var routed = display.ItemActivations.Activate(handle, source.Value);
         if (!routed.Result.Accepted) AddError(new(routed.Result.Code, routed.Result.Message));
-        else if (routed.Action is not null) _ = InvokeItemActionAsync(communication, routed);
+        else if (routed.Action is not null) await InvokeItemActionAsync(communication, routed);
         else if (routed.TaskbarFlyoutId is not null)
             AddError(new("FlyoutNotImplemented", "该项声明的关联面板将在任务栏操作组接入后可用。"));
         Refresh();
@@ -296,21 +296,21 @@ internal sealed class HostConsoleController
         Refresh();
     }
     public void Retry() { Refresh(); Session.Retry(); Refresh(); }
-    public Task StartCounterAsync(string brokerPath, string counterPath, bool templates = false, bool dynamic = false)
+    public Task StartCounterAsync(string brokerPath, string counterPath, bool templates = false, bool dynamic = false, bool timers = false)
     {
-        if (templates && dynamic) throw new ArgumentException("模板和动态项演示不能同时启动。");
+        if ((templates ? 1 : 0) + (dynamic ? 1 : 0) + (timers ? 1 : 0) > 1) throw new ArgumentException("一次只能启动一种演示。");
         if (communicationStartup is not null) return communicationStartup;
-        dynamicDemo = dynamic;
+        dynamicDemo = dynamic || timers;
         if (templates)
         {
             var registration = images.Register("counter", "status", ImageResourceFormat.Png,
                 Path.Combine(AppContext.BaseDirectory, "Assets", "template-status.png"));
             if (!registration.Accepted) AddError(new(registration.Code, registration.Message));
         }
-        communicationStartup = StartCounterCoreAsync(brokerPath, counterPath, templates, dynamic);
+        communicationStartup = StartCounterCoreAsync(brokerPath, counterPath, templates, dynamic, timers);
         return communicationStartup;
     }
-    private async Task StartCounterCoreAsync(string brokerPath, string counterPath, bool templates, bool dynamic)
+    private async Task StartCounterCoreAsync(string brokerPath, string counterPath, bool templates, bool dynamic, bool timers)
     {
         HostBrokerSession? started = null;
         try
@@ -318,7 +318,7 @@ internal sealed class HostConsoleController
             started = await HostBrokerSession.StartAsync(brokerPath, ["counter"], communicationLifetime.Token).ConfigureAwait(false);
             communication = started;
             await started.StartServiceAsync("counter", counterPath, communicationLifetime.Token,
-                dynamic ? ["--dynamic"] : templates ? ["--templates"] : null).ConfigureAwait(false);
+                dynamic ? ["--dynamic"] : templates ? ["--templates"] : timers ? ["--timers"] : null).ConfigureAwait(false);
             if (communicationLifetime.IsCancellationRequested)
             {
                 await started.DisposeAsync().ConfigureAwait(false);

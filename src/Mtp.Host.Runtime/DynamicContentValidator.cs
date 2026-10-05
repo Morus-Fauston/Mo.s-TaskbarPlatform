@@ -167,11 +167,7 @@ public sealed class DynamicContentValidator
             (fields.Counter is null ? ContentFields.None : ContentFields.Counter) |
             (fields.Status is null ? ContentFields.None : ContentFields.Status);
         if (present != required) return false;
-        if (fields.Timer is { } timer &&
-            (!Enum.IsDefined(timer.Direction) || timer.ReferenceUtc == default ||
-             !double.IsFinite(timer.ValueMillisecondsAtReference) ||
-             Math.Abs(timer.ValueMillisecondsAtReference) > TimeSpan.MaxValue.TotalMilliseconds ||
-             (timer.ValueMillisecondsAtReference < 0 && !(timer.Direction == TimerDirection.CountDown && timer.ShowOvertime))))
+        if (fields.Timer is { } timer && !ValidTimerBasis(timer))
             return false;
         if (fields.Progress is { } progress)
         {
@@ -193,4 +189,12 @@ public sealed class DynamicContentValidator
             return false;
         return true;
     }
+
+    internal static bool ValidTimerBasis(TimerBasis timer) =>
+        Enum.IsDefined(timer.Direction) && timer.ReferenceUtc != default &&
+        double.IsFinite(timer.ValueMillisecondsAtReference) &&
+        Math.Abs(timer.ValueMillisecondsAtReference) <= TimeSpan.MaxValue.TotalMilliseconds &&
+        (timer.ProgressDurationMilliseconds is not { } duration ||
+         (double.IsFinite(duration) && duration > 0 && duration <= TimeSpan.MaxValue.TotalMilliseconds)) &&
+        (timer.ValueMillisecondsAtReference >= 0 || (timer.Direction == TimerDirection.CountDown && timer.ShowOvertime));
 }

@@ -154,18 +154,19 @@ internal sealed class IslandContent : UserControl
     public void ApplyGroup(HostGroupPresentationSnapshot snapshot, Mtp.Platform.Core.TaskbarGroupAnimationFrame frame,
         Func<Mtp.Contracts.ActionSlotReference, Task>? invokeAction,
         Func<HostComponentDisplayModel, Templates.TemplateRenderer?>? factory,
-        Action<ItemInteractionHandle, string?>? activate)
+        Func<ItemInteractionHandle, string?, Task>? activate)
     {
         if (group is null)
         {
             template?.Dispose(); template = null; templateIdentity = null;
             surface.Children.Clear(); surface.ColumnDefinitions.Clear(); surface.Padding = new Thickness(0);
             group = new TaskbarGroupSurface(value => factory?.Invoke(value),
-                slot => invokeAction?.Invoke(slot) ?? Task.CompletedTask, (handle, control) => activate?.Invoke(handle, control));
+                slot => invokeAction?.Invoke(slot) ?? Task.CompletedTask, (handle, control) => activate?.Invoke(handle, control) ?? Task.CompletedTask);
             surface.Children.Add(group);
         }
         group.Apply(snapshot, frame);
     }
+    public void ApplyTimerReadings(IReadOnlyList<TimerDisplayReading> readings) => group?.ApplyTimerReadings(readings);
     public void SetPopup(bool open) { popup.IsOpen = open; record("popup-request", open); }
     public void Release() { group?.Dispose(); group = null; popup.IsOpen = false; template?.Dispose(); template = null; templateIdentity = null; }
 }

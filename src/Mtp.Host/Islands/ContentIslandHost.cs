@@ -15,7 +15,7 @@ internal sealed class ContentIslandHost
     private readonly Action<string, object?> record;
     private readonly Func<Mtp.Contracts.ActionSlotReference, Task>? invokeAction;
     private readonly Func<HostComponentDisplayModel, Templates.TemplateRenderer?>? createTemplate;
-    private readonly Action<ItemInteractionHandle, string?>? activate;
+    private readonly Func<ItemInteractionHandle, string?, Task>? activate;
     private DesktopWindowXamlSource? source;
     private IslandContent? content;
     private nint host, bridge, parent, threadDpi;
@@ -26,7 +26,7 @@ internal sealed class ContentIslandHost
     private PixelRect? lastLocalBounds;
     public ContentIslandHost(Action<string, object?> record, Func<Mtp.Contracts.ActionSlotReference, Task>? invokeAction = null,
         Func<HostComponentDisplayModel, Templates.TemplateRenderer?>? createTemplate = null,
-        Action<ItemInteractionHandle, string?>? activate = null)
+        Func<ItemInteractionHandle, string?, Task>? activate = null)
     { this.record = record; this.invokeAction = invokeAction; this.createTemplate = createTemplate; this.activate = activate; }
     public event Action? Lost;
     public nint Handle => host;
@@ -183,6 +183,7 @@ internal sealed class ContentIslandHost
         content?.UpdateLayout();
         NativeWindows.Show(host, frame.WidthDip > 0);
     }
+    public void UpdateTimerReadings(IReadOnlyList<TimerDisplayReading> readings) { if (IsAlive) content?.ApplyTimerReadings(readings); }
     public void Update(long value) { if (IsAlive) content?.Update(value); }
     public void UpdateConfirmed(HostComponentDisplayModel component) { if (IsAlive) content?.UpdateConfirmed(component); }
     public void Observe() => record("island-observed", new

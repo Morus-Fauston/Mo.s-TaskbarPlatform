@@ -30,15 +30,16 @@ public partial class App : Application
         console.Refresh();
         var templates = Environment.GetCommandLineArgs().Contains("--template-demo", StringComparer.Ordinal);
         var dynamic = Environment.GetCommandLineArgs().Contains("--dynamic-demo", StringComparer.Ordinal);
-        if (templates || dynamic || Environment.GetCommandLineArgs().Contains("--counter-demo", StringComparer.Ordinal))
-            _ = StartCounterAsync(console, templates, dynamic);
+        var timers = Environment.GetCommandLineArgs().Contains("--timer-demo", StringComparer.Ordinal);
+        if (templates || dynamic || timers || Environment.GetCommandLineArgs().Contains("--counter-demo", StringComparer.Ordinal))
+            _ = StartCounterAsync(console, templates, dynamic, timers);
     }
-    private static async Task StartCounterAsync(HostConsoleController console, bool templates, bool dynamic)
+    private static async Task StartCounterAsync(HostConsoleController console, bool templates, bool dynamic, bool timers)
     {
         try
         {
             await console.StartCounterAsync(Path.Combine(AppContext.BaseDirectory, "Broker", "Mtp.Broker.dll"),
-                Path.Combine(AppContext.BaseDirectory, "CounterService", "Mtp.CounterService.dll"), templates, dynamic);
+                Path.Combine(AppContext.BaseDirectory, "CounterService", "Mtp.CounterService.dll"), templates, dynamic, timers);
         }
         catch (Exception error) { console.Execute(() => throw new InvalidOperationException("计数器启动失败：" + error.Message, error)); }
     }

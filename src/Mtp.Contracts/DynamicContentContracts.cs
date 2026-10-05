@@ -46,7 +46,8 @@ public sealed record DynamicContentDeclaration(
     DynamicGrouping Grouping = DynamicGrouping.Together);
 
 public sealed record TimerBasis(TimerDirection Direction, DateTimeOffset ReferenceUtc,
-    double ValueMillisecondsAtReference, bool IsPaused = false, bool ShowOvertime = false);
+    double ValueMillisecondsAtReference, bool IsPaused = false, bool ShowOvertime = false,
+    double? ProgressDurationMilliseconds = null);
 public sealed record ProgressReading(ProgressMode Mode, double? Value = null, double? Maximum = null);
 public sealed record CounterReading(CounterSemantics Semantics, long Value, long? Total = null);
 public sealed record StatusReading(string Text, StatusMarker Marker = StatusMarker.Normal);

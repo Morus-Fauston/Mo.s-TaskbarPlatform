@@ -18,16 +18,16 @@ internal sealed class TaskbarGroupSurface : UserControl, IDisposable
     private readonly RectangleGeometry clip = new();
     private readonly Func<HostComponentDisplayModel, Templates.TemplateRenderer?> createTemplate;
     private readonly Func<ActionSlotReference, Task> invokeAction;
-    private readonly Action<ItemInteractionHandle, string?> activate;
+    private readonly Func<ItemInteractionHandle, string?, Task> activate;
     private readonly Dictionary<TaskbarComponentKey, ComponentVisual> components = [];
-    private readonly Dictionary<TaskbarItemKey, ItemVisual> items = [];
+    private readonly Dictionary<TaskbarItemKey, TaskbarItemVisual> items = [];
     private HostGroupPresentationSnapshot? previousSnapshot;
     private long generation = -1;
     private long revision = -1;
     private bool disposed;
 
     public TaskbarGroupSurface(Func<HostComponentDisplayModel, Templates.TemplateRenderer?> createTemplate,
-        Func<ActionSlotReference, Task> invokeAction, Action<ItemInteractionHandle, string?> activate)
+        Func<ActionSlotReference, Task> invokeAction, Func<ItemInteractionHandle, string?, Task> activate)
     {
         this.createTemplate = createTemplate ?? throw new ArgumentNullException(nameof(createTemplate));
         this.invokeAction = invokeAction ?? throw new ArgumentNullException(nameof(invokeAction));
@@ -96,7 +96,7 @@ internal sealed class TaskbarGroupSurface : UserControl, IDisposable
             {
                 // Never reconstruct an old session's visual from a newer declaration.
                 if (!current || placement.IsExiting) continue;
-                visual = new ItemVisual(placement.Key, activate);
+                visual = new TaskbarItemVisual(placement.Key, activate);
                 items.Add(placement.Key, visual);
                 canvas.Children.Add(visual.Root);
                 visual.Update(model!);
@@ -237,90 +237,10 @@ internal sealed class TaskbarGroupSurface : UserControl, IDisposable
         }
     }
 
-    private sealed class ItemVisual : IDisposable
+    public void ApplyTimerReadings(IReadOnlyList<TimerDisplayReading> readings)
     {
-        public Button Root { get; } = new()
-        {
-            MinWidth = 0,
-            MinHeight = 0,
-            Padding = new Thickness(0),
-            BorderThickness = new Thickness(0),
-            HorizontalContentAlignment = HorizontalAlignment.Stretch,
-            VerticalContentAlignment = VerticalAlignment.Stretch
-        };
-        public RectangleGeometry Clip { get; } = new();
-        private readonly Ellipse ring = new() { Width = 26, Height = 26, StrokeThickness = 1, IsHitTestVisible = false };
-        private readonly TextBlock label = new()
-        {
-            FontSize = 12,
-            HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Center,
-            TextTrimming = TextTrimming.CharacterEllipsis,
-            IsHitTestVisible = false
-        };
-        private readonly Action<ItemInteractionHandle, string?> activate;
-        private HostItemPresentation? model;
-        private bool disposed;
-
-        public ItemVisual(TaskbarItemKey key, Action<ItemInteractionHandle, string?> activate)
-        {
-            this.activate = activate;
-            Root.Clip = Clip;
-            var content = new Grid();
-            content.Children.Add(ring);
-            content.Children.Add(label);
-            Root.Content = content;
-            AutomationProperties.SetAutomationId(Root, "mtp-item/" + ComponentId(key.Component) + "/" +
-                Uri.EscapeDataString(key.ItemId) + "/" + key.PresenceGeneration.ToString(CultureInfo.InvariantCulture));
-            Root.Click += Activate;
-            // Bind rather than capture the constructor's foreground, before the native theme is loaded.
-            ring.SetBinding(Shape.StrokeProperty, new Binding { Source = Root, Path = new PropertyPath(nameof(Control.Foreground)), Mode = BindingMode.OneWay });
-            label.SetBinding(TextBlock.ForegroundProperty, new Binding { Source = Root, Path = new PropertyPath(nameof(Control.Foreground)), Mode = BindingMode.OneWay });
-        }
-
-        public void Update(HostItemPresentation value)
-        {
-            model = value;
-            // This initial repeated-item renderer intentionally implements only Counter and Status.
-            // A counter's optional Total does not implicitly turn it into a progress indicator.
-            label.Text = value.Presentation.Template switch
-            {
-                PresetTemplate.Counter when value.Presentation.Fields.HasFlag(ContentFields.Counter) =>
-                    value.Item.Fields.Counter?.Value.ToString(CultureInfo.InvariantCulture) ?? "—",
-                PresetTemplate.Status when value.Presentation.Fields.HasFlag(ContentFields.Status) =>
-                    value.Item.Fields.Status?.Text ?? "—",
-                _ => "—"
-            };
-            string description = label.Text;
-            if (value.Item.Fields.Status is { } status && value.Presentation.Fields.HasFlag(ContentFields.Status))
-                description = value.Presentation.Template == PresetTemplate.Status ? status.Text : description + " · " + status.Text;
-            AutomationProperties.SetName(Root, description);
-            ToolTipService.SetToolTip(Root, description);
-        }
-
-        public void SetInteractive(bool interactive)
-        {
-            Root.IsHitTestVisible = !disposed && interactive;
-            Root.IsEnabled = !disposed && interactive;
-            Root.IsTabStop = !disposed && interactive;
-        }
-
-        private void Activate(object sender, RoutedEventArgs args)
-        {
-            if (!disposed && Root.IsEnabled && Root.IsHitTestVisible && model is { IsInteractive: true } current)
-                activate(current.Handle, null);
-        }
-
-        public void Dispose()
-        {
-            if (disposed) return;
-            disposed = true;
-            SetInteractive(false);
-            Root.Click -= Activate;
-            ring.ClearValue(Shape.StrokeProperty);
-            label.ClearValue(TextBlock.ForegroundProperty);
-            model = null;
-            Root.Content = null;
-        }
+        if (disposed) return;
+        foreach (var reading in readings)
+            if (items.TryGetValue(reading.Key, out var visual)) visual.UpdateTimer(reading);
     }
 }

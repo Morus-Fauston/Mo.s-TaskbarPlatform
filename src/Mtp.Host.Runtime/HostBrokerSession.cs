@@ -41,6 +41,8 @@ public sealed class HostBrokerSession : IAsyncDisposable
     private string? lastError;
     private int peakPendingRequests;
     private int lastBrokerProcessId;
+    private long receivedStateMessages;
+    private long receivedHeartbeatMessages;
     private BrokerFaultSnapshot? lastBrokerFault;
     private BrokerGenerationLifecycleSnapshot? lastRetiredBroker;
     private HostBrokerSession(string brokerPath, IReadOnlyCollection<string> applications, IProcessTermination processTermination)
@@ -53,6 +55,8 @@ public sealed class HostBrokerSession : IAsyncDisposable
     public int BrokerProcessId { get { lock (gate) return lastBrokerProcessId != 0 ? lastBrokerProcessId : throw new InvalidOperationException("Broker not started."); } }
     public string? LastError { get { lock (gate) return lastError; } }
     public BrokerFaultSnapshot? LastBrokerFault { get { lock (gate) return lastBrokerFault; } }
+    public long ReceivedStateMessages { get { lock (gate) return receivedStateMessages; } }
+    public long ReceivedHeartbeatMessages { get { lock (gate) return receivedHeartbeatMessages; } }
     public int PeakPendingRequests { get { lock (gate) return peakPendingRequests; } }
     public RecoverySnapshot BrokerRecovery { get { lock (gate) return brokerRecovery.Snapshot; } }
     public RecoverySnapshot? GetRecovery(string applicationId) { lock (gate) return recovery.GetValueOrDefault(applicationId)?.Snapshot; }
@@ -242,6 +246,8 @@ public sealed class HostBrokerSession : IAsyncDisposable
                 lock (gate)
                 {
                     if (!IsCurrent(current)) return;
+                    if (message.Kind == MessageKind.State && receivedStateMessages < long.MaxValue) receivedStateMessages++;
+                    if (message.Kind == MessageKind.Heartbeat && receivedHeartbeatMessages < long.MaxValue) receivedHeartbeatMessages++;
                     if (message.Permissions is not null) throw new IOException("UnexpectedDisplayPermissions");
                     if (message.Kind == MessageKind.Result && current.PendingRegistrations.TryGetValue(message.RequestId, out var pending))
                     {

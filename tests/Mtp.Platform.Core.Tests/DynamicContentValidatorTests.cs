@@ -232,6 +232,27 @@ public sealed class DynamicContentValidatorTests
         yield return [new DynamicItemFields(Timer: new(TimerDirection.CountDown, Now, -1)), ContentFields.Timer];
         yield return [new DynamicItemFields(Timer: new(TimerDirection.CountUp, default, 1)), ContentFields.Timer];
         yield return [new DynamicItemFields(Timer: new((TimerDirection)99, Now, 1)), ContentFields.Timer];
+        foreach (var duration in new[] { 0d, -1, double.NaN, double.PositiveInfinity, double.NegativeInfinity,
+                     TimeSpan.MaxValue.TotalMilliseconds + 1 })
+            yield return [new DynamicItemFields(Timer: new(TimerDirection.CountUp, Now, 1,
+                ProgressDurationMilliseconds: duration)), ContentFields.Timer];
+    }
+
+    [Fact]
+    public void ExplicitTimerProgressDurationAcceptsFinitePositiveEndpointsAndRemainsOptional()
+    {
+        var validator = new DynamicContentValidator();
+        var budget = 100;
+        var declaration = validator.ValidateDeclaration(new(DynamicContentKind.OrdinaryItems,
+            [new("timer", false, new(PresetTemplate.Timer, ContentFields.Timer, new(WidthTier.Medium)))]),
+            Entry, ref budget).Value!;
+        foreach (double? duration in new double?[] { null, double.Epsilon, 5000, TimeSpan.MaxValue.TotalMilliseconds })
+        {
+            var basis = new TimerBasis(TimerDirection.CountDown, Now, 5000, ProgressDurationMilliseconds: duration);
+            var result = validator.ValidateState(declaration, new([], [new("timer", "timer", [], new(Timer: basis))]), Now);
+            Assert.True(result.IsSuccess);
+            Assert.Equal(duration, Assert.Single(result.Value!.Content.Items).Fields.Timer!.ProgressDurationMilliseconds);
+        }
     }
 
     [Theory]

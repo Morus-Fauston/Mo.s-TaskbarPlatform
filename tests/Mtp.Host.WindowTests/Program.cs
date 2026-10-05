@@ -61,6 +61,12 @@ public sealed partial class WindowTestApplication : Application
         {
             // Keep the application alive while the last dock is closed and recreated.
             lifetimeWindow = new Window();
+            if (Environment.GetCommandLineArgs().Contains("--timer-only", StringComparer.Ordinal))
+            {
+                await TimerNativeRegression.RunAsync(message => File.AppendAllText(LogPath, message + "\n"));
+                Finish(null);
+                return;
+            }
             if (Environment.GetCommandLineArgs().Contains("--dynamic-only", StringComparer.Ordinal))
             {
                 await DynamicWidthNativeRegression.RunAsync(message => File.AppendAllText(LogPath, message + "\n"));

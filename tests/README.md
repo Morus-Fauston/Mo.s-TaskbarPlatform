@@ -135,3 +135,7 @@ HostBrokerSession.GetLifecycleSnapshot和SdkClient.GetLifecycleSnapshot读取实
 
 
 五期共享宽度原生回归：`powershell -ExecutionPolicy Bypass -File tests/Mtp.Host.WindowTests/Run.ps1 -Scenario dynamic -EvidenceDirectory <独立证据目录>`。真实SDK重复项驱动同一内容岛，验证中间帧/GetWindowRect/右邻居/输入禁用/减少动画/模式切换及清理；使用独立`dynamic-pass: frames=...`结束证据，不以旧框架0 frame标记证明动画。产品演示入口`Mtp.Host.exe --dynamic-demo`，在设置中允许left/items/right并按该顺序排列。
+
+五期计时实况岛：`Mtp.Host.exe --timer-demo`，在设置允许timers和controls。Host以单调时钟本地推进正/倒计时，提供方仅在业务动作或许可恢复发布；空白区域展开，内部按钮暂停/恢复或批量切换。`powershell -ExecutionPolicy Bypass -File tests/Mtp.Host.WindowTests/Run.ps1 -Scenario timer -EvidenceDirectory <独立证据目录>`验证真实SDK消息计数、固定宽度、原位展开/反向/批量、停零/超时、减少动画、旧句柄与清理，使用独立`timer-pass`结束标记。
+
+纯采样边界位于`TimerPresentationSamplerTests`；样例业务使用`dotnet test tests/Mtp.TimerDemo.Tests/Mtp.TimerDemo.Tests.csproj -nr:false`，项目已纳入解决方案。`HostBrokerSession.ReceivedStateMessages`是Host实际收到的State计数；Heartbeat计数仅反映Host收到的消息，不代表SDK向Broker发送的心跳总量。Windows自有窗口自动化不代替真实任务栏、多屏或人工动画体验验收。
