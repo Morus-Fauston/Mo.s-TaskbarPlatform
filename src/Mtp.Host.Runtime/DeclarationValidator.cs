@@ -142,6 +142,19 @@ public sealed class DeclarationValidator
                         featureIdentity.CreateChild(componentId), ref remainingNodes);
                     if (!dynamicResult.IsSuccess)
                         return CoreResult<ValidatedApplicationDeclaration>.Failure(dynamicResult.Error!);
+                    foreach (var structure in dynamicResult.Value!.Declaration.Structures)
+                    {
+                        var bindings = (structure.ControlActivations ?? []).Select(value => value.Binding)
+                            .Prepend(structure.PrimaryActivation);
+                        foreach (var binding in bindings)
+                        {
+                            if (binding?.Kind == ItemActivationKind.BusinessAction &&
+                                !component.ActionSlots!.Any(slot => slot.ActionSlotId == binding.TargetId) ||
+                                binding?.Kind == ItemActivationKind.TaskbarFlyout &&
+                                !feature.TaskbarFlyouts.Any(flyout => flyout?.TaskbarFlyoutId == binding.TargetId))
+                                return Failure("dynamic_reference_invalid", "项激活引用必须指向本组件动作或同组任务栏面板。", componentPath + ".dynamicContent");
+                        }
+                    }
                     dynamicContents.Add(dynamicResult.Value!);
                 }
             }

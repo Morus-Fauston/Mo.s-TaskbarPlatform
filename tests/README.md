@@ -93,3 +93,15 @@ dotnet test tests/Mtp.Communication.Tests/Mtp.Communication.Tests.csproj -c Rele
 新实况岛入口默认关闭。合法声明仍建立连接，但未获许可的新活动返回 AcceptedWithActivityRejections 明细；SDK 的 InitialPublicationResult 与 PublishAsync 均可读取。许可通知由声明提供方可选实现 IDisplayPermissionObserver 接收，提供方主动提交仍在进行的活动，SDK 不重放此前拒绝的创建。首次回调如需 SDK 引用，提供方应等待其在 Connect 返回后显式绑定的信号。
 
 ActivityProcessTests 使用真实双服务验证关闭期间已有活动更新、新建拒绝、共享活动引用过滤、隐藏期间结束/到期、Broker 新会话重新确认和旧回调取消；新 Host 不恢复运行期实例。偏好持久化和保存失败由公开显示控制器边界验证。窗口外观与实际多屏仍待人工。
+
+## 四期按项展开
+
+~~~powershell
+$env:MSBUILDDISABLENODEREUSE='1'
+dotnet test tests/Mtp.Platform.Core.Tests/Mtp.Platform.Core.Tests.csproj -nr:false --filter 'FullyQualifiedName~ItemPresentationTests|FullyQualifiedName~ItemActivationTests|FullyQualifiedName~ItemDisplayIntegrationTests'
+dotnet test tests/Mtp.Communication.Tests/Mtp.Communication.Tests.csproj -c Release -nr:false --filter FullyQualifiedName~ItemExpansionProcessTests
+~~~
+
+HostDisplayController拥有当前Store的ItemPresentationController和ItemActivationRouter，相同Store刷新保留状态，换绑或关闭清理。ItemPresentationController按屏幕/应用/功能组/组件/项ID管理本地展开；Store每次合法提交维护出现代次，避免UI未观察到中间移除后错误保留状态。业务与面板意图附当前SessionId和Origin，五期消费方派发前仍需核对。此入口产出目标呈现，不宣称原生动态宽度或动画完成。
+
+ItemExpansionProcessTests复用真实动态与活动服务，验证两屏普通项/岛项共用路径、批量后新增不继承、刷新保留、删除/到期清理与Host重建。完整多屏交互与原生控件由五期提供后集中人工验收。

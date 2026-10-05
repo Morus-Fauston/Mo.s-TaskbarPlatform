@@ -23,7 +23,7 @@ public sealed record HostDisplayLoadResult(
             .ToArray();
 }
 
-public sealed class HostDisplayController
+public sealed class HostDisplayController : IDisposable
 {
     private readonly HostDeclarationLoader declarationLoader;
     private readonly ComponentDisplayPreferenceManager preferenceManager;
@@ -32,6 +32,7 @@ public sealed class HostDisplayController
         new Dictionary<string, BrokerApplicationSnapshot>(StringComparer.Ordinal);
     private bool preferencesLoaded;
     private BrokerStateStore? activityPermissions;
+    private bool disposed;
 
     public HostDisplayController(
         IDeclarationSource declarationSource,
@@ -42,13 +43,32 @@ public sealed class HostDisplayController
     }
 
     public IReadOnlyList<HostComponentDisplayModel> CurrentComponents => components;
+    public ItemPresentationController? ItemPresentations { get; private set; }
+    public ItemActivationRouter? ItemActivations { get; private set; }
 
     /// <summary>Bind the current Host session on the UI thread; preferences remain the durable authority.</summary>
     public void BindActivityPermissions(BrokerStateStore states)
     {
         ArgumentNullException.ThrowIfNull(states);
+        ObjectDisposedException.ThrowIf(disposed, this);
+        if (!ReferenceEquals(activityPermissions, states))
+        {
+            ItemPresentations?.Close();
+            ItemPresentations = new ItemPresentationController(states);
+            ItemActivations = new ItemActivationRouter(ItemPresentations, states);
+        }
         activityPermissions = states;
         SynchronizeActivityPermissions();
+    }
+
+    public void Dispose()
+    {
+        if (disposed) return;
+        disposed = true;
+        ItemPresentations?.Close();
+        ItemPresentations = null;
+        ItemActivations = null;
+        activityPermissions = null;
     }
 
     public void ApplyBrokerSnapshot(BrokerApplicationSnapshot snapshot)
@@ -116,6 +136,8 @@ public sealed class HostDisplayController
     public CoreResult<HostComponentDisplayModel> SetVisibility(StableIdentity identity, bool isVisible)
     {
         ArgumentNullException.ThrowIfNull(identity);
+        if (disposed)
+            return CoreResult<HostComponentDisplayModel>.Failure(new("display_closed", "Host显示会话已关闭。"));
 
         var declaredComponent = components.FirstOrDefault(component => component.Identity == identity);
         if (declaredComponent is null)

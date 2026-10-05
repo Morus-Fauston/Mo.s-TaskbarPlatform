@@ -45,10 +45,21 @@ public sealed class DynamicContentValidator
                 return Failure<ValidatedDynamicContentDeclaration>("dynamic_structure_invalid", "预置呈现、宽度或语义无效", "dynamicContent.structures." + item.StructureId);
             if (item.ExpandTargetStructureIds?.Count > DynamicContentLimits.MaximumStructuresPerEntry)
                 return Failure<ValidatedDynamicContentDeclaration>("dynamic_budget_exceeded", "展开目标数量超限", "dynamicContent.expandTargets");
+            if (item.PrimaryActivation is not null && !ValidBinding(item.PrimaryActivation))
+                return Failure<ValidatedDynamicContentDeclaration>("dynamic_structure_invalid", "项激活绑定无效", "dynamicContent.primaryActivation");
+            if (item.ControlActivations?.Count > 2)
+                return Failure<ValidatedDynamicContentDeclaration>("dynamic_budget_exceeded", "每项最多两个固定控件", "dynamicContent.controlActivations");
+            var controls = item.ControlActivations ?? [];
+            var seenControls = new HashSet<ItemControlKind>();
+            foreach (var control in controls)
+                if (control is null || !Enum.IsDefined(control.Control) || !seenControls.Add(control.Control) || !ValidBinding(control.Binding))
+                    return Failure<ValidatedDynamicContentDeclaration>("dynamic_structure_invalid", "控件激活绑定无效或重复", "dynamicContent.controlActivations");
             cost += 3 + (item.Expanded is null ? 0 : 2) + (item.ExpandTargetStructureIds?.Count ?? 0);
+            cost += (item.PrimaryActivation is null ? 0 : 1) + controls.Count * 2;
             frozenStructures.Add(item with
             {
-                ExpandTargetStructureIds = Array.AsReadOnly(item.ExpandTargetStructureIds?.ToArray() ?? [])
+                ExpandTargetStructureIds = Array.AsReadOnly(item.ExpandTargetStructureIds?.ToArray() ?? []),
+                ControlActivations = Array.AsReadOnly(controls.ToArray())
             });
         }
         foreach (var item in frozenStructures)
@@ -64,6 +75,10 @@ public sealed class DynamicContentValidator
         remainingNodes -= cost;
         return CoreResult<ValidatedDynamicContentDeclaration>.Success(new(componentIdentity, frozen));
     }
+
+    private static bool ValidBinding(ItemActivationBinding? binding) => binding is not null && Enum.IsDefined(binding.Kind) &&
+        (binding.Kind is ItemActivationKind.BusinessAction or ItemActivationKind.TaskbarFlyout
+            ? ValidId(binding.TargetId!) : binding.TargetId is null);
 
     public CoreResult<ValidatedDynamicContentState> ValidateState(
         ValidatedDynamicContentDeclaration declaration, DynamicContentState state, DateTimeOffset now)

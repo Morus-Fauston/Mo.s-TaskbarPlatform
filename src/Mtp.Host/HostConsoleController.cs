@@ -232,6 +232,7 @@ internal sealed class HostConsoleController
     {
         closing = true;
         timer.Stop();
+        display.Dispose();
         var testStopped = true;
         communicationLifetime.Cancel();
         try

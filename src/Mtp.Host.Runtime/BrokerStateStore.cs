@@ -24,6 +24,8 @@ public sealed record BrokerApplicationSnapshot
     public bool IsConnected { get; internal init; }
     public bool IsInteractive { get; internal init; }
     public ProtocolResult? LastError { get; internal init; }
+    public IReadOnlyDictionary<DynamicItemIdentity, long> ItemOccurrences { get; internal init; } =
+        new System.Collections.ObjectModel.ReadOnlyDictionary<DynamicItemIdentity, long>(new Dictionary<DynamicItemIdentity, long>());
 }
 
 /// <summary>Owns the latest fully validated readings received from the authenticated Broker.</summary>
@@ -38,6 +40,7 @@ public sealed class BrokerStateStore
     private readonly Dictionary<string, DisplayPermissionSnapshot> permissions = new(StringComparer.Ordinal);
     private readonly DeclarationValidator validator = new();
     private readonly TimeProvider clock;
+    private long itemOccurrence;
 
     public BrokerStateStore(IReadOnlyCollection<string> registeredApplicationIds, TimeProvider? timeProvider = null)
     {
@@ -93,8 +96,33 @@ public sealed class BrokerStateStore
             if (pair.Value.Declaration is { } declaration && pair.Value.State is { } state)
             {
                 var pruned = ActivityLifecycle.Prune(declaration, state, now);
-                if (!ReferenceEquals(pruned, state)) snapshots[pair.Key] = pair.Value with { State = pruned };
+                if (!ReferenceEquals(pruned, state)) snapshots[pair.Key] = WithOccurrences(pair.Value, pair.Value with { State = pruned });
             }
+    }
+
+    // Only current items have entries. A removed item leaves no tombstone; reappearance receives a fresh value.
+    private BrokerApplicationSnapshot WithOccurrences(BrokerApplicationSnapshot? previous, BrokerApplicationSnapshot next)
+    {
+        var occurrences = new Dictionary<DynamicItemIdentity, long>();
+        foreach (var entry in next.State?.DynamicEntries ?? [])
+        {
+            var declaration = next.Declaration!.DynamicContents.First(value =>
+                value.ComponentIdentity.Segments[1].Value == entry.FeatureGroupId && value.ComponentIdentity.LocalId.Value == entry.ComponentId).Declaration;
+            var oldDeclaration = previous?.Declaration?.DynamicContents.FirstOrDefault(value =>
+                value.ComponentIdentity.Segments[1].Value == entry.FeatureGroupId && value.ComponentIdentity.LocalId.Value == entry.ComponentId)?.Declaration;
+            var oldItems = previous?.State?.DynamicEntries?.FirstOrDefault(value => value.FeatureGroupId == entry.FeatureGroupId && value.ComponentId == entry.ComponentId)?.Content.Items;
+            foreach (var item in entry.Content.Items)
+            {
+                var key = new DynamicItemIdentity(next.ApplicationId, entry.FeatureGroupId, entry.ComponentId, item.ItemId);
+                var structure = declaration.Structures.First(value => value.StructureId == item.StructureId);
+                var oldItem = oldItems?.FirstOrDefault(value => value.ItemId == item.ItemId);
+                var oldStructure = oldItem is null ? null : oldDeclaration?.Structures.FirstOrDefault(value => value.StructureId == oldItem.StructureId);
+                bool retained = previous is not null && previous.ItemOccurrences.TryGetValue(key, out _) &&
+                    oldDeclaration?.Kind == declaration.Kind && oldStructure is not null && ItemStructureEquality.Same(oldStructure, structure);
+                occurrences.Add(key, retained ? previous!.ItemOccurrences[key] : checked(++itemOccurrence));
+            }
+        }
+        return next with { ItemOccurrences = new System.Collections.ObjectModel.ReadOnlyDictionary<DynamicItemIdentity, long>(occurrences) };
     }
 
     private DisplayPermissionSnapshot SynchronizePermissions(string applicationId, ValidatedApplicationDeclaration declaration)
@@ -131,7 +159,7 @@ public sealed class BrokerStateStore
             if (error is not null) return error;
             if (state.Revision <= previous.State!.Revision) return ProtocolResult.Success("StateAlreadyCurrent");
             var admitted = ActivityLifecycle.Admit(applicationId, previous.Declaration, frozen!, previous.State, permissions[applicationId], clock.GetUtcNow());
-            snapshots[applicationId] = previous with { State = admitted.State, LastError = null };
+            snapshots[applicationId] = WithOccurrences(previous, previous with { State = admitted.State, LastError = null });
             return admitted.Result;
         }
     }
@@ -180,7 +208,8 @@ public sealed class BrokerStateStore
             if (permissions.TryGetValue(message.ApplicationId, out var previousPermissions))
                 permissions[message.ApplicationId] = previousPermissions with { Revision = 1 };
             snapshots[message.ApplicationId] = new(message.ApplicationId, message.SessionId,
-                previous?.Declaration, previous?.State, true, false, null);
+                previous?.Declaration, previous?.State, true, false, null)
+            { ItemOccurrences = previous?.ItemOccurrences ?? new System.Collections.ObjectModel.ReadOnlyDictionary<DynamicItemIdentity, long>(new Dictionary<DynamicItemIdentity, long>()) };
             return ProtocolResult.Success();
         }
         if (previous is null || previous.SessionId != message.SessionId)
@@ -227,7 +256,7 @@ public sealed class BrokerStateStore
             if (message.State!.Revision <= previous.State!.Revision)
                 return ProtocolResult.Reject("StaleRevision", "状态序号必须递增");
             var admitted = ActivityLifecycle.Admit(message.ApplicationId, previous.Declaration, frozen!, previous.State, permissions[message.ApplicationId], clock.GetUtcNow());
-            snapshots[message.ApplicationId] = previous with { State = admitted.State, LastError = null };
+            snapshots[message.ApplicationId] = WithOccurrences(previous, previous with { State = admitted.State, LastError = null });
             return admitted.Result;
         }
         if (message.Kind == MessageKind.Declare)
@@ -245,13 +274,13 @@ public sealed class BrokerStateStore
             var admitted = ActivityLifecycle.Admit(message.ApplicationId, declaration.Value!, frozen!, previous.State, currentPermissions, clock.GetUtcNow());
             declaredApplications.Add(message.ApplicationId);
             validDeclarations.Add(message.ApplicationId);
-            snapshots[message.ApplicationId] = previous with
+            snapshots[message.ApplicationId] = WithOccurrences(previous, previous with
             {
                 Declaration = declaration.Value,
                 State = admitted.State,
                 IsInteractive = !awaitingReady.Contains(message.ApplicationId),
                 LastError = null
-            };
+            });
             FlyoutRequests.SynchronizeDeclaration(snapshots[message.ApplicationId], declaration.Value!.FlyoutEntries);
             return admitted.Result;
         }

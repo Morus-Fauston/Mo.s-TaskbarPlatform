@@ -37,7 +37,9 @@ public sealed record ItemStructureDeclaration(
     bool InitiallyExpanded = false,
     IReadOnlyList<string>? ExpandTargetStructureIds = null,
     SemanticAnimation Animation = SemanticAnimation.ContentChange,
-    TextOverflow Overflow = TextOverflow.Ellipsis);
+    TextOverflow Overflow = TextOverflow.Ellipsis,
+    ItemActivationBinding? PrimaryActivation = null,
+    IReadOnlyList<ItemControlActivation>? ControlActivations = null);
 public sealed record DynamicContentDeclaration(
     DynamicContentKind Kind,
     IReadOnlyList<ItemStructureDeclaration> Structures,
