@@ -73,6 +73,26 @@ public sealed partial class WindowTestApplication : Application
             }
             // Keep the application alive while the last dock is closed and recreated.
             lifetimeWindow = new Window();
+            if (launchArguments.Contains("--event-production-only", StringComparer.Ordinal))
+            {
+                await EventProductionRegression.RunAsync(message => AppendLog(message + "\n"));
+                Finish(null);
+                return;
+            }
+            if (launchArguments.Contains("--event-only", StringComparer.Ordinal))
+            {
+                await EventGroupNativeTests.RunAsync(message => AppendLog(message + "\n"));
+                await EventHintNativeTests.RunAsync(message => AppendLog(message + "\n"));
+                await HostOwnedFlyoutStackNativeTests.RunAsync(message => AppendLog(message + "\n"));
+                Finish(null);
+                return;
+            }
+            if (launchArguments.Contains("--event-settings-only", StringComparer.Ordinal))
+            {
+                await EventSettingsNativeTests.RunAsync(message => AppendLog(message + "\n"));
+                Finish(null);
+                return;
+            }
             if (launchArguments.Contains("--interactive-hint-motion-only", StringComparer.Ordinal))
             {
                 await InteractiveHintMotionNativeTests.RunAsync(message => AppendLog(message + "\n"));

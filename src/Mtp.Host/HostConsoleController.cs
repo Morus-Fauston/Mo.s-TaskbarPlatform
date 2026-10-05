@@ -57,6 +57,7 @@ internal sealed class HostConsoleController
         flyouts?.Manager.ApplyAppearance(value);
         flyouts?.Hints.ApplyAppearance(value);
         flyouts?.InteractiveHints.ApplyAppearance(value);
+        flyouts?.Events.ApplyAppearance(value);
         Refresh();
     }
     public async Task<ProtocolResult> RetryAsync(string? applicationId, CancellationToken token = default)
@@ -191,6 +192,7 @@ internal sealed class HostConsoleController
         flyouts.Manager.ApplyAppearance(Appearance);
         flyouts.Hints.ApplyAppearance(Appearance);
         flyouts.InteractiveHints.ApplyAppearance(Appearance);
+        flyouts.Events.ApplyAppearance(Appearance);
         flyouts.ApplySettings(settings?.GetSnapshot().Preferences ?? new(new(), []));
         return flyouts;
     }
@@ -346,21 +348,21 @@ internal sealed class HostConsoleController
         Refresh();
     }
     public void Retry() { Refresh(); Session.Retry(); Refresh(); }
-    public Task StartCounterAsync(string brokerPath, string counterPath, bool templates = false, bool dynamic = false, bool timers = false, bool presets = false, bool flyouts = false, bool organization = false, bool interactiveHints = false)
+    public Task StartCounterAsync(string brokerPath, string counterPath, bool templates = false, bool dynamic = false, bool timers = false, bool presets = false, bool flyouts = false, bool organization = false, bool interactiveHints = false, bool events = false)
     {
-        if ((templates ? 1 : 0) + (dynamic ? 1 : 0) + (timers ? 1 : 0) + (presets ? 1 : 0) + (flyouts ? 1 : 0) + (organization ? 1 : 0) + (interactiveHints ? 1 : 0) > 1) throw new ArgumentException("一次只能启动一种演示。");
+        if ((templates ? 1 : 0) + (dynamic ? 1 : 0) + (timers ? 1 : 0) + (presets ? 1 : 0) + (flyouts ? 1 : 0) + (organization ? 1 : 0) + (interactiveHints ? 1 : 0) + (events ? 1 : 0) > 1) throw new ArgumentException("一次只能启动一种演示。");
         if (communicationStartup is not null) return communicationStartup;
-        dynamicDemo = dynamic || timers || presets || flyouts || organization || interactiveHints;
+        dynamicDemo = dynamic || timers || presets || flyouts || organization || interactiveHints || events;
         if (templates)
         {
             var registration = images.Register("counter", "status", ImageResourceFormat.Png,
                 Path.Combine(AppContext.BaseDirectory, "Assets", "template-status.png"));
             if (!registration.Accepted) AddError(new(registration.Code, registration.Message));
         }
-        communicationStartup = StartCounterCoreAsync(brokerPath, counterPath, templates, dynamic, timers, presets, flyouts, organization, interactiveHints);
+        communicationStartup = StartCounterCoreAsync(brokerPath, counterPath, templates, dynamic, timers, presets, flyouts, organization, interactiveHints, events);
         return communicationStartup;
     }
-    private async Task StartCounterCoreAsync(string brokerPath, string counterPath, bool templates, bool dynamic, bool timers, bool presets, bool flyouts, bool organization, bool interactiveHints)
+    private async Task StartCounterCoreAsync(string brokerPath, string counterPath, bool templates, bool dynamic, bool timers, bool presets, bool flyouts, bool organization, bool interactiveHints, bool events)
     {
         HostBrokerSession? started = null;
         try
@@ -375,7 +377,7 @@ internal sealed class HostConsoleController
                 return queued;
             };
             await started.StartServiceAsync("counter", counterPath, communicationLifetime.Token,
-                dynamic ? ["--dynamic"] : templates ? ["--templates"] : timers ? ["--timers"] : presets ? ["--presets"] : flyouts ? ["--flyouts"] : organization ? ["--organization"] : interactiveHints ? ["--interactive-hints"] : null).ConfigureAwait(false);
+                dynamic ? ["--dynamic"] : templates ? ["--templates"] : timers ? ["--timers"] : presets ? ["--presets"] : flyouts ? ["--flyouts"] : organization ? ["--organization"] : interactiveHints ? ["--interactive-hints"] : events ? ["--events"] : null).ConfigureAwait(false);
             if (communicationLifetime.IsCancellationRequested)
             {
                 await started.DisposeAsync().ConfigureAwait(false);

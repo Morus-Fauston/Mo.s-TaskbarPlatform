@@ -50,7 +50,8 @@ public sealed class HostSettingsController : IDisposable
             if (disposed) return new(navigation.Snapshot, preferences, [], [], "设置已关闭。", new("settings_closed", "设置已关闭。"));
             var applications = Array.AsReadOnly(snapshots().ToArray());
             return new(navigation.Snapshot, preferences, OrderedComponents(),
-                applications, materialStatus(), error) { Groupings = IslandGroupings(), HintEntries = HintEntries(applications) };
+                applications, materialStatus(), error)
+                { Groupings = IslandGroupings(), HintEntries = HintEntries(applications), EventEntries = EventEntries(applications) };
         }
     }
 
@@ -223,6 +224,45 @@ public sealed class HostSettingsController : IDisposable
         error = new(code, message);
         if (!disposed) Notify();
         return CoreResult<HostSettingsSnapshot>.Failure(error);
+    }
+
+    private IReadOnlyList<HostEventEntry> EventEntries(IReadOnlyList<BrokerApplicationSnapshot> applications) =>
+        Array.AsReadOnly(applications.Where(value => value.Declaration is not null)
+            .SelectMany(application => application.Declaration!.FlyoutEntries
+                .Where(entry => entry.Kind == FlyoutKind.EventGroup && entry.ClosePolicy is not null)
+                .Select(entry => new HostEventEntry(entry.Identity, entry.ClosePolicy!.Value,
+                    preferences.EventVisibility?.GetValueOrDefault(IdentityKey(entry.Identity), true) ?? true,
+                    application.IsConnected && application.IsInteractive)))
+            .ToArray());
+
+    public CoreResult<HostSettingsSnapshot> SetEvents(HostEventPreferences events)
+    {
+        lock (gate)
+        {
+            if (disposed) return Fail("settings_closed", "设置已关闭。");
+            if (events is null) return Fail("settings_invalid", "事件浮窗设置无效，保留原值。");
+            var valid = LocalHostSettingsPreferenceStore.Validate(preferences with { Events = events });
+            if (!valid.IsSuccess) return Fail(valid.Error!.Code, valid.Error.Message);
+            var committed = store.CommitEvents(events);
+            error = committed.Error;
+            if (committed.IsSuccess) preferences = committed.Value!;
+            Notify();
+            return committed.IsSuccess ? CoreResult<HostSettingsSnapshot>.Success(GetSnapshot()) : CoreResult<HostSettingsSnapshot>.Failure(error!);
+        }
+    }
+    public CoreResult<HostSettingsSnapshot> SetEventVisibility(StableIdentity identity, bool visible)
+    {
+        lock (gate)
+        {
+            if (disposed) return Fail("settings_closed", "设置已关闭。");
+            if (identity is null || !EventEntries(snapshots()).Any(entry => entry.Identity == identity))
+                return Fail("event_not_declared", "当前没有该事件浮窗入口。");
+            var committed = store.CommitEventVisibility(identity, visible);
+            error = committed.Error;
+            if (committed.IsSuccess) preferences = committed.Value!;
+            Notify();
+            return committed.IsSuccess ? CoreResult<HostSettingsSnapshot>.Success(GetSnapshot()) : CoreResult<HostSettingsSnapshot>.Failure(error!);
+        }
     }
 
     private void Notify()

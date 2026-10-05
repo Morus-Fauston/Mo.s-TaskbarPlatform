@@ -282,11 +282,20 @@ public sealed class DeclarationValidator
                     return CoreResult<ValidatedApplicationDeclaration>.Failure(idError!);
                 if (!entryIds.Add(channelId))
                     return Failure("hierarchy_conflict", "Entry identities must be unique within the feature group.", featurePath + ".eventChannels");
+                if (channel.ActionSlots is { Count: > 0 })
+                {
+                    if (!TryValidateActionSlots(channel.ActionSlots, featureIdentity.CreateChild(channelId), featurePath + ".eventChannels.actionSlots",
+                        ref remainingNodes, out _, out var actionError))
+                        return CoreResult<ValidatedApplicationDeclaration>.Failure(actionError!);
+                    foreach (var slot in channel.ActionSlots)
+                        declaredActions.Add(new(new(declaration.ApplicationId!, feature.FeatureGroupId!, ActionEntryKind.EventChannel,
+                            channel.ChannelId!, slot.ActionSlotId!), slot.ParameterKind));
+                }
                 flyoutEntries.Add(new ValidatedFlyoutEntry(featureIdentity.CreateChild(channelId), FlyoutKind.EventGroup, channel.ClosePolicy));
                 if (channel.Template is not null)
                 {
                     var templateResult = templateValidator.Validate(new(feature.FeatureGroupId!, TemplateEntryKind.EventChannel, channel.ChannelId!),
-                        channel.Template, [], images, ref remainingNodes);
+                        channel.Template, channel.ActionSlots ?? [], images, ref remainingNodes);
                     if (!templateResult.IsSuccess) return CoreResult<ValidatedApplicationDeclaration>.Failure(templateResult.Error!);
                     templates.Add(templateResult.Value!);
                 }

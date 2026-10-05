@@ -34,16 +34,17 @@ public partial class App : Application
         var presets = Environment.GetCommandLineArgs().Contains("--preset-demo", StringComparer.Ordinal);
         var flyouts = Environment.GetCommandLineArgs().Contains("--flyout-demo", StringComparer.Ordinal);
         var interactiveHints = Environment.GetCommandLineArgs().Contains("--interactive-hint-demo", StringComparer.Ordinal);
+        var events = Environment.GetCommandLineArgs().Contains("--event-demo", StringComparer.Ordinal);
         var organization = Environment.GetCommandLineArgs().Contains("--organization-demo", StringComparer.Ordinal);
-        if (templates || dynamic || timers || presets || flyouts || organization || interactiveHints || Environment.GetCommandLineArgs().Contains("--counter-demo", StringComparer.Ordinal))
-            _ = StartCounterAsync(console, templates, dynamic, timers, presets, flyouts, organization, interactiveHints);
+        if (templates || dynamic || timers || presets || flyouts || organization || interactiveHints || events || Environment.GetCommandLineArgs().Contains("--counter-demo", StringComparer.Ordinal))
+            _ = StartCounterAsync(console, templates, dynamic, timers, presets, flyouts, organization, interactiveHints, events);
     }
-    private static async Task StartCounterAsync(HostConsoleController console, bool templates, bool dynamic, bool timers, bool presets, bool flyouts, bool organization, bool interactiveHints)
+    private static async Task StartCounterAsync(HostConsoleController console, bool templates, bool dynamic, bool timers, bool presets, bool flyouts, bool organization, bool interactiveHints, bool events)
     {
         try
         {
             await console.StartCounterAsync(Path.Combine(AppContext.BaseDirectory, "Broker", "Mtp.Broker.dll"),
-                Path.Combine(AppContext.BaseDirectory, "CounterService", "Mtp.CounterService.dll"), templates, dynamic, timers, presets, flyouts, organization, interactiveHints);
+                Path.Combine(AppContext.BaseDirectory, "CounterService", "Mtp.CounterService.dll"), templates, dynamic, timers, presets, flyouts, organization, interactiveHints, events);
         }
         catch (Exception error) { console.Execute(() => throw new InvalidOperationException("计数器启动失败：" + error.Message, error)); }
     }

@@ -77,3 +77,9 @@ powershell -ExecutionPolicy Bypass -File tests/Mtp.Host.WindowTests/Run.ps1 -Sce
 启动 `Mtp.Host.exe --interactive-hint-demo`，在设置显示 `counter/main/controls`，点击请求提示后使用模拟滑块、展开和失败按钮；不写系统音量或亮度。提示默认5秒，悬停、拖动捕获和显式键盘交互暂停，最后交互结束重新计时；确认值由SDK提供方返回，拒绝时回退。
 
 `Run.ps1 -Scenario interactive-hint -EvidenceDirectory <新的独立目录>` 验证真实跨进程空白穿透、裁剪控件命中、拖出区域捕获、键盘、双窗口清理、计时和关联动画。`-Scenario interactive-hint-production` 验证真实SDK/Broker动作、请求、设置、展开、失败与重连；其内容岛使用离屏自有父窗口，不能代替真实Explorer验收。前景是唯一交互控件来源，背景共享确认快照；本地peer断言不等于人类读屏验收。
+
+## 事件组与优先级（五期10）
+
+`Mtp.Host.exe --event-demo` 启动独立SDK模拟事件提供方。显示counter/main/controls后，发送事件更新event0，持续事件打开event1，下一通道轮转event2至event11；组内确认显示SDK确认次数，演示失败产生所属组关联提示，详情/返回只访问声明面板。所有数据为模拟业务。
+
+`Run.ps1 -Scenario event -EvidenceDirectory <新目录>` 串行验证真实WinUI组、8秒空闲及5秒保护、1/5/10上限与降额收敛、同通道更新、关闭失败隔离、关联提示定位/动画及Host自有窗口优先级。替换判断前同步核对实际鼠标/焦点，不等待下一计时器采样。`-Scenario event-settings`使用真实ComboBox/NumberBox/Toggle自动化接口及独立进程回读，覆盖八位置、数量、显示开关和保存失败复位。`-Scenario event-production`走真实SDK/Broker/Host请求、确认/失败/设置/有限重连；使用自有离屏内容岛，不能代替Explorer或多屏人工验收。

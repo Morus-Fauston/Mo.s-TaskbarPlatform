@@ -66,6 +66,11 @@
                             <TextBlock x:Name="HintsEmpty" Text="当前没有已声明的短提示入口。" TextWrapping="Wrap"
                                        AutomationProperties.AutomationId="mtp-settings-hints-empty" />
                             <StackPanel x:Name="HintRows" Spacing="8" />
+                            <TextBlock Text="事件浮窗" Style="{ThemeResource SubtitleTextBlockStyle}" />
+                            <TextBlock Text="关闭入口会结束该通道的事件浮窗，不停止应用业务。再次开启后由新事件创建浮窗。" TextWrapping="Wrap" />
+                            <TextBlock x:Name="EventsEmpty" Text="当前没有已声明的事件浮窗入口。" TextWrapping="Wrap"
+                                       AutomationProperties.AutomationId="mtp-settings-events-empty" />
+                            <StackPanel x:Name="EventRows" Spacing="8" />
                         </StackPanel>
                         <StackPanel x:Name="OfficialPanel" Spacing="12" Visibility="Collapsed">
                             <TextBlock Text="官方功能尚未交付" Style="{ThemeResource SubtitleTextBlockStyle}" />
@@ -91,6 +96,24 @@
                             <ToggleSwitch x:Name="AllowHintPositionToggle" Header="允许应用指定短提示位置" Toggled="HintOverrideChanged"
                                           AutomationProperties.AutomationId="mtp-settings-hint-app-position" AutomationProperties.Name="允许应用指定短提示位置" />
                             <TextBlock Text="默认位置用于无关联短提示；关联错误提示跟随所属浮窗。允许应用指定位置后，应用未指定时仍使用这里的默认位置。" TextWrapping="Wrap" />
+                            <ComboBox x:Name="EventPositionCombo" Header="事件浮窗默认位置" HorizontalAlignment="Stretch" SelectionChanged="EventPositionChanged"
+                                      AutomationProperties.AutomationId="mtp-settings-event-position" AutomationProperties.Name="事件浮窗默认位置">
+                                <ComboBoxItem Content="左上" Tag="TopLeft" />
+                                <ComboBoxItem Content="上中" Tag="TopCenter" />
+                                <ComboBoxItem Content="右上" Tag="TopRight" />
+                                <ComboBoxItem Content="左下" Tag="BottomLeft" />
+                                <ComboBoxItem Content="下中" Tag="BottomCenter" />
+                                <ComboBoxItem Content="右下" Tag="BottomRight" />
+                                <ComboBoxItem Content="中央" Tag="Center" />
+                                <ComboBoxItem Content="中央靠下" Tag="LowerCenter" />
+                            </ComboBox>
+                            <ToggleSwitch x:Name="AllowEventPositionToggle" Header="允许应用指定事件浮窗位置" Toggled="EventOverrideChanged"
+                                          AutomationProperties.AutomationId="mtp-settings-event-app-position" AutomationProperties.Name="允许应用指定事件浮窗位置" />
+                            <NumberBox x:Name="EventLimitInput" Header="每屏事件浮窗组上限" Minimum="1" Maximum="10" Value="5"
+                                       SmallChange="1" LargeChange="1" SpinButtonPlacementMode="Compact" Width="240" HorizontalAlignment="Left"
+                                       ValueChanged="EventLimitChanged" AutomationProperties.AutomationId="mtp-settings-event-limit"
+                                       AutomationProperties.Name="每屏事件浮窗组上限，1至10组" />
+                            <TextBlock Text="默认每屏显示5组。同一通道的新事件刷新原组；降低上限时，正在操作及操作结束后5秒内的组会保留，保护结束后再收敛。" TextWrapping="Wrap" />
                             <ComboBox x:Name="ThemeCombo" Header="主题" HorizontalAlignment="Stretch" SelectionChanged="AppearanceChanged"
                                       AutomationProperties.AutomationId="mtp-settings-theme" AutomationProperties.Name="主题">
                                 <ComboBoxItem Content="跟随系统" Tag="System" />

@@ -21,6 +21,9 @@ internal sealed class TaskbarFlyoutCoordinator : IDisposable
     internal TaskbarFlyoutManager Manager { get; }
     internal ShortHintManager Hints { get; }
     internal InteractiveHintManager InteractiveHints { get; }
+    internal EventGroupManager Events { get; }
+    private bool stacking, stopping;
+    private string? stackError;
 
     internal TaskbarFlyoutCoordinator(HostBrokerSession session, IslandDisplayAdapter island,
         Func<IReadOnlyList<TaskbarDockDisplay>> displays, RegisteredImageCache images, Action<string, object?> record)
@@ -31,20 +34,51 @@ internal sealed class TaskbarFlyoutCoordinator : IDisposable
         Manager = new(session.States, (key, templateId, navigate) => new TemplateRenderer(
             new TemplateInteractionController(session.States, key.ApplicationId, key.Entry,
                 SendActionAsync, templateId, navigate), images), record);
-        Hints = new(session.States, Manager, images, record);
+        Events = new(session.States, images, SendActionAsync, record);
+        Hints = new(session.States, Manager, images, record, events: Events);
         InteractiveHints = new(session.States, Manager, images,
             (origin, slot, parameter, expected, token) => SendActionCoreAsync(slot, parameter, expected, token, origin), ExpandHint, record);
         Hints.AdditionalInstanceCount = () => InteractiveHints.Inspect().Count;
         InteractiveHints.AdditionalInstanceCount = () => Hints.Inspect().Count;
+        Events.HigherPriorityBounds = screen => Hints.Inspect().Concat(InteractiveHints.Inspect())
+            .Where(x => x.Request.ScreenId == screen && x.Request.Owner is null && x.Bounds.IsValid)
+            .Select(x => x.Bounds).Take(64).ToArray();
+        Manager.PresentedFrameApplied += GroupFrameApplied;
+        Events.FrameApplied += EnforceStack;
+        Hints.FrameApplied += EnforceStack;
+        InteractiveHints.FrameApplied += EnforceStack;
+    }
+
+    private void GroupFrameApplied(string screen, long generation) => EnforceStack();
+    private void EnforceStack()
+    {
+        if (stacking || stopping) return;
+        stacking = true;
+        try
+        {
+            var taskbar = Manager.Inspect().SelectMany(x => x.Windows).Select(x => x.Handle).Where(FlyoutNative.IsWindow);
+            var events = Events.Inspect().SelectMany(x => x.Windows).Select(x => x.Handle).Where(FlyoutNative.IsWindow);
+            var hints = Hints.Inspect().Select(x => x.Handle).Concat(InteractiveHints.Inspect().SelectMany(x =>
+                InteractiveHints.WindowForTesting(x.Generation) is { } window ? new[] { window.BackgroundHandle, window.Handle } : []))
+                .Where(FlyoutNative.IsWindow);
+            var result = HostOwnedFlyoutStack.Apply(taskbar, events, hints);
+            var error = result.Error?.Code;
+            if (error != stackError && error is not null) record("flyout-stack-failed", result.Error);
+            stackError = error;
+        }
+        catch (Exception error) { if (stackError != error.GetType().Name) record("flyout-stack-failed", error.Message); stackError = error.GetType().Name; }
+        finally { stacking = false; }
     }
 
     internal void ApplySettings(HostSettingsPreferences preferences)
     {
         foreach (var snapshot in session.States.Snapshots)
             foreach (var entry in snapshot.Declaration?.FlyoutEntries ?? [])
-                if (entry.Kind is FlyoutKind.ShortHint or FlyoutKind.InteractiveHint)
+                if (entry.Kind is FlyoutKind.ShortHint or FlyoutKind.InteractiveHint or FlyoutKind.EventGroup)
                     session.States.FlyoutRequests.SetEntryEnabled(entry,
-                        preferences.HintVisibility?.GetValueOrDefault(HostSettingsController.IdentityKey(entry.Identity), true) != false);
+                        (entry.Kind == FlyoutKind.EventGroup ? preferences.EventVisibility : preferences.HintVisibility)
+                            ?.GetValueOrDefault(HostSettingsController.IdentityKey(entry.Identity), true) != false);
+        Events.ApplySettings(preferences);
         Hints.ApplySettings(preferences);
         InteractiveHints.ApplySettings(preferences);
     }
@@ -57,11 +91,18 @@ internal sealed class TaskbarFlyoutCoordinator : IDisposable
     {
         // A result belongs to the group present at dispatch, never to a later same-name group.
         var kind = slot.EntryKind switch { ActionEntryKind.TaskbarFlyout => TemplateEntryKind.TaskbarFlyout,
-            ActionEntryKind.Hint => TemplateEntryKind.Hint, _ => TemplateEntryKind.Component };
+            ActionEntryKind.Hint => TemplateEntryKind.Hint, ActionEntryKind.EventChannel => TemplateEntryKind.EventChannel,
+            _ => TemplateEntryKind.Component };
         var entry = new FlyoutEntryKey(slot.ApplicationId, new(slot.FeatureGroupId, kind, slot.EntryId));
         var origin = await OnUi(() =>
         {
             if (hintOrigin is not null) return (Owner: hintOrigin.Owner, ScreenId: (string?)hintOrigin.ScreenId);
+            if (kind == TemplateEntryKind.EventChannel)
+            {
+                var live = Events.Inspect().FirstOrDefault(x => x.Entry == entry && x.Identity.SessionId == expected && !x.Closing);
+                var eventOwner = live is null ? null : new HintOwner(live.Identity.ScreenId, live.Identity.Generation, live.Entry, live.Identity.SessionId);
+                return (Owner: eventOwner, ScreenId: eventOwner?.ScreenId);
+            }
             var group = Manager.Inspect().FirstOrDefault(x => x.Entry == entry && x.SessionId == expected && !x.Closing);
             var owned = group is null ? null : new HintOwner(group.ScreenId, group.Generation, group.Entry, group.SessionId);
             return (Owner: owned, ScreenId: owned?.ScreenId ?? TriggerDisplay()?.Id);
@@ -165,7 +206,14 @@ internal sealed class TaskbarFlyoutCoordinator : IDisposable
             var hintRequest = new ShortHintRequest(entry, message.SessionId, target.Id, target.WorkArea, target.Dpi, request.Position, owner);
             return request.Kind == FlyoutKind.ShortHint ? Hints.Show(hintRequest) : InteractiveHints.Show(hintRequest);
         }
-        if (request.Kind != FlyoutKind.TaskbarGroup) return ProtocolResult.Reject("FlyoutUnavailable", "该浮窗类型尚未接入窗口");
+        if (request.Kind == FlyoutKind.EventGroup)
+        {
+            var target = request.Screen == FlyoutScreen.Primary ? displays().FirstOrDefault(x => x.IsPrimary) ?? TriggerDisplay(queued.Trigger) : TriggerDisplay(queued.Trigger);
+            if (target is null) return ProtocolResult.Reject("ScreenUnavailable", "没有可用事件屏幕");
+            return Events.Show(new(new(message.ApplicationId, new(request.FeatureGroupId, TemplateEntryKind.EventChannel, request.EntryId)),
+                message.SessionId, target.Id, target.WorkArea, target.Dpi, request.Position));
+        }
+        if (request.Kind != FlyoutKind.TaskbarGroup) return ProtocolResult.Reject("FlyoutUnavailable", "浮窗类型无效");
         if (request.Screen == FlyoutScreen.Primary && displays().FirstOrDefault(x => x.IsPrimary)?.Id != island.Geometry?.DisplayId)
             return ProtocolResult.Reject("ScreenUnavailable", "主屏幕没有可用任务栏入口");
         var source = island.GetGroupFrame()?.Components.FirstOrDefault(x => x.Key.ApplicationId == message.ApplicationId &&
@@ -247,6 +295,7 @@ internal sealed class TaskbarFlyoutCoordinator : IDisposable
             else Manager.UpdateEnvironment(group.ScreenId, anchor.Value, WorkArea(geometry), geometry.Dpi);
         }
         Manager.Refresh();
+        Events.Refresh(id => displays().FirstOrDefault(x => x.Id == id));
         Hints.Refresh(id => displays().FirstOrDefault(x => x.Id == id));
         InteractiveHints.Refresh(id => displays().FirstOrDefault(x => x.Id == id));
         var observed = Manager.Inspect();
@@ -264,6 +313,7 @@ internal sealed class TaskbarFlyoutCoordinator : IDisposable
         }
         var live = observed.Select(x => x.ScreenId).ToHashSet(StringComparer.Ordinal);
         foreach (var key in anchors.Keys.Where(x => !live.Contains(x)).ToArray()) anchors.Remove(key);
+        EnforceStack();
     }
 
     private PixelRect WorkArea(TaskbarDockGeometry geometry) => displays().FirstOrDefault(x => x.Id == geometry.DisplayId)?.WorkArea ??
@@ -278,12 +328,19 @@ internal sealed class TaskbarFlyoutCoordinator : IDisposable
     }
     internal CoreResult<bool> TryClose()
     {
+        stopping = true;
         var hintsClosed = Hints.TryClose();
         var interactiveClosed = InteractiveHints.TryClose();
+        var eventsClosed = Events.TryClose();
         var result = Manager.TryClose();
-        if (result.IsSuccess) { anchors.Clear(); replacingRequests.Clear(); }
-        return !hintsClosed.IsSuccess ? hintsClosed : !interactiveClosed.IsSuccess ? interactiveClosed : result;
+        if (result.IsSuccess && hintsClosed.IsSuccess && interactiveClosed.IsSuccess && eventsClosed.IsSuccess)
+        {
+            anchors.Clear(); replacingRequests.Clear();
+            Manager.PresentedFrameApplied -= GroupFrameApplied;
+            Events.FrameApplied -= EnforceStack; Hints.FrameApplied -= EnforceStack; InteractiveHints.FrameApplied -= EnforceStack;
+        }
+        return !hintsClosed.IsSuccess ? hintsClosed : !interactiveClosed.IsSuccess ? interactiveClosed : !eventsClosed.IsSuccess ? eventsClosed : result;
     }
-    public void Dispose() { Hints.Dispose(); InteractiveHints.Dispose(); Manager.Dispose(); anchors.Clear(); replacingRequests.Clear(); }
+    public void Dispose() { TryClose(); Hints.Dispose(); InteractiveHints.Dispose(); Events.Dispose(); Manager.Dispose(); }
     private sealed record AnchorOwner(FlyoutEntryKey Entry, string SessionId, Func<PixelRect?> Read);
 }

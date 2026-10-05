@@ -13,6 +13,7 @@
     <Using Include="Xunit" />
     <Compile Include="../../samples/Mtp.CounterService/FlyoutDemoProvider.cs" Link="FlyoutDemoProvider.cs" />
     <Compile Include="../../samples/Mtp.CounterService/InteractiveHintDemoProvider.cs" Link="InteractiveHintDemoProvider.cs" />
+    <Compile Include="../../samples/Mtp.CounterService/EventDemoProvider.cs" Link="EventDemoProvider.cs" />
     <ProjectReference Include="../../src/Mtp.Sdk/Mtp.Sdk.csproj" />
     <ProjectReference Include="../../src/Mtp.Host.Runtime/Mtp.Host.Runtime.csproj" />
   </ItemGroup>

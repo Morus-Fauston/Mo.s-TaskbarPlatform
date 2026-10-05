@@ -138,11 +138,12 @@ public sealed class TemplateInteractionController : IDisposable
                 if (value is not null) return Completed("InvalidControlValue", "按钮不接受额外值");
                 parameter = new();
             }
-            if (entry.Kind is not (TemplateEntryKind.Component or TemplateEntryKind.TaskbarFlyout or TemplateEntryKind.Hint))
+            if (entry.Kind is not (TemplateEntryKind.Component or TemplateEntryKind.TaskbarFlyout or TemplateEntryKind.Hint or TemplateEntryKind.EventChannel))
                 return Completed("ActionNotAvailable", "入口未声明业务动作");
             var slot = new ActionSlotReference(applicationId, entry.FeatureGroupId,
                 entry.Kind switch { TemplateEntryKind.Component => ActionEntryKind.Component,
-                    TemplateEntryKind.Hint => ActionEntryKind.Hint, _ => ActionEntryKind.TaskbarFlyout }, entry.EntryId, action.TargetId!);
+                    TemplateEntryKind.Hint => ActionEntryKind.Hint, TemplateEntryKind.EventChannel => ActionEntryKind.EventChannel,
+                    _ => ActionEntryKind.TaskbarFlyout }, entry.EntryId, action.TargetId!);
             if (current!.Declaration!.ActionSlots.Any(item => item.Reference == slot && item.ParameterKind == parameter.Kind) != true)
                 return Completed("ActionNotAvailable", "当前入口动作或参数未声明");
             control = Control(nodeId);

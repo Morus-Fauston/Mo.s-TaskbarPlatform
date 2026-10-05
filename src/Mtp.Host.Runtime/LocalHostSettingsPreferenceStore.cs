@@ -43,6 +43,16 @@ public sealed class LocalHostSettingsPreferenceStore(string path) : IHostSetting
     public CoreResult<HostSettingsPreferences> CommitHints(HostHintPreferences hints) =>
         Commit(current => current with { Hints = hints ?? throw new ArgumentNullException(nameof(hints)) });
 
+    public CoreResult<HostSettingsPreferences> CommitEvents(HostEventPreferences events) =>
+        events is null ? Failure("settings_invalid", "事件设置无效，保留原值。") : Commit(current => current with { Events = events });
+    public CoreResult<HostSettingsPreferences> CommitEventVisibility(StableIdentity identity, bool visible) =>
+        identity is null ? Failure("settings_invalid", "事件入口身份无效，保留原值。") : Commit(current =>
+        {
+            var values = new Dictionary<string, bool>(current.EventVisibility ?? new Dictionary<string, bool>(), StringComparer.Ordinal)
+            { [HostSettingsController.IdentityKey(identity)] = visible };
+            return current with { EventVisibility = values };
+        });
+
     public CoreResult<HostSettingsPreferences> CommitHintVisibility(StableIdentity identity, bool visible) =>
         Commit(current =>
         {
@@ -104,6 +114,8 @@ public sealed class LocalHostSettingsPreferenceStore(string path) : IHostSetting
             return Invalid();
         if (preferences.Hints is { } hints && (!Enum.IsDefined(hints.DefaultPosition) || hints.DefaultPosition == FlyoutPosition.Default))
             return Invalid();
+        if (preferences.Events is { } events && (!Enum.IsDefined(events.DefaultPosition) || events.DefaultPosition == FlyoutPosition.Default ||
+            events.MaximumGroupsPerScreen is < 1 or > 10)) return Invalid();
         var keys = new List<string>(preferences.ComponentOrder.Count);
         var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (var key in preferences.ComponentOrder)
@@ -152,10 +164,27 @@ public sealed class LocalHostSettingsPreferenceStore(string path) : IHostSetting
             }
             catch (JsonException) { return Invalid(); }
         }
+        if (preferences.EventVisibility is { Count: > MaximumIdentities }) return Invalid();
+        var eventVisibility = new Dictionary<string, bool>(StringComparer.Ordinal);
+        foreach (var pair in preferences.EventVisibility ?? new Dictionary<string, bool>())
+        {
+            try
+            {
+                if (pair.Key is null || pair.Key.Length > 8192) return Invalid();
+                var segments = JsonSerializer.Deserialize<string[]>(pair.Key);
+                if (segments is not { Length: 3 } || segments.Any(value => string.IsNullOrWhiteSpace(value) || value.Length > 256 || value != value.Trim())) return Invalid();
+                var canonical = JsonSerializer.Serialize(segments);
+                if (!eventVisibility.TryAdd(canonical, pair.Value)) return Invalid();
+                seen.Add(canonical);
+                if (seen.Count > MaximumIdentities) return Invalid();
+            }
+            catch (JsonException) { return Invalid(); }
+        }
         return CoreResult<HostSettingsPreferences>.Success(preferences with
         {
             ComponentOrder = keys.AsReadOnly(), IslandGrouping = new ReadOnlyDictionary<string, DynamicGrouping>(grouping),
-            HintVisibility = new ReadOnlyDictionary<string, bool>(hintVisibility)
+            HintVisibility = new ReadOnlyDictionary<string, bool>(hintVisibility),
+            EventVisibility = new ReadOnlyDictionary<string, bool>(eventVisibility)
         });
     }
 

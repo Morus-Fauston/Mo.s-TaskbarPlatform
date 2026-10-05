@@ -13,7 +13,8 @@ public sealed record HintEntryDeclaration(string? EntryId, FlyoutKind Kind, Entr
 public sealed record HintExpansionTarget(string TaskbarFlyoutId, string? PanelTemplateId = null);
 
 /// <summary>A declared event source; absence of its close policy is invalid.</summary>
-public sealed record EventChannelDeclaration(string? ChannelId, EventClosePolicy? ClosePolicy, EntryTemplateDeclaration? Template = null);
+public sealed record EventChannelDeclaration(string? ChannelId, EventClosePolicy? ClosePolicy, EntryTemplateDeclaration? Template = null,
+    IReadOnlyList<ActionSlotDeclaration>? ActionSlots = null);
 
 /// <summary>A controlled request, without templates, coordinates, or caller-selected durations.</summary>
 public sealed record FlyoutRequest(

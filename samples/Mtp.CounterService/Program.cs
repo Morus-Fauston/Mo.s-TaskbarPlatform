@@ -13,16 +13,19 @@ try
     bool presets = args.Contains("--presets", StringComparer.Ordinal);
     bool flyouts = args.Contains("--flyouts", StringComparer.Ordinal);
     bool interactiveHints = args.Contains("--interactive-hints", StringComparer.Ordinal);
+    bool events = args.Contains("--events", StringComparer.Ordinal);
     bool organization = args.Contains("--organization", StringComparer.Ordinal);
-    if ((dynamic ? 1 : 0) + (templates ? 1 : 0) + (timers ? 1 : 0) + (presets ? 1 : 0) + (flyouts ? 1 : 0) + (organization ? 1 : 0) + (interactiveHints ? 1 : 0) > 1) throw new ArgumentException("ConflictingDemoModes");
+    if ((dynamic ? 1 : 0) + (templates ? 1 : 0) + (timers ? 1 : 0) + (presets ? 1 : 0) + (flyouts ? 1 : 0) + (organization ? 1 : 0) + (interactiveHints ? 1 : 0) + (events ? 1 : 0) > 1) throw new ArgumentException("ConflictingDemoModes");
     Func<ApplicationState>? readTick = null;
     TimerDemoProvider? timerProvider = null;
     PresetDemoProvider? presetProvider = null;
     FlyoutDemoProvider? flyoutProvider = null;
     OrganizationDemoProvider? organizationProvider = null;
     InteractiveHintDemoProvider? interactiveHintProvider = null;
+    EventDemoProvider? eventProvider = null;
     await using var client = await SdkClient.ConnectFromStandardInputAsync(applicationId =>
     {
+        if (events) return eventProvider = new EventDemoProvider(applicationId);
         if (interactiveHints) return interactiveHintProvider = new InteractiveHintDemoProvider(applicationId);
         if (organization) return organizationProvider = new OrganizationDemoProvider(applicationId);
         if (flyouts) return flyoutProvider = new FlyoutDemoProvider(applicationId);
@@ -43,10 +46,11 @@ try
     flyoutProvider?.Bind(client);
     organizationProvider?.Bind(client);
     interactiveHintProvider?.Bind(client);
+    eventProvider?.Bind(client);
     for (var tick = 1; tick <= iterations; tick++)
     {
         await Task.Delay(interval, shutdown.Token);
-        if (timerProvider is not null || presetProvider is not null || flyoutProvider is not null || organizationProvider is not null || interactiveHintProvider is not null) continue; // Local Host time never turns into SDK publication or renewal.
+        if (timerProvider is not null || presetProvider is not null || flyoutProvider is not null || organizationProvider is not null || interactiveHintProvider is not null || eventProvider is not null) continue; // Local Host time never turns into SDK publication or renewal.
         var result = await client.PublishAsync(readTick!(), shutdown.Token);
         // A newer action confirmation can overtake an already captured automatic tick.
         if (!result.Accepted && result.Code is not ("StaleRevision" or "Reconnecting" or "Unavailable")) { Console.Error.WriteLine("CounterRejected:" + result.Code); return 2; }

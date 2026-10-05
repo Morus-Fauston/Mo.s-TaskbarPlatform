@@ -1,5 +1,5 @@
 param(
-    [ValidateSet('all', 'broker', 'template', 'settings', 'dynamic', 'timer', 'hint', 'hint-window', 'interactive-hint', 'interactive-hint-motion', 'interactive-hint-production', 'flyout', 'flyout-production', 'flyout-create', 'flyout-scheduling', 'preset', 'organization')][string]$Scenario = 'all',
+    [ValidateSet('all', 'event', 'event-production', 'event-settings', 'broker', 'template', 'settings', 'dynamic', 'timer', 'hint', 'hint-window', 'interactive-hint', 'interactive-hint-motion', 'interactive-hint-production', 'flyout', 'flyout-production', 'flyout-create', 'flyout-scheduling', 'preset', 'organization')][string]$Scenario = 'all',
     [string]$OutputDirectory = "$PSScriptRoot/bin/window-regression",
     [string]$EvidenceDirectory = "$PSScriptRoot/../../.scratch/二期开发/evidence/HostWindowRegression/run-$(Get-Date -Format 'yyyyMMdd-HHmmss-fff')-$([Guid]::NewGuid().ToString('N').Substring(0, 8))"
 )
@@ -21,6 +21,9 @@ $run = [Diagnostics.Process]::new()
 $run.StartInfo = [Diagnostics.ProcessStartInfo]::new("$outputPath/Mtp.Host.WindowTests.exe")
 $run.StartInfo.UseShellExecute = $false
 $run.StartInfo.WindowStyle = 'Hidden'
+if ($Scenario -eq 'event-production') { $run.StartInfo.Arguments = '--event-production-only' }
+if ($Scenario -eq 'event') { $run.StartInfo.Arguments = '--event-only' }
+if ($Scenario -eq 'event-settings') { $run.StartInfo.Arguments = '--event-settings-only' }
 if ($Scenario -eq 'broker') { $run.StartInfo.Arguments = '--broker-only' }
 if ($Scenario -eq 'template') { $run.StartInfo.Arguments = '--template-only' }
 if ($Scenario -eq 'timer') { $run.StartInfo.Arguments = '--timer-only' }
@@ -65,7 +68,7 @@ finally {
         }
     }
     foreach ($directory in Get-ChildItem -LiteralPath $outputPath -Directory) {
-        if ($directory.Name -notin $previousDirectories -and ($directory.Name -like 'console-*' -or $directory.Name -like 'display-selection-*' -or $directory.Name -like 'broker-*' -or $directory.Name -like 'template-*' -or $directory.Name -like 'settings-*' -or $directory.Name -like 'dynamic-*' -or $directory.Name -like 'timer-*' -or $directory.Name -like 'preset-*' -or $directory.Name -like 'flyout-*' -or $directory.Name -like 'organization-*' -or $directory.Name -like 'interactive-hint-*' -or $directory.Name -like 'hint-input-*' -or $directory.Name -like 'hint-settings-native-*')) {
+        if ($directory.Name -notin $previousDirectories -and ($directory.Name -like 'console-*' -or $directory.Name -like 'display-selection-*' -or $directory.Name -like 'broker-*' -or $directory.Name -like 'template-*' -or $directory.Name -like 'settings-*' -or $directory.Name -like 'dynamic-*' -or $directory.Name -like 'timer-*' -or $directory.Name -like 'preset-*' -or $directory.Name -like 'flyout-*' -or $directory.Name -like 'organization-*' -or $directory.Name -like 'event-*' -or $directory.Name -like 'flyout-stack-*' -or $directory.Name -like 'interactive-hint-*' -or $directory.Name -like 'hint-input-*' -or $directory.Name -like 'hint-settings-native-*')) {
             Copy-Item -LiteralPath $directory.FullName -Destination $evidencePath -Recurse
         }
     }

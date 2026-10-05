@@ -18,6 +18,7 @@ internal sealed class ShortHintManager : IDisposable
     internal const int MaximumHints = 64;
     private readonly BrokerStateStore states;
     private readonly TaskbarFlyoutManager groups;
+    private readonly EventGroupManager? events;
     private readonly RegisteredImageCache images;
     private readonly Action<string, object?> record;
     private readonly TimeProvider clock;
@@ -32,6 +33,7 @@ internal sealed class ShortHintManager : IDisposable
     private int diagnosticCount;
     internal bool? ReducedMotionOverride { get; set; }
     internal Func<int> AdditionalInstanceCount { get; set; } = () => 0;
+    internal event Action? FrameApplied;
     internal bool HasResources => hints.Count > 0;
     internal ShortHintWindow? WindowForTesting(long generation) => hints.GetValueOrDefault(generation)?.Window;
     internal IReadOnlyList<ShortHintObservation> Inspect() => hints.Values.Select(x => new ShortHintObservation(
@@ -39,27 +41,52 @@ internal sealed class ShortHintManager : IDisposable
     private TimeSpan Now => clock.GetElapsedTime(started, clock.GetTimestamp());
 
     internal ShortHintManager(BrokerStateStore states, TaskbarFlyoutManager groups, RegisteredImageCache images,
-        Action<string, object?> record, TimeProvider? clock = null)
+        Action<string, object?> record, TimeProvider? clock = null, EventGroupManager? events = null)
     {
         this.states = states; this.groups = groups; this.images = images;
+        this.events = events;
         this.record = (name, value) => { if (diagnosticCount >= 4096) return; diagnosticCount++; try { record(name, value); } catch (Exception) { } };
         this.clock = clock ?? TimeProvider.System; started = this.clock.GetTimestamp();
         timer.Tick += Tick;
         groups.PresentedFrameApplied += GroupFrameApplied;
+        if (events is not null) events.PresentedFrameApplied += EventFrameApplied;
     }
 
     private void GroupFrameApplied(string screenId, long ownerGeneration)
     {
-        foreach (var instance in hints.Values.Where(x => x.Request.Owner is { } owner && owner.ScreenId == screenId && owner.Generation == ownerGeneration).ToArray())
+        foreach (var owner in hints.Values.Select(x => x.Request.Owner).OfType<HintOwner>().Where(owner =>
+            owner.Entry.Entry.Kind == TemplateEntryKind.TaskbarFlyout && owner.ScreenId == screenId && owner.Generation == ownerGeneration).Distinct().ToArray())
+            OwnerFrameApplied(owner);
+    }
+    private void EventFrameApplied(HintOwner owner) => OwnerFrameApplied(owner);
+    private void OwnerFrameApplied(HintOwner owner)
+    {
+        foreach (var instance in hints.Values.Where(x => x.Request.Owner == owner).ToArray())
         {
             if (instance.CleanupPending || instance.Reflowing) continue;
-            if (groups.EnvironmentForHint(screenId, ownerGeneration) is { } environment)
+            if (OwnerEnvironment(owner) is { } environment)
                 instance.Request = instance.Request with { WorkArea = environment.WorkArea, Dpi = environment.Dpi };
             if (!Available(instance.Request)) FinishClose(instance);
-            else if (!instance.Closing && groups.BoundsForHint(screenId, ownerGeneration) != instance.OwnerLayoutBounds) SafeReflow(instance);
+            else if (!instance.Closing && OwnerBounds(owner) != instance.OwnerLayoutBounds) SafeReflow(instance);
             else Advance(instance);
         }
     }
+    private bool OwnerAvailable(HintOwner owner) => owner.Entry.Entry.Kind switch
+    {
+        TemplateEntryKind.EventChannel => events?.BoundsForHint(owner) is not null,
+        TemplateEntryKind.TaskbarFlyout => groups.Inspect().Any(x => x.ScreenId == owner.ScreenId && x.Generation == owner.Generation &&
+            x.Entry == owner.Entry && x.SessionId == owner.SessionId && !x.Closing),
+        _ => false
+    };
+    private TaskbarDipRect? OwnerBounds(HintOwner owner) => !OwnerAvailable(owner) ? null :
+        owner.Entry.Entry.Kind == TemplateEntryKind.EventChannel ? events!.BoundsForHint(owner) : groups.BoundsForHint(owner.ScreenId, owner.Generation);
+    private TaskbarDipRect? OwnerPresentedBounds(HintOwner owner) => !OwnerAvailable(owner) ? null :
+        owner.Entry.Entry.Kind == TemplateEntryKind.EventChannel ? events!.PresentedBoundsForHint(owner) : groups.PresentedBoundsForHint(owner.ScreenId, owner.Generation);
+    private (PixelRect WorkArea, uint Dpi)? OwnerEnvironment(HintOwner owner) => !OwnerAvailable(owner) ? null :
+        owner.Entry.Entry.Kind == TemplateEntryKind.EventChannel ? events!.EnvironmentForHint(owner) : groups.EnvironmentForHint(owner.ScreenId, owner.Generation);
+    private bool ReserveOwnerSpace(HintOwner owner, double height) => OwnerAvailable(owner) &&
+        (owner.Entry.Entry.Kind == TemplateEntryKind.EventChannel ? events!.ReserveHintSpace(owner, height) :
+            groups.ReserveHintSpace(owner.ScreenId, owner.Generation, height));
 
     internal void ApplySettings(HostSettingsPreferences value)
     {
@@ -91,8 +118,8 @@ internal sealed class ShortHintManager : IDisposable
         var snapshot = states.GetSnapshot(request.Entry.ApplicationId);
         if (snapshot?.SessionId != request.SessionId || !snapshot.IsConnected || !snapshot.IsInteractive) return false;
         if (request.Owner is not { } owner) return true;
-        return groups.Inspect().Any(x => x.ScreenId == owner.ScreenId && x.Generation == owner.Generation &&
-            x.Entry == owner.Entry && x.SessionId == owner.SessionId && !x.Closing);
+        return owner.Entry.ApplicationId == request.Entry.ApplicationId && owner.SessionId == request.SessionId &&
+            owner.ScreenId == request.ScreenId && OwnerAvailable(owner);
     }
 
     internal ProtocolResult Show(ShortHintRequest request, string? errorText = null)
@@ -193,7 +220,7 @@ internal sealed class ShortHintManager : IDisposable
         instance.Renderer?.Refresh(); instance.Window?.RefreshAppearance();
         var request = instance.Request;
         var work = FlyoutNative.ToDip(request.WorkArea, request.Dpi);
-        var owner = request.Owner is { } owned ? groups.BoundsForHint(owned.ScreenId, owned.Generation) : null;
+        var owner = request.Owner is { } owned ? OwnerBounds(owned) : null;
         if (request.Owner is not null && owner is null) throw new InvalidOperationException("所属浮窗组已结束");
         double width = owner?.Width ?? Math.Min(320, work.Width - 32);
         instance.Content!.Measure(new(Math.Max(1, width), Math.Max(1, Math.Min(160, work.Height - 32))));
@@ -204,8 +231,8 @@ internal sealed class ShortHintManager : IDisposable
         if (!result.IsSuccess) throw new InvalidOperationException(result.Error!.Message);
         if (result.Value!.Mode == HintPlacementMode.GroupReflow && request.Owner is { } group)
         {
-            if (!groups.ReserveHintSpace(group.ScreenId, group.Generation, height + HintLayout.GapDip)) throw new InvalidOperationException("所属组无法为提示保留空间");
-            owner = groups.BoundsForHint(group.ScreenId, group.Generation);
+            if (!ReserveOwnerSpace(group, height + HintLayout.GapDip)) throw new InvalidOperationException("所属组无法为提示保留空间");
+            owner = OwnerBounds(group);
             result = HintLayout.Calculate(work, width, height, Position(position), owner);
             if (!result.IsSuccess) throw new InvalidOperationException(result.Error!.Message);
         }
@@ -256,7 +283,7 @@ internal sealed class ShortHintManager : IDisposable
             var frame = instance.Animation.Sample(Now);
             if (frame.Panels.FirstOrDefault() is not { } panel) return;
             var bounds = panel.Bounds;
-            if (instance.Request.Owner is { } owner && groups.PresentedBoundsForHint(owner.ScreenId, owner.Generation) is { } ownerBounds)
+            if (instance.Request.Owner is { } owner && OwnerPresentedBounds(owner) is { } ownerBounds)
             {
                 bounds = bounds with { X = ownerBounds.X, Width = ownerBounds.Width, Y = ownerBounds.Y + bounds.Y };
             }
@@ -266,6 +293,7 @@ internal sealed class ShortHintManager : IDisposable
             {
                 instance.Window.Apply(pixels, panel.Opacity); instance.Window.Show();
                 instance.AppliedBounds = pixels; instance.AppliedAlpha = alpha;
+                EmitFrame();
             }
             instance.LastFrame = frame;
             if (panel.Opacity > 0 && instance.Window.IsVisible && !instance.Closing) instance.Lifetime.MarkVisible(instance.Generation);
@@ -296,17 +324,28 @@ internal sealed class ShortHintManager : IDisposable
         var result = instance.Window?.TryClose() ?? CoreResult<bool>.Success(true);
         if (!result.IsSuccess) { instance.CleanupPending = true; record("hint-cleanup-pending", new { instance.Generation, result.Error }); return result; }
         instance.Renderer?.Dispose(); instance.Animation.Clear(); hints.Remove(instance.Generation);
-        if (instance.Request.Owner is { } owner) groups.ReserveHintSpace(owner.ScreenId, owner.Generation, 0);
+        if (instance.Request.Owner is { } owner) ReserveOwnerSpace(owner, 0);
         record("hint-closed", new { instance.Generation });
+        EmitFrame();
         if (hints.Count == 0) timer.Stop();
         return CoreResult<bool>.Success(true);
+    }
+    private void EmitFrame()
+    {
+        if (FrameApplied is not { } listeners) return;
+        foreach (Action listener in listeners.GetInvocationList())
+            try { listener(); } catch (Exception error) { record("hint-frame-observer-failed", error.GetType().Name); }
     }
     internal CoreResult<bool> TryClose()
     {
         stopping = true; timer.Stop();
         CoreResult<bool> result = CoreResult<bool>.Success(true);
         foreach (var instance in hints.Values.ToArray()) { var closed = FinishClose(instance); if (!closed.IsSuccess) result = closed; }
-        if (result.IsSuccess) groups.PresentedFrameApplied -= GroupFrameApplied;
+        if (result.IsSuccess)
+        {
+            groups.PresentedFrameApplied -= GroupFrameApplied;
+            if (events is not null) events.PresentedFrameApplied -= EventFrameApplied;
+        }
         return result;
     }
     public void Dispose() { TryClose(); if (hints.Count == 0) timer.Tick -= Tick; }

@@ -32,6 +32,7 @@ internal sealed class InteractiveHintManager : IDisposable
     internal bool? ReducedMotionOverride { get; set; }
     internal Func<int> AdditionalInstanceCount { get; set; } = () => 0;
     internal bool HasResources => hints.Count > 0;
+    internal event Action? FrameApplied;
     internal InteractiveHintWindow? WindowForTesting(long generation) => hints.GetValueOrDefault(generation)?.Window;
     internal IReadOnlyList<ShortHintObservation> Inspect() => hints.Values.Select(x => new ShortHintObservation(
         x.Request, x.Generation, x.Window?.Handle ?? 0, x.Window?.LastBounds ?? default, x.Closing, null, x.Mode)).ToArray();
@@ -291,6 +292,7 @@ internal sealed class InteractiveHintManager : IDisposable
             {
                 instance.Window.Apply(pixels, panel.Opacity); instance.Window.Show();
                 instance.AppliedBounds = pixels; instance.AppliedAlpha = alpha;
+                try { FrameApplied?.Invoke(); } catch (Exception error) { record("interactive-hint-frame-observer-failed", error.Message); }
             }
             instance.LastFrame = frame;
             if (panel.Opacity > 0 && instance.Window.IsVisible && !instance.Closing) instance.Lifetime.MarkVisible(instance.Generation);
@@ -328,6 +330,7 @@ internal sealed class InteractiveHintManager : IDisposable
             groups.ReserveHintSpace(owner.ScreenId, owner.Generation, 0, Reservation(instance));
         }
         record("interactive-hint-closed", new { instance.Generation });
+        try { FrameApplied?.Invoke(); } catch (Exception error) { record("interactive-hint-frame-observer-failed", error.Message); }
         if (hints.Count == 0) timer.Stop();
         return CoreResult<bool>.Success(true);
     }

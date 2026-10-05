@@ -48,9 +48,9 @@ internal sealed class TaskbarFlyoutWindow
     internal TaskbarFlyoutWindow(Action close, Action back, Action<string> open, Action closed, Action<string, object?> record)
     { this.close = close; this.back = back; this.open = open; this.closed = closed; this.record = record; }
 
-    internal void Initialize()
+    internal void Initialize(string title = "MTP 任务栏面板", string automationId = "MtpTaskbarFlyout")
     {
-        window = new Window { Title = "MTP 任务栏面板" };
+        window = new Window { Title = title };
         Handle = WinRT.Interop.WindowNative.GetWindowHandle(window);
         window.Closed += OnClosed;
         root.RowDefinitions.Add(new() { Height = new GridLength(FlyoutGroupLayout.HeaderHeightDip) });
@@ -71,7 +71,7 @@ internal sealed class TaskbarFlyoutWindow
             record("flyout-high-contrast-notification-unavailable", new { error.HResult,
                 fallback = "Read current high contrast during Host refresh" });
         }
-        AutomationProperties.SetAutomationId(root, "MtpTaskbarFlyout");
+        AutomationProperties.SetAutomationId(root, automationId);
         AutomationProperties.SetName(closeButton, "关闭浮窗组");
         AutomationProperties.SetName(backButton, "返回上一面板");
         AutomationProperties.SetName(panelsButton, "打开关联面板");

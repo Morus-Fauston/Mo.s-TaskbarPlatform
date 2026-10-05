@@ -17,6 +17,7 @@ public sealed partial class SettingsWindow : Window
     private readonly CancellationTokenSource lifetime = new();
     private readonly Dictionary<StableIdentity, ComponentRow> components = [];
     private readonly Dictionary<StableIdentity, HintRow> hints = [];
+    private readonly Dictionary<StableIdentity, EventRow> events = [];
     private readonly Dictionary<string, ApplicationRow> applications = new(StringComparer.Ordinal);
     private readonly HashSet<string> retrying = new(StringComparer.Ordinal);
     private bool rendering;
@@ -102,6 +103,7 @@ public sealed partial class SettingsWindow : Window
             RenderApplications(snapshot);
             RenderComponents(snapshot);
             RenderHints(snapshot);
+            RenderEvents(snapshot);
             if (RightGapInput.FocusState == FocusState.Unfocused) displaySelection.Refresh();
             DisplayStatus.Text = displaySelection.Error ?? host.TargetSummary;
             ConnectionStatus.Text = host.CommunicationStatus;
@@ -112,6 +114,10 @@ public sealed partial class SettingsWindow : Window
             var hintPreferences = snapshot.Preferences.Hints ?? new();
             if (resetInputs || !HintPositionCombo.IsDropDownOpen) SelectTag(HintPositionCombo, hintPreferences.DefaultPosition.ToString());
             AllowHintPositionToggle.IsOn = hintPreferences.AllowApplicationPosition;
+            var eventPreferences = snapshot.Preferences.Events ?? new();
+            if (resetInputs || !EventPositionCombo.IsDropDownOpen) SelectTag(EventPositionCombo, eventPreferences.DefaultPosition.ToString());
+            AllowEventPositionToggle.IsOn = eventPreferences.AllowApplicationPosition;
+            if (resetInputs || EventLimitInput.FocusState == FocusState.Unfocused) EventLimitInput.Value = eventPreferences.MaximumGroupsPerScreen;
             if (!ThemeCombo.IsDropDownOpen) SelectTag(ThemeCombo, appearance.Theme.ToString());
             if (!MaterialCombo.IsDropDownOpen) SelectTag(MaterialCombo, appearance.Material.ToString());
             if (resetInputs || OpacityInput.FocusState == FocusState.Unfocused) OpacityInput.Value = appearance.Opacity;
@@ -333,6 +339,51 @@ public sealed partial class SettingsWindow : Window
         return new(panel, title, details, visible, () => visible.Toggled -= toggled);
     }
 
+    private void RenderEvents(HostSettingsSnapshot snapshot)
+    {
+        var active = snapshot.EventEntries.Select(entry => entry.Identity).ToHashSet();
+        foreach (var identity in events.Keys.Where(identity => !active.Contains(identity)).ToArray())
+        {
+            events[identity].Detach();
+            EventRows.Children.Remove(events[identity].Panel);
+            events.Remove(identity);
+        }
+        for (int index = 0; index < snapshot.EventEntries.Count; index++)
+        {
+            var entry = snapshot.EventEntries[index];
+            if (!events.TryGetValue(entry.Identity, out var row))
+            { row = CreateEventRow(entry.Identity); events.Add(entry.Identity, row); }
+            KeepPosition(EventRows, row.Panel, index);
+            row.Title.Text = entry.Identity.LocalId.Value;
+            row.Details.Text = string.Join(" / ", entry.Identity.Segments.Select(segment => segment.Value)) + " · " +
+                (entry.ClosePolicy == EventClosePolicy.Persistent ? "持续显示" : "8秒无操作后关闭") +
+                (entry.IsAvailable ? "" : " · 连接不可用，恢复后按此偏好显示");
+            row.Visible.IsOn = entry.IsVisible;
+        }
+        EventsEmpty.Visibility = Show(snapshot.EventEntries.Count == 0);
+    }
+
+    private EventRow CreateEventRow(StableIdentity identity)
+    {
+        string key = string.Join("/", identity.Segments.Select(segment => Uri.EscapeDataString(segment.Value)));
+        var panel = new Grid { ColumnSpacing = 12, Padding = new Thickness(0, 8, 0, 8) };
+        panel.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });
+        panel.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+        var labels = new StackPanel { Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
+        var title = new TextBlock { TextWrapping = TextWrapping.Wrap };
+        var details = new TextBlock { TextWrapping = TextWrapping.Wrap, Style = (Style)Application.Current.Resources["CaptionTextBlockStyle"] };
+        labels.Children.Add(title); labels.Children.Add(details);
+        var visible = new ToggleSwitch { MinWidth = 0, OnContent = "", OffContent = "", VerticalAlignment = VerticalAlignment.Center };
+        AutomationProperties.SetAutomationId(panel, "mtp-settings-event-" + key);
+        AutomationProperties.SetAutomationId(visible, "mtp-settings-event-visible-" + key);
+        AutomationProperties.SetName(visible, "显示事件浮窗 " + key);
+        RoutedEventHandler toggled = (_, _) => { if (!rendering && !disposed) Apply(() => settings.SetEventVisibility(identity, visible.IsOn)); };
+        visible.Toggled += toggled;
+        Grid.SetColumn(visible, 1);
+        panel.Children.Add(labels); panel.Children.Add(visible);
+        return new(panel, title, details, visible, () => visible.Toggled -= toggled);
+    }
+
     private ComponentRow CreateComponentRow(StableIdentity identity)
     {
         string key = string.Join("/", identity.Segments.Select(segment => Uri.EscapeDataString(segment.Value)));
@@ -415,6 +466,22 @@ public sealed partial class SettingsWindow : Window
         Apply(() => settings.SetHints(new(position, AllowHintPositionToggle.IsOn)));
     }
     private void OpacityChanged(NumberBox sender, NumberBoxValueChangedEventArgs args) => SaveAppearance();
+    private void EventPositionChanged(object sender, SelectionChangedEventArgs args) => SaveEvents();
+    private void EventOverrideChanged(object sender, RoutedEventArgs args) => SaveEvents();
+    private void EventLimitChanged(NumberBox sender, NumberBoxValueChangedEventArgs args) => SaveEvents();
+    private void SaveEvents()
+    {
+        if (rendering || disposed || EventPositionCombo.SelectedItem is not ComboBoxItem selected ||
+            !Enum.TryParse<FlyoutPosition>(selected.Tag?.ToString(), out var position)) return;
+        double limit = EventLimitInput.Value;
+        if (!double.IsFinite(limit) || limit is < 1 or > 10 || limit != Math.Truncate(limit))
+        {
+            operationError = "每屏事件浮窗组上限须为1至10的整数，已保留原值。";
+            Render(resetInputs: true);
+            return;
+        }
+        Apply(() => settings.SetEvents(new(position, AllowEventPositionToggle.IsOn, (int)limit)));
+    }
     private void SaveAppearance()
     {
         if (rendering || disposed || ThemeCombo.SelectedItem is not ComboBoxItem theme || MaterialCombo.SelectedItem is not ComboBoxItem material) return;
@@ -487,12 +554,14 @@ public sealed partial class SettingsWindow : Window
         Closed -= WindowClosed;
         foreach (var row in components.Values) row.Detach();
         foreach (var row in hints.Values) row.Detach();
+        foreach (var row in events.Values) row.Detach();
         foreach (var row in applications.Values) row.Detach();
-        components.Clear(); hints.Clear(); applications.Clear(); retrying.Clear();
+        components.Clear(); hints.Clear(); events.Clear(); applications.Clear(); retrying.Clear();
         lifetime.Dispose();
     }
 
     private sealed record ComponentRow(Grid Panel, TextBlock Title, TextBlock Details, ToggleSwitch Visible, Button Up, Button Down, ComboBox Grouping, Action Detach);
     private sealed record HintRow(Grid Panel, TextBlock Title, TextBlock Details, ToggleSwitch Visible, Action Detach);
+    private sealed record EventRow(Grid Panel, TextBlock Title, TextBlock Details, ToggleSwitch Visible, Action Detach);
     private sealed record ApplicationRow(StackPanel Panel, TextBlock Title, TextBlock Status, TextBlock Groups, TextBlock Recovery, Button Retry, Action Detach);
 }

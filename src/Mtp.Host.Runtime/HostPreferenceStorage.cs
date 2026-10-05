@@ -124,6 +124,8 @@ public sealed class HostPreferenceStorage
         public CoreResult<HostSettingsPreferences> CommitGrouping(StableIdentity identity, DynamicGrouping grouping) => Load();
         public CoreResult<HostSettingsPreferences> CommitHints(HostHintPreferences hints) => Load();
         public CoreResult<HostSettingsPreferences> CommitHintVisibility(StableIdentity identity, bool visible) => Load();
+        public CoreResult<HostSettingsPreferences> CommitEvents(HostEventPreferences events) => Load();
+        public CoreResult<HostSettingsPreferences> CommitEventVisibility(StableIdentity identity, bool visible) => Load();
     }
 
     private sealed class UnavailableDisplayStore(StructuredError error) : IComponentDisplayPreferenceStore
