@@ -2,7 +2,7 @@ namespace Mtp.Contracts;
 
 public enum FlyoutKind { TaskbarGroup, ShortHint, InteractiveHint, EventGroup }
 public enum FlyoutScreen { Trigger, Primary }
-public enum FlyoutPosition { Default }
+public enum FlyoutPosition { Default, TopLeft, TopCenter, TopRight, BottomLeft, BottomCenter, BottomRight, Center, LowerCenter }
 public enum EventClosePolicy { AutoClose, Persistent }
 
 /// <summary>A declared hint entry. Only ShortHint and InteractiveHint are valid kinds.</summary>

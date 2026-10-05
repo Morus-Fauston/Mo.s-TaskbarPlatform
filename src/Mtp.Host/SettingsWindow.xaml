@@ -61,8 +61,11 @@
                             <StackPanel x:Name="ComponentRows" Spacing="8" />
                         </StackPanel>
                         <StackPanel x:Name="FlyoutsPanel" Spacing="12" Visibility="Collapsed">
-                            <TextBlock Text="浮窗显示偏好" Style="{ThemeResource SubtitleTextBlockStyle}" />
-                            <TextBlock Text="事件浮窗和短提示的显示开关、默认位置及每屏上限将在相应浮窗功能交付时提供。当前小组件显示开关不会改变浮窗偏好。" TextWrapping="Wrap" />
+                            <TextBlock Text="短提示" Style="{ThemeResource SubtitleTextBlockStyle}" />
+                            <TextBlock Text="关闭入口会立即隐藏它的短提示并阻止新提示显示，不停止应用业务，也不清除原操作的失败信息。" TextWrapping="Wrap" />
+                            <TextBlock x:Name="HintsEmpty" Text="当前没有已声明的短提示入口。" TextWrapping="Wrap"
+                                       AutomationProperties.AutomationId="mtp-settings-hints-empty" />
+                            <StackPanel x:Name="HintRows" Spacing="8" />
                         </StackPanel>
                         <StackPanel x:Name="OfficialPanel" Spacing="12" Visibility="Collapsed">
                             <TextBlock Text="官方功能尚未交付" Style="{ThemeResource SubtitleTextBlockStyle}" />
@@ -74,6 +77,20 @@
                             <TextBlock Text="MTP 统一承载接入应用的小组件和浮窗。接入应用提供声明、状态与动作，Host 管理呈现和窗口生命周期。" TextWrapping="Wrap" />
                         </StackPanel>
                         <StackPanel x:Name="GlobalPanel" Spacing="12" Visibility="Collapsed">
+                            <ComboBox x:Name="HintPositionCombo" Header="短提示默认位置" HorizontalAlignment="Stretch" SelectionChanged="HintPositionChanged"
+                                      AutomationProperties.AutomationId="mtp-settings-hint-position" AutomationProperties.Name="短提示默认位置">
+                                <ComboBoxItem Content="左上" Tag="TopLeft" />
+                                <ComboBoxItem Content="上中" Tag="TopCenter" />
+                                <ComboBoxItem Content="右上" Tag="TopRight" />
+                                <ComboBoxItem Content="左下" Tag="BottomLeft" />
+                                <ComboBoxItem Content="下中" Tag="BottomCenter" />
+                                <ComboBoxItem Content="右下" Tag="BottomRight" />
+                                <ComboBoxItem Content="中央" Tag="Center" />
+                                <ComboBoxItem Content="中央靠下" Tag="LowerCenter" />
+                            </ComboBox>
+                            <ToggleSwitch x:Name="AllowHintPositionToggle" Header="允许应用指定短提示位置" Toggled="HintOverrideChanged"
+                                          AutomationProperties.AutomationId="mtp-settings-hint-app-position" AutomationProperties.Name="允许应用指定短提示位置" />
+                            <TextBlock Text="默认位置用于无关联短提示；关联错误提示跟随所属浮窗。允许应用指定位置后，应用未指定时仍使用这里的默认位置。" TextWrapping="Wrap" />
                             <ComboBox x:Name="ThemeCombo" Header="主题" HorizontalAlignment="Stretch" SelectionChanged="AppearanceChanged"
                                       AutomationProperties.AutomationId="mtp-settings-theme" AutomationProperties.Name="主题">
                                 <ComboBoxItem Content="跟随系统" Tag="System" />

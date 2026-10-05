@@ -26,6 +26,17 @@ public sealed class HostFlyoutRequestQueueTests
     }
 
     [Fact]
+    public void Captured_trigger_point_remains_with_its_request_until_ui_consumption()
+    {
+        var queue = new HostFlyoutRequestQueue();
+        queue.Enqueue(Message(1), new(-1920, 500));
+        queue.Enqueue(Message(2), new(900, 100));
+        var batch = queue.Drain();
+        Assert.Equal(new HostFlyoutTrigger(-1920, 500), batch[0].Trigger);
+        Assert.Equal(new HostFlyoutTrigger(900, 100), batch[1].Trigger);
+    }
+
+    [Fact]
     public void Shutdown_discards_pending_and_rejects_late_callbacks()
     {
         var queue = new HostFlyoutRequestQueue();

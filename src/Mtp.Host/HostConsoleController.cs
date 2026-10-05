@@ -55,6 +55,7 @@ internal sealed class HostConsoleController
         Appearance = value;
         if (!Tests.IsRunning) adapter.ApplyAppearance(value);
         flyouts?.Manager.ApplyAppearance(value);
+        flyouts?.Hints.ApplyAppearance(value);
         Refresh();
     }
     public async Task<ProtocolResult> RetryAsync(string? applicationId, CancellationToken token = default)
@@ -106,7 +107,9 @@ internal sealed class HostConsoleController
     public IslandPreviewWindow Preview { get; } = new();
     public bool SimulateUnavailable { get; private set; }
     public IReadOnlyList<string> Errors => errors;
-    public string? CurrentError => PreferenceError?.Message ?? Session.Error?.Message ?? communication?.LastError;
+    public string? CurrentError => PreferenceError?.Message ?? Session.Error?.Message ?? communication?.LastError ??
+        communication?.States.Snapshots.Select(x => communication.Actions.GetLastErrorHint(x.ApplicationId)?.Result)
+            .FirstOrDefault(x => x is not null)?.Message;
     public string Target => adapter.TargetDescription;
     public string TargetSummary => adapter.TargetSummary;
     public string MaterialStatus => adapter.MaterialStatus;
@@ -147,10 +150,11 @@ internal sealed class HostConsoleController
     public Action<string> OpenDirectory { get; set; } = path => System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(path) { UseShellExecute = true });
 
     public HostConsoleController(HostDisplayController display, HostDisplayLoadResult loaded, ITaskbarDockPreferenceStore store,
-        Func<TaskbarDockPreferences, CoreResult<IslandTarget>> capture, string evidenceRoot, Win32TaskbarDockEnvironment? environment = null)
+        Func<TaskbarDockPreferences, CoreResult<IslandTarget>> capture, string evidenceRoot, Win32TaskbarDockEnvironment? environment = null,
+        Func<IReadOnlyList<TaskbarDockDisplay>>? displayProvider = null)
     {
         this.display = display; this.store = store;
-        getDisplays = environment is null ? () => [] : environment.GetDisplays;
+        getDisplays = displayProvider ?? (environment is null ? () => [] : environment.GetDisplays);
         var preferences = store.Load();
         Preferences = preferences.Value ?? new(); PreferenceError = preferences.Error;
         foreach (var error in loaded.Errors) AddError(error);
@@ -174,7 +178,7 @@ internal sealed class HostConsoleController
         TemplateRenderer? renderer = null;
         var controller = new TemplateInteractionController(session.States, ids[0].Value,
             new(ids[1].Value, TemplateEntryKind.Component, ids[2].Value),
-            (slot, parameter, expected, token) => session.SendActionAsync(slot, parameter, token, expected),
+            (slot, parameter, expected, token) => EnsureFlyouts().SendActionAsync(slot, parameter, expected, token),
             navigate: intent => renderer is not null && !closing && ReferenceEquals(session, communication)
                 ? EnsureFlyouts().Navigate(renderer, intent) : ProtocolResult.Reject("StaleSession", "入口已失效"));
         return renderer = new TemplateRenderer(controller, images);
@@ -184,6 +188,8 @@ internal sealed class HostConsoleController
         if (flyouts is not null) return flyouts;
         flyouts = new(communication!, adapter, getDisplays, images, RecordFlyout);
         flyouts.Manager.ApplyAppearance(Appearance);
+        flyouts.Hints.ApplyAppearance(Appearance);
+        flyouts.ApplySettings(settings?.GetSnapshot().Preferences ?? new(new(), []));
         return flyouts;
     }
     private void RecordFlyout(string kind, object? value)
@@ -194,6 +200,7 @@ internal sealed class HostConsoleController
     private void DrainFlyouts()
     {
         if (communication is not { } current) return;
+        flyouts?.ApplySettings(settings?.GetSnapshot().Preferences ?? new(new(), []));
         foreach (var queued in flyoutRequests.Drain())
         {
             ProtocolResult result;
@@ -216,7 +223,7 @@ internal sealed class HostConsoleController
             session.States.GetSnapshot(slot.ApplicationId)?.SessionId == expectedSession;
         try
         {
-            var pending = session.SendActionAsync(slot, new ActionParameter(), communicationLifetime.Token, expectedSession);
+            var pending = EnsureFlyouts().SendActionAsync(slot, new ActionParameter(), expectedSession, communicationLifetime.Token);
             Refresh();
             var result = await pending;
             if (!IsCurrent()) return;
@@ -244,7 +251,7 @@ internal sealed class HostConsoleController
         else if (routed.TaskbarFlyoutId is not null)
         {
             var result = EnsureFlyouts().OpenItem(routed, control);
-            if (!result.Accepted) AddError(new(result.Code, result.Message));
+            if (!result.Accepted || result.ActivityRejections is { Count: > 0 }) AddError(new(result.Code, result.Message));
         }
         Refresh();
     }
@@ -258,11 +265,11 @@ internal sealed class HostConsoleController
             display.ItemPresentations?.Resolve(routed.Origin)?.SessionId == routed.SessionId;
         try
         {
-            var pending = session.SendActionAsync(routed.Action!, new(), communicationLifetime.Token, routed.SessionId);
+            var pending = EnsureFlyouts().SendActionAsync(routed.Action!, new(), routed.SessionId, communicationLifetime.Token);
             Refresh();
             var result = await pending;
             if (!IsCurrent()) return;
-            if (!result.Accepted) AddError(new(result.Code, result.Message));
+            if (!result.Accepted || result.ActivityRejections is { Count: > 0 }) AddError(new(result.Code, result.Message));
             Tests.Observe("item-action-result", new { routed.Action, result.Code, result.Accepted });
         }
         catch (Exception error) when (error is IOException or OperationCanceledException or ObjectDisposedException)
@@ -360,7 +367,8 @@ internal sealed class HostConsoleController
             communication = started;
             started.QueueFlyoutPresentation = message =>
             {
-                var queued = flyoutRequests.Enqueue(message);
+                var trigger = FlyoutNative.GetCursorPos(out var point) ? new HostFlyoutTrigger(point.X, point.Y) : null;
+                var queued = flyoutRequests.Enqueue(message, trigger);
                 if (queued.Accepted) RequestRefresh();
                 return queued;
             };

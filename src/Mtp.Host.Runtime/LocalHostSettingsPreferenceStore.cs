@@ -40,6 +40,17 @@ public sealed class LocalHostSettingsPreferenceStore(string path) : IHostSetting
     public CoreResult<HostSettingsPreferences> CommitOrder(IReadOnlyList<string> order) =>
         Commit(current => current with { ComponentOrder = order });
 
+    public CoreResult<HostSettingsPreferences> CommitHints(HostHintPreferences hints) =>
+        Commit(current => current with { Hints = hints ?? throw new ArgumentNullException(nameof(hints)) });
+
+    public CoreResult<HostSettingsPreferences> CommitHintVisibility(StableIdentity identity, bool visible) =>
+        Commit(current =>
+        {
+            var values = new Dictionary<string, bool>(current.HintVisibility ?? new Dictionary<string, bool>(), StringComparer.Ordinal)
+            { [HostSettingsController.IdentityKey(identity)] = visible };
+            return current with { HintVisibility = values };
+        });
+
     public CoreResult<HostSettingsPreferences> CommitGrouping(StableIdentity identity, DynamicGrouping grouping) =>
         Commit(current =>
         {
@@ -91,6 +102,8 @@ public sealed class LocalHostSettingsPreferenceStore(string path) : IHostSetting
             !double.IsFinite(appearance.Opacity) || appearance.Opacity is < 0 or > 1 ||
             preferences.ComponentOrder is null || preferences.ComponentOrder.Count > MaximumIdentities)
             return Invalid();
+        if (preferences.Hints is { } hints && (!Enum.IsDefined(hints.DefaultPosition) || hints.DefaultPosition == FlyoutPosition.Default))
+            return Invalid();
         var keys = new List<string>(preferences.ComponentOrder.Count);
         var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (var key in preferences.ComponentOrder)
@@ -123,8 +136,27 @@ public sealed class LocalHostSettingsPreferenceStore(string path) : IHostSetting
             }
             catch (JsonException) { return Invalid(); }
         }
+        if (preferences.HintVisibility is { Count: > MaximumIdentities }) return Invalid();
+        var hintVisibility = new Dictionary<string, bool>(StringComparer.Ordinal);
+        foreach (var pair in preferences.HintVisibility ?? new Dictionary<string, bool>())
+        {
+            try
+            {
+                if (pair.Key is null || pair.Key.Length > 8192) return Invalid();
+                var segments = JsonSerializer.Deserialize<string[]>(pair.Key);
+                if (segments is not { Length: 3 } || segments.Any(value => string.IsNullOrWhiteSpace(value) || value.Length > 256 || value != value.Trim())) return Invalid();
+                var canonical = JsonSerializer.Serialize(segments);
+                if (!hintVisibility.TryAdd(canonical, pair.Value)) return Invalid();
+                seen.Add(canonical);
+                if (seen.Count > MaximumIdentities) return Invalid();
+            }
+            catch (JsonException) { return Invalid(); }
+        }
         return CoreResult<HostSettingsPreferences>.Success(preferences with
-        { ComponentOrder = keys.AsReadOnly(), IslandGrouping = new ReadOnlyDictionary<string, DynamicGrouping>(grouping) });
+        {
+            ComponentOrder = keys.AsReadOnly(), IslandGrouping = new ReadOnlyDictionary<string, DynamicGrouping>(grouping),
+            HintVisibility = new ReadOnlyDictionary<string, bool>(hintVisibility)
+        });
     }
 
     private static CoreResult<HostSettingsPreferences> Invalid() =>

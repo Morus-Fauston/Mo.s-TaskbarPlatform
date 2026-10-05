@@ -118,7 +118,7 @@ public sealed class FlyoutRequestRouter
             if (state.WindowRequests >= RequestsPerSecond) return Finish(Reject("RateLimited", "浮窗请求过于频繁"));
             state.WindowRequests++;
             if (!ValidId(request.RequestId) || !ValidId(request.FeatureGroupId) || !ValidId(request.EntryId) ||
-                !Enum.IsDefined(request.Kind) || !Enum.IsDefined(request.Screen) || request.Position != FlyoutPosition.Default)
+                !Enum.IsDefined(request.Kind) || !Enum.IsDefined(request.Screen) || !Enum.IsDefined(request.Position))
                 return Finish(Reject("InvalidRequest", "请求字段或偏好无效"));
             if (!currentSnapshot.IsConnected) return Finish(Reject("Disconnected", "应用连接已中断"));
             if (!currentSnapshot.IsInteractive || currentSnapshot.Declaration is null || currentSnapshot.State is null)

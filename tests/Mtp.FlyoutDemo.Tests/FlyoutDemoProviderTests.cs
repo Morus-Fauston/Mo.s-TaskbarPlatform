@@ -4,6 +4,20 @@ using Mtp.Host;
 public sealed class FlyoutDemoProviderTests
 {
     [Fact]
+    public async Task Hint_request_uses_registered_notice_and_failure_is_explicit()
+    {
+        FlyoutRequest? observed = null;
+        var provider = new FlyoutDemoProvider("flyout-app", (request, _) => { observed = request; return Task.FromResult(ProtocolResult.Success("Queued")); });
+        var initial = await provider.GetSnapshotAsync(CancellationToken.None);
+        Assert.True((await provider.HandleAsync(Action("hint"), CancellationToken.None)).Result.Accepted);
+        Assert.Equal(FlyoutKind.ShortHint, observed!.Kind);
+        Assert.Equal("notice", observed.EntryId);
+        Assert.Equal(FlyoutPosition.TopLeft, observed.Position);
+        Assert.Equal("DemoFailure", (await provider.HandleAsync(Action("fail", 2, "details", ActionEntryKind.TaskbarFlyout), CancellationToken.None)).Result.Code);
+        Assert.Same(initial.State, provider.Tick());
+    }
+
+    [Fact]
     public async Task Real_declaration_and_complete_template_and_item_state_pass_production_validators()
     {
         var provider = new FlyoutDemoProvider("flyout-app");

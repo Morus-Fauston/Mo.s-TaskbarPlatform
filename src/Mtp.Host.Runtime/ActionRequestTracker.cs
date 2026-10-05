@@ -82,7 +82,7 @@ public sealed class ActionRequestTracker
                     result = committed.ActivityRejections is null ? committed : committed with
                     { ActivityRejections = Array.AsReadOnly(committed.ActivityRejections.ToArray()) };
             }
-            if (!result.Accepted && pending.Busy)
+            if ((!result.Accepted || result.ActivityRejections is { Count: > 0 }) && pending.Busy)
                 session.ErrorHint = new(applicationId, sessionId, completion.RequestId, pending.Invocation.Slot, result);
             pending.Busy = false;
             pending.Completion.TrySetResult(result);

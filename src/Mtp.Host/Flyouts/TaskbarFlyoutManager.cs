@@ -23,6 +23,7 @@ internal sealed class TaskbarFlyoutManager : IDisposable
     private HostAppearancePreferences appearance = new();
     internal bool? ReducedMotionOverride { get; set; }
     internal Action? AfterNextFrameAppliedForTesting { get; set; }
+    internal event Action<string, long>? PresentedFrameApplied;
     internal string? Error { get; private set; }
     internal bool HasResources => groups.Count > 0 || input.HasResources;
     internal IReadOnlyList<TaskbarFlyoutObservation> Inspect() => groups.Values.Select(group => new TaskbarFlyoutObservation(
@@ -30,6 +31,34 @@ internal sealed class TaskbarFlyoutManager : IDisposable
         group.Layout?.Mode ?? FlyoutGroupMode.Hierarchical, group.Closing, group.Error,
         Array.AsReadOnly(group.Windows.Values.Select(window => new FlyoutWindowObservation(window.Handle, window.TemplateId, window.LastBounds, window.IsClosing)).ToArray()))).ToArray();
     internal TaskbarFlyoutWindow? WindowForTesting(string screenId, string key = "main") => groups.GetValueOrDefault(screenId)?.Windows.GetValueOrDefault(key);
+
+    internal TaskbarDipRect? BoundsForHint(string screenId, long expectedGeneration) =>
+        groups.TryGetValue(screenId, out var group) && group.Generation == expectedGeneration && !group.Closing ? group.Layout?.Bounds : null;
+
+    internal (PixelRect WorkArea, uint Dpi)? EnvironmentForHint(string screenId, long expectedGeneration) =>
+        groups.TryGetValue(screenId, out var group) && group.Generation == expectedGeneration && !group.Closing
+            ? (group.Request.WorkArea, group.Request.Dpi) : null;
+
+    internal TaskbarDipRect? PresentedBoundsForHint(string screenId, long expectedGeneration)
+    {
+        if (!groups.TryGetValue(screenId, out var group) || group.Generation != expectedGeneration || group.Closing) return null;
+        var bounds = group.Windows.Where(x => group.VisibleKeys.Contains(x.Key) && x.Value.LastBounds.IsValid)
+            .Select(x => FlyoutNative.ToDip(x.Value.LastBounds, group.Request.Dpi)).ToArray();
+        if (bounds.Length == 0) return null;
+        double left = bounds.Min(x => x.X), top = bounds.Min(x => x.Y);
+        return new(left, top, bounds.Max(x => x.Right) - left, bounds.Max(x => x.Bottom) - top);
+    }
+
+    internal bool ReserveHintSpace(string screenId, long expectedGeneration, double heightDip)
+    {
+        if (!double.IsFinite(heightDip) || heightDip < 0 || heightDip > 512 ||
+            !groups.TryGetValue(screenId, out var group) || group.Generation != expectedGeneration || group.Closing) return false;
+        if (group.HintReservation == heightDip) return true;
+        double previous = group.HintReservation;
+        group.HintReservation = heightDip;
+        try { Reflow(group, false); return true; }
+        catch (Exception error) { group.HintReservation = previous; record("flyout-hint-reflow-failed", error.Message); return false; }
+    }
 
     internal void ApplyAppearance(HostAppearancePreferences value)
     {
@@ -246,7 +275,9 @@ internal sealed class TaskbarFlyoutManager : IDisposable
         var requested = group.Path.Select(x => x.Id).Concat(group.Parallel).Distinct(StringComparer.Ordinal).ToArray();
         var panels = requested.Select(id => new FlyoutPanelMeasure(id, TaskbarFlyoutWindow.Measure(Renderer(group, id), 320),
             group.Declaration.Panels?.FirstOrDefault(x => x.TemplateId == id)?.Presentation == PanelPresentation.Parallel)).ToArray();
-        var layout = FlyoutGroupLayout.Calculate(FlyoutNative.ToDip(group.Request.WorkArea, group.Request.Dpi),
+        var work = FlyoutNative.ToDip(group.Request.WorkArea, group.Request.Dpi);
+        if (group.HintReservation > 0) work = work with { Y = work.Y + group.HintReservation, Height = work.Height - group.HintReservation };
+        var layout = FlyoutGroupLayout.Calculate(work,
             FlyoutNative.ToDip(group.Request.Anchor, group.Request.Dpi), panels, group.Path[^1].Id);
         if (!layout.IsSuccess) throw new InvalidOperationException(layout.Error!.Message);
         group.Layout = layout.Value!;
@@ -308,6 +339,9 @@ internal sealed class TaskbarFlyoutManager : IDisposable
             foreach (var panel in frame.Panels)
                 group.Windows.GetValueOrDefault(panel.Key)?.Apply(panel, frame.Progress, group.Request.Dpi, group.Closing || !group.VisibleKeys.Contains(panel.Key));
             group.LastAppliedFrame = frame;
+            if (PresentedFrameApplied is { } listeners)
+                foreach (Action<string, long> listener in listeners.GetInvocationList())
+                    try { listener(group.Request.ScreenId, group.Generation); } catch (Exception error) { record("flyout-associated-frame-failed", error.Message); }
             var afterApplied = AfterNextFrameAppliedForTesting;
             AfterNextFrameAppliedForTesting = null;
             afterApplied?.Invoke();
@@ -452,6 +486,7 @@ internal sealed class TaskbarFlyoutManager : IDisposable
         internal FlyoutRectangleFrame? LastAppliedFrame;
         internal readonly DispatcherTimer Timer = new() { Interval = TimeSpan.FromMilliseconds(16) };
         internal FlyoutGroupLayoutResult? Layout;
+        internal double HintReservation;
         internal HashSet<string> VisibleKeys = [];
         internal IReadOnlyList<FlyoutRectangleTarget>? AnimationTargets;
         internal FlyoutOpenRequest? Pending;

@@ -16,6 +16,7 @@ public sealed partial class SettingsWindow : Window
     private readonly DisplaySelectionBinding displaySelection;
     private readonly CancellationTokenSource lifetime = new();
     private readonly Dictionary<StableIdentity, ComponentRow> components = [];
+    private readonly Dictionary<StableIdentity, HintRow> hints = [];
     private readonly Dictionary<string, ApplicationRow> applications = new(StringComparer.Ordinal);
     private readonly HashSet<string> retrying = new(StringComparer.Ordinal);
     private bool rendering;
@@ -100,6 +101,7 @@ public sealed partial class SettingsWindow : Window
             GlobalPanel.Visibility = Show(selected == SettingsPage.Global);
             RenderApplications(snapshot);
             RenderComponents(snapshot);
+            RenderHints(snapshot);
             if (RightGapInput.FocusState == FocusState.Unfocused) displaySelection.Refresh();
             DisplayStatus.Text = displaySelection.Error ?? host.TargetSummary;
             ConnectionStatus.Text = host.CommunicationStatus;
@@ -107,6 +109,9 @@ public sealed partial class SettingsWindow : Window
             RetryBrokerButton.IsEnabled = !retrying.Contains("");
             RetryBrokerButton.Content = retrying.Contains("") ? "正在恢复平台连接…" : "重试平台连接";
             var appearance = snapshot.Preferences.Appearance;
+            var hintPreferences = snapshot.Preferences.Hints ?? new();
+            if (resetInputs || !HintPositionCombo.IsDropDownOpen) SelectTag(HintPositionCombo, hintPreferences.DefaultPosition.ToString());
+            AllowHintPositionToggle.IsOn = hintPreferences.AllowApplicationPosition;
             if (!ThemeCombo.IsDropDownOpen) SelectTag(ThemeCombo, appearance.Theme.ToString());
             if (!MaterialCombo.IsDropDownOpen) SelectTag(MaterialCombo, appearance.Material.ToString());
             if (resetInputs || OpacityInput.FocusState == FocusState.Unfocused) OpacityInput.Value = appearance.Opacity;
@@ -280,6 +285,54 @@ public sealed partial class SettingsWindow : Window
         return new(panel, title, status, groups, recovery, retry, () => retry.Click -= handler);
     }
 
+    private void RenderHints(HostSettingsSnapshot snapshot)
+    {
+        var active = snapshot.HintEntries.Select(entry => entry.Identity).ToHashSet();
+        foreach (var identity in hints.Keys.Where(identity => !active.Contains(identity)).ToArray())
+        {
+            hints[identity].Detach();
+            HintRows.Children.Remove(hints[identity].Panel);
+            hints.Remove(identity);
+        }
+        for (int index = 0; index < snapshot.HintEntries.Count; index++)
+        {
+            var entry = snapshot.HintEntries[index];
+            if (!hints.TryGetValue(entry.Identity, out var row))
+            {
+                row = CreateHintRow(entry.Identity);
+                hints.Add(entry.Identity, row);
+            }
+            KeepPosition(HintRows, row.Panel, index);
+            row.Title.Text = entry.Identity.LocalId.Value;
+            row.Details.Text = string.Join(" / ", entry.Identity.Segments.Select(segment => segment.Value)) + " · " +
+                (entry.Kind == FlyoutKind.InteractiveHint ? "可交互短提示" : "普通短提示") +
+                (entry.IsAvailable ? "" : " · 连接不可用，恢复后按此偏好显示");
+            row.Visible.IsOn = entry.IsVisible;
+        }
+        HintsEmpty.Visibility = Show(snapshot.HintEntries.Count == 0);
+    }
+
+    private HintRow CreateHintRow(StableIdentity identity)
+    {
+        string key = string.Join("/", identity.Segments.Select(segment => Uri.EscapeDataString(segment.Value)));
+        var panel = new Grid { ColumnSpacing = 12, Padding = new Thickness(0, 8, 0, 8) };
+        panel.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });
+        panel.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+        var labels = new StackPanel { Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
+        var title = new TextBlock { TextWrapping = TextWrapping.Wrap };
+        var details = new TextBlock { TextWrapping = TextWrapping.Wrap, Style = (Style)Application.Current.Resources["CaptionTextBlockStyle"] };
+        labels.Children.Add(title); labels.Children.Add(details);
+        var visible = new ToggleSwitch { MinWidth = 0, OnContent = "", OffContent = "", VerticalAlignment = VerticalAlignment.Center };
+        AutomationProperties.SetAutomationId(panel, "mtp-settings-hint-" + key);
+        AutomationProperties.SetAutomationId(visible, "mtp-settings-hint-visible-" + key);
+        AutomationProperties.SetName(visible, "显示短提示 " + key);
+        RoutedEventHandler toggled = (_, _) => { if (!rendering && !disposed) Apply(() => settings.SetHintVisibility(identity, visible.IsOn)); };
+        visible.Toggled += toggled;
+        Grid.SetColumn(visible, 1);
+        panel.Children.Add(labels); panel.Children.Add(visible);
+        return new(panel, title, details, visible, () => visible.Toggled -= toggled);
+    }
+
     private ComponentRow CreateComponentRow(StableIdentity identity)
     {
         string key = string.Join("/", identity.Segments.Select(segment => Uri.EscapeDataString(segment.Value)));
@@ -353,6 +406,14 @@ public sealed partial class SettingsWindow : Window
     private void DisplayChanged(object sender, SelectionChangedEventArgs args) { if (!rendering && !disposed) displaySelection.SelectionChanged(); }
     private void GapChanged(NumberBox sender, NumberBoxValueChangedEventArgs args) { if (!rendering && !disposed) displaySelection.GapChanged(args.NewValue); }
     private void AppearanceChanged(object sender, SelectionChangedEventArgs args) => SaveAppearance();
+    private void HintPositionChanged(object sender, SelectionChangedEventArgs args) => SaveHints();
+    private void HintOverrideChanged(object sender, RoutedEventArgs args) => SaveHints();
+    private void SaveHints()
+    {
+        if (rendering || disposed || HintPositionCombo.SelectedItem is not ComboBoxItem selected ||
+            !Enum.TryParse<FlyoutPosition>(selected.Tag?.ToString(), out var position)) return;
+        Apply(() => settings.SetHints(new(position, AllowHintPositionToggle.IsOn)));
+    }
     private void OpacityChanged(NumberBox sender, NumberBoxValueChangedEventArgs args) => SaveAppearance();
     private void SaveAppearance()
     {
@@ -425,11 +486,13 @@ public sealed partial class SettingsWindow : Window
         AppWindow.Closing -= Closing;
         Closed -= WindowClosed;
         foreach (var row in components.Values) row.Detach();
+        foreach (var row in hints.Values) row.Detach();
         foreach (var row in applications.Values) row.Detach();
-        components.Clear(); applications.Clear(); retrying.Clear();
+        components.Clear(); hints.Clear(); applications.Clear(); retrying.Clear();
         lifetime.Dispose();
     }
 
     private sealed record ComponentRow(Grid Panel, TextBlock Title, TextBlock Details, ToggleSwitch Visible, Button Up, Button Down, ComboBox Grouping, Action Detach);
+    private sealed record HintRow(Grid Panel, TextBlock Title, TextBlock Details, ToggleSwitch Visible, Action Detach);
     private sealed record ApplicationRow(StackPanel Panel, TextBlock Title, TextBlock Status, TextBlock Groups, TextBlock Recovery, Button Retry, Action Detach);
 }

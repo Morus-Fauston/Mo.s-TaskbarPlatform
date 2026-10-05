@@ -65,3 +65,9 @@ powershell -ExecutionPolicy Bypass -File tests/Mtp.Host.WindowTests/Run.ps1 -Sce
 ```
 
 共用桌面与构建输出必须串行。证据目录不得复用；原始失败保留，只有实际完成标记和全部断言成功才通过。普通 WinUI 自有窗口与离屏内容岛证据不代替真实 Explorer 任务栏、实际多屏或人工体验确认。Host 演示入口分别为 `--organization-demo`、`--flyout-demo`，各自启动受控模拟业务，不接管系统音量或其他应用窗口。
+
+## 普通短提示与设置（五期08）
+
+`Run.ps1 -Scenario hint -EvidenceDirectory <新的独立目录>` 串行执行普通WinUI提示、可替换时钟、关联组上/下/限高布局、实际帧等宽与连续转向、减少动画、Close异常资源隔离、跨进程SendInput和真实设置控件。独立目标进程必须记录Press/Release/Click各一次并exit0；不得把透明样式检查单独当作穿透证明。总runner上限60秒；单动画段8秒/256帧。`-Scenario hint-window`只复核窗口边界及保存实际原生和内容截图，便于定向视觉检查。
+
+`-Scenario flyout-production`在既有真实SDK/Broker/Host链路中补验notice请求、同HWND刷新、八方位及覆盖许可、隐藏准入、关联动作失败重计和组关闭。此夹具的内容岛与组位于自有离屏父窗口，屏幕几何显式注入；它证明生产通信/控件/窗口接线，不承诺Explorer或多屏支持。真实普通提示及跨进程点击使用前一场景。原生测量、截图、自动化交互均不代替维护者人工验收。

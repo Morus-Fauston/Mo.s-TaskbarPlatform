@@ -6,6 +6,23 @@ namespace Mtp.Platform.Core.Tests;
 
 public sealed class FlyoutRequestRouterTests
 {
+    [Theory]
+    [InlineData(FlyoutPosition.Default)]
+    [InlineData(FlyoutPosition.TopLeft)]
+    [InlineData(FlyoutPosition.TopCenter)]
+    [InlineData(FlyoutPosition.TopRight)]
+    [InlineData(FlyoutPosition.BottomLeft)]
+    [InlineData(FlyoutPosition.BottomCenter)]
+    [InlineData(FlyoutPosition.BottomRight)]
+    [InlineData(FlyoutPosition.Center)]
+    [InlineData(FlyoutPosition.LowerCenter)]
+    public void Each_finite_position_preference_is_admitted(FlyoutPosition position)
+    {
+        var fixture = CreateFixture();
+        var request = Request(entry: "hint", kind: FlyoutKind.ShortHint) with { Position = position };
+        Assert.Equal("Received", new FlyoutRequestRouter().Handle("app", "session", request, fixture.Snapshot, fixture.Entries).Code);
+    }
+
     [Fact]
     public void Presentation_receipts_ignore_stale_sessions_sequences_and_late_queue_ack()
     {

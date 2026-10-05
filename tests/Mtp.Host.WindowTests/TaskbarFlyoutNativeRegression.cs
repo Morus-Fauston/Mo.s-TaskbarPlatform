@@ -522,7 +522,7 @@ internal static class TaskbarFlyoutNativeRegression
         while (!condition()) { if (watch.Elapsed > TimeSpan.FromSeconds(5)) throw new InvalidOperationException(message); await Task.Delay(20); }
     }
     private static void Check(bool condition, string message) { if (!condition) throw new InvalidOperationException(message); }
-    private static async Task SaveNativeAsync(nint window, string path)
+    internal static async Task SaveNativeAsync(nint window, string path)
     {
         // Crop only the test-owned visible window; unlike RenderTargetBitmap, includes its real compositor/backdrop.
         var bounds = FlyoutNative.Bounds(window);

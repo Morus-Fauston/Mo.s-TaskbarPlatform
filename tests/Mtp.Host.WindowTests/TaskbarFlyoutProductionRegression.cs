@@ -35,7 +35,8 @@ internal static class TaskbarFlyoutProductionRegression
             new LocalComponentDisplayPreferenceStore(Path.Combine(evidence, "display.json")));
         using var target = new OwnedIslandTarget();
         var host = new HostConsoleController(display, display.Load(), new LocalTaskbarDockPreferenceStore(Path.Combine(evidence, "dock.json")),
-            target.Capture, evidence);
+            target.Capture, evidence, displayProvider: () => [new("owned-primary", true,
+                new(-30000, -30000, 1000, 800), new(-30000, -30000, 1000, 720), NativeWindows.GetDpiForWindow(target.Parent))]);
         host.FlyoutDiagnostics = (kind, value) => log(kind + ": " + JsonSerializer.Serialize(value));
         using var settings = new HostSettingsController(display, new LocalHostSettingsPreferenceStore(Path.Combine(evidence, "settings.json")),
             () => host.Applications, host.RetryAsync, () => host.MaterialStatus, host.ApplyAppearance, host.RequestRefresh);
@@ -214,6 +215,101 @@ internal static class TaskbarFlyoutProductionRegression
             Check(communication.States.FlyoutRequests.SetEntryEnabled(entryPolicy, true).Accepted, "Could not restore policy for reconnect test.");
             Mark("sdk-policy", new { rejected = disabled.Code, admitted = allowed.Code, openEntryClosed = true });
 
+            // Phase 08 uses the same real SDK process, owned Host and committed settings as phase 07.
+            var hintManager = coordinator.Hints;
+            hintManager.ReducedMotionOverride = true;
+            await Until(() => ButtonReady(island.ContentRoot, "mtp-template-hint") &&
+                settings.GetSnapshot().HintEntries.Any(x => Counter(x.Identity) && x.Identity.LocalId.Value == "notice"),
+                "SDK hint action or registered notice entry did not reach the production Host.");
+            var noticeIdentity = settings.GetSnapshot().HintEntries.Single(x => Counter(x.Identity) && x.Identity.LocalId.Value == "notice").Identity;
+            Check(settings.SetHints(new(FlyoutPosition.LowerCenter, false)).IsSuccess, "Could not select user hint-position priority.");
+            var hintReceipt = await RequestHint("Displayed");
+            var hint = Notice();
+            nint noticeHandle = hint.Handle; windows.Add(noticeHandle);
+            await Until(() => AtPosition(Notice(), FlyoutPosition.LowerCenter), "User LowerCenter preference did not override the app's TopLeft request.");
+            Check(hint.Request.Position == FlyoutPosition.TopLeft && hint.Request.Owner is null,
+                "SDK notice lost its application position or became associated without an owner.");
+            Check(FlyoutNative.GetForegroundWindow() == baselineHandle, "Ordinary SDK hint stole foreground.");
+            await RequestHint("Refreshed");
+            Check(Notice().Handle == noticeHandle && hintManager.Inspect().Count == 1,
+                "Repeated SDK notice created a second window instead of refreshing the existing instance.");
+            Mark("hint-sdk-reuse", new { hintReceipt, handle = noticeHandle.ToInt64(), actual = FlyoutNative.Bounds(noticeHandle),
+                declared = hint.Request.Position.ToString(), selected = "LowerCenter", sameHwnd = true });
+
+            var positions = new[] { FlyoutPosition.TopLeft, FlyoutPosition.TopCenter, FlyoutPosition.TopRight,
+                FlyoutPosition.BottomLeft, FlyoutPosition.BottomCenter, FlyoutPosition.BottomRight, FlyoutPosition.Center, FlyoutPosition.LowerCenter };
+            var positionEvidence = new List<object>(8);
+            foreach (var position in positions)
+            {
+                Check(settings.SetHints(new(position, false)).IsSuccess, "Could not commit a finite hint position.");
+                await Until(() => hintManager.Inspect().Any(x => x.Handle == noticeHandle) && AtPosition(Notice(), position),
+                    "Existing hint did not move to its committed user position: " + position);
+                positionEvidence.Add(new { position = position.ToString(), handle = Notice().Handle.ToInt64(), native = FlyoutNative.Bounds(noticeHandle) });
+            }
+            Check(settings.SetHints(new(FlyoutPosition.BottomRight, true)).IsSuccess, "Could not allow the registered application preference.");
+            await Until(() => AtPosition(Notice(), FlyoutPosition.TopLeft), "Allowed app TopLeft preference did not override user BottomRight.");
+            Mark("hint-position-settings", new { positions = positionEvidence, allowedApplication = "TopLeft", sameHwnd = noticeHandle.ToInt64() });
+
+            Check(settings.SetHintVisibility(noticeIdentity, false).IsSuccess, "Could not disable the full stable notice identity.");
+            await Until(() => hintManager.Inspect().Count == 0 && !FlyoutNative.IsWindow(noticeHandle) &&
+                !communication.States.FlyoutRequests.IsEntryEnabled("counter", originalSession, "main", "notice"),
+                "Disabling notice did not hide its native window and synchronize request policy.");
+            int hintQueueBefore = receipts.Count;
+            var hiddenHint = await communication.SendActionAsync(new("counter", "main", ActionEntryKind.Component, "controls", "hint"),
+                new(), expectedSessionId: originalSession).WaitAsync(TimeSpan.FromSeconds(8));
+            Check(!hiddenHint.Accepted && hiddenHint.Code == "EntryDisabled" && receipts.Count == hintQueueBefore && hintManager.Inspect().Count == 0,
+                "A hidden hint entry was queued or displayed by its next SDK request.");
+            Check(settings.SetHintVisibility(noticeIdentity, true).IsSuccess, "Could not re-enable the registered notice.");
+            Check(settings.SetHints(new(FlyoutPosition.LowerCenter, false)).IsSuccess, "Could not restore default hint settings.");
+            await Until(() => communication.States.FlyoutRequests.IsEntryEnabled("counter", originalSession, "main", "notice"),
+                "Re-enabled notice policy did not reach the request router.");
+            await RequestHint("Displayed");
+            nint restoredNotice = Notice().Handle; windows.Add(restoredNotice);
+            Check(restoredNotice != 0, "Re-enabled SDK hint did not create a native window.");
+            Check(settings.SetHintVisibility(noticeIdentity, false).IsSuccess, "Could not close the re-enabled notice fixture.");
+            await Until(() => hintManager.Inspect().Count == 0 && !FlyoutNative.IsWindow(restoredNotice), "Re-enabled notice cleanup failed.");
+            Check(settings.SetHintVisibility(noticeIdentity, true).IsSuccess, "Could not preserve notice preference for subsequent session recovery.");
+            Mark("hint-entry-policy", new { identity = HostSettingsController.IdentityKey(noticeIdentity), rejected = hiddenHint.Code,
+                queueUnchanged = true, reenabled = true, oldWindowDestroyed = true });
+
+            var errorGroupRequest = await communication.SendActionAsync(new("counter", "main", ActionEntryKind.Component, "controls", "request"),
+                new(), expectedSessionId: originalSession).WaitAsync(TimeSpan.FromSeconds(8));
+            Check(errorGroupRequest.Accepted && errorGroupRequest.Code == "Queued", "Could not request the associated-error group through SDK.");
+            await Until(() => manager.Inspect().Count == 1 && PanelReady("panel", "fail"), "Associated-error business control did not load.");
+            CaptureWindows();
+            var errorGroup = Group();
+            var errorController = Field<TemplateInteractionController>(PanelRenderer(), "controller");
+            var failedAction = await errorController.ActivateAsync("fail").WaitAsync(TimeSpan.FromSeconds(8));
+            Check(!failedAction.Accepted && failedAction.Code == "DemoFailure", "SDK failure action did not return its controlled reason.");
+            await Until(() => hintManager.Inspect().Count == 1 && hintManager.Inspect()[0].Request.Owner?.Generation == errorGroup.Generation,
+                "Production failed panel action did not create its unique associated error hint.");
+            var associated = hintManager.Inspect().Single();
+            nint associatedHandle = associated.Handle; windows.Add(associatedHandle);
+            var errorAge = Stopwatch.StartNew();
+            Check(associated.Request.Owner?.Entry == errorGroup.Entry && associated.Text == failedAction.Message &&
+                manager.Inspect().Single().Generation == errorGroup.Generation,
+                "Associated error lost its message/owner or closed the taskbar group.");
+            CheckAssociatedBounds(associated);
+            Check(host.CurrentError is { } readable && readable.Contains(failedAction.Message, StringComparison.Ordinal),
+                "Failed action reason is not readable through Host.CurrentError.");
+            await Task.Delay(2_100);
+            Check(hintManager.Inspect().Single().Handle == associatedHandle, "Associated hint ended before its initial three-second lifetime.");
+            var failedAgain = await errorController.ActivateAsync("fail").WaitAsync(TimeSpan.FromSeconds(8));
+            Check(!failedAgain.Accepted && failedAgain.Code == "DemoFailure" && hintManager.Inspect().Single().Handle == associatedHandle,
+                "A second panel failure did not reuse the same associated native hint.");
+            await Task.Delay(1_200);
+            Check(errorAge.Elapsed >= TimeSpan.FromSeconds(3) && hintManager.Inspect().Single().Handle == associatedHandle &&
+                manager.Inspect().Single().Generation == errorGroup.Generation,
+                "Repeated failure failed to restart hint life or disturbed its owner group.");
+            CheckAssociatedBounds(hintManager.Inspect().Single());
+            Check(manager.CloseScreen(errorGroup.ScreenId, errorGroup.Generation).IsSuccess, "Could not close the associated-error owner.");
+            host.RequestRefresh();
+            await Until(() => hintManager.Inspect().Count == 0 && !FlyoutNative.IsWindow(associatedHandle),
+                "Closing the owner left a live associated hint or converted it into an independent hint.");
+            Mark("hint-associated-failure", new { failedAction.Code, failedAgain = failedAgain.Code, handle = associatedHandle.ToInt64(),
+                ownerGeneration = errorGroup.Generation, elapsedPastFirstLifetimeMs = errorAge.ElapsedMilliseconds,
+                sameHwnd = true, fullWidth = true, ownerCleanup = true, reason = host.CurrentError });
+
             itemKey = adapter.GroupSnapshot!.ItemsByKey.Keys.Single();
             itemHandle = adapter.GroupSnapshot.ItemsByKey[itemKey].Handle;
             await Until(() => ButtonReady(island.ContentRoot, ItemId(itemKey)), "Restored item Button did not load.");
@@ -292,6 +388,62 @@ internal static class TaskbarFlyoutProductionRegression
             Button PanelButton(string id) => Find<Button>(Main()!.Root, "mtp-template-" + id);
             Button ItemButton(TaskbarItemKey key) => Find<Button>(island.ContentRoot!, ItemId(key));
             void CaptureWindows() { foreach (var group in manager.Inspect()) foreach (var panel in group.Windows) windows.Add(panel.Handle); }
+            ShortHintObservation Notice() => hintManager.Inspect().Single(x => x.Request.Entry.Entry.Kind == TemplateEntryKind.Hint &&
+                x.Request.Entry.Entry.EntryId == "notice" && x.Request.Owner is null);
+            async Task<FlyoutRequestReceipt> RequestHint(string expectedPresentation)
+            {
+                long previous = communication.States.FlyoutRequests.GetLastResult("counter")?.RequestSequence ?? 0;
+                var queued = await communication.SendActionAsync(new("counter", "main", ActionEntryKind.Component, "controls", "hint"),
+                    new(), expectedSessionId: originalSession).WaitAsync(TimeSpan.FromSeconds(8));
+                Check(queued.Accepted && queued.Code == "Queued", "SDK hint acknowledgement did not report Queued.");
+                await Until(() => communication.States.FlyoutRequests.GetLastResult("counter") is { } receipt &&
+                    receipt.RequestSequence > previous && receipt.Result.Code == expectedPresentation &&
+                    hintManager.Inspect().Any(x => x.Request.Entry.Entry.EntryId == "notice" && x.Request.Owner is null),
+                    "SDK hint request did not reach its final " + expectedPresentation + " receipt.");
+                var final = communication.States.FlyoutRequests.GetLastResult("counter")!;
+                Check(receipts.Any(x => x.SessionId == originalSession && x.Sequence == final.RequestSequence && x.Code == "Queued"),
+                    "SDK hint queued/presented receipts lost sequence correlation.");
+                return final;
+            }
+            bool AtPosition(ShortHintObservation value, FlyoutPosition position)
+            {
+                if (!FlyoutNative.IsWindow(value.Handle)) return false;
+                var bounds = FlyoutNative.Bounds(value.Handle);
+                var area = value.Request.WorkArea;
+                double margin = 16 * value.Request.Dpi / 96d;
+                double x = position switch
+                {
+                    FlyoutPosition.TopLeft or FlyoutPosition.BottomLeft => area.X + margin,
+                    FlyoutPosition.TopRight or FlyoutPosition.BottomRight => area.Right - margin - bounds.Width,
+                    _ => area.X + (area.Width - bounds.Width) / 2d
+                };
+                double y = position switch
+                {
+                    FlyoutPosition.TopLeft or FlyoutPosition.TopCenter or FlyoutPosition.TopRight => area.Y + margin,
+                    FlyoutPosition.BottomLeft or FlyoutPosition.BottomCenter or FlyoutPosition.BottomRight => area.Bottom - margin - bounds.Height,
+                    FlyoutPosition.Center => area.Y + (area.Height - bounds.Height) / 2d,
+                    _ => area.Y + area.Height * 0.8 - bounds.Height / 2d
+                };
+                y = Math.Clamp(y, area.Y + margin, area.Bottom - margin - bounds.Height);
+                return Math.Abs(bounds.X - x) <= 2 && Math.Abs(bounds.Y - y) <= 2 && value.Bounds == bounds;
+            }
+            void CheckAssociatedBounds(ShortHintObservation value)
+            {
+                var panels = Group().Windows.Where(panel => !panel.Closing && FlyoutNative.IsWindow(panel.Handle))
+                    .Select(panel => new { handle = panel.Handle.ToInt64(), panel.TemplateId, bounds = FlyoutNative.Bounds(panel.Handle) }).ToArray();
+                Check(panels.Length > 0, "Associated error owner has no live native panels.");
+                int left = panels.Min(panel => panel.bounds.X), top = panels.Min(panel => panel.bounds.Y);
+                long right = panels.Max(panel => panel.bounds.Right), bottom = panels.Max(panel => panel.bounds.Bottom);
+                var union = new PixelRect(left, top, checked((int)(right - left)), checked((int)(bottom - top)));
+                var bounds = FlyoutNative.Bounds(value.Handle);
+                double gap = 8 * value.Request.Dpi / 96d;
+                log("flyout-production-associated-bounds: " + JsonSerializer.Serialize(new { panels, union,
+                    hint = new { handle = value.Handle.ToInt64(), bounds, mode = value.Mode.ToString() }, value.Request.Dpi, gap }));
+                Check(Math.Abs(bounds.X - union.X) <= 2 && Math.Abs(bounds.Width - union.Width) <= 2 &&
+                    (value.Mode == HintPlacementMode.Above && Math.Abs(bounds.Bottom + gap - union.Y) <= 2 ||
+                     value.Mode == HintPlacementMode.Below && Math.Abs(union.Bottom + gap - bounds.Y) <= 2),
+                    "Associated error hint did not cover its actual owner width with the declared gap.");
+            }
         }
         catch (Exception error)
         {
@@ -308,7 +460,7 @@ internal static class TaskbarFlyoutProductionRegression
             baseline.Close();
             SetCursorPos(savedCursor.X, savedCursor.Y);
             if (savedForeground != 0 && FlyoutNative.IsWindow(savedForeground)) SetForegroundWindow(savedForeground);
-            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(Math.Clamp(35 - scenario.Elapsed.TotalSeconds, 0.01, 5)));
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(Math.Clamp(45 - scenario.Elapsed.TotalSeconds, 0.01, 5)));
             try
             {
                 await Task.WhenAll(processes.Select(x => x.WaitForExitAsync(deadline.Token)));
@@ -323,7 +475,7 @@ internal static class TaskbarFlyoutProductionRegression
                 foreach (var process in processes) process.Dispose();
             }
         }
-        Check(checkpoints >= 6 && scenario.Elapsed < TimeSpan.FromSeconds(35), "Production scenario lacked checkpoints or exceeded 35 seconds.");
+        Check(checkpoints >= 10 && scenario.Elapsed < TimeSpan.FromSeconds(45), "Production scenario lacked checkpoints or exceeded 45 seconds.");
         log($"PASS: production flyout SDK/Host/WinUI; checkpoints={checkpoints}; elapsedMs={scenario.ElapsedMilliseconds}; owned cleanup verified; evidence={evidence}");
 
         async Task ActivateBaseline()
@@ -356,7 +508,7 @@ internal static class TaskbarFlyoutProductionRegression
             var wait = Stopwatch.StartNew();
             while (!condition())
             {
-                if (wait.Elapsed > TimeSpan.FromSeconds(8) || scenario.Elapsed > TimeSpan.FromSeconds(30))
+                if (wait.Elapsed > TimeSpan.FromSeconds(8) || scenario.Elapsed > TimeSpan.FromSeconds(40))
                     throw new InvalidOperationException(error + " Host errors: " + string.Join("; ", host.Errors.TakeLast(5)));
                 await Task.Delay(15);
             }

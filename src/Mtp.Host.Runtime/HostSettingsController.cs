@@ -48,8 +48,9 @@ public sealed class HostSettingsController : IDisposable
         lock (gate)
         {
             if (disposed) return new(navigation.Snapshot, preferences, [], [], "设置已关闭。", new("settings_closed", "设置已关闭。"));
+            var applications = Array.AsReadOnly(snapshots().ToArray());
             return new(navigation.Snapshot, preferences, OrderedComponents(),
-                Array.AsReadOnly(snapshots().ToArray()), materialStatus(), error) { Groupings = IslandGroupings() };
+                applications, materialStatus(), error) { Groupings = IslandGroupings(), HintEntries = HintEntries(applications) };
         }
     }
 
@@ -172,6 +173,46 @@ public sealed class HostSettingsController : IDisposable
                 try { applyAppearance(preferences.Appearance); }
                 catch (Exception) { error = new("settings_apply_failed", "设置已保存，当前窗口外观未能更新。"); }
             }
+            Notify();
+            return committed.IsSuccess ? CoreResult<HostSettingsSnapshot>.Success(GetSnapshot()) : CoreResult<HostSettingsSnapshot>.Failure(error!);
+        }
+    }
+
+    private IReadOnlyList<HostHintEntry> HintEntries(IReadOnlyList<BrokerApplicationSnapshot> applications) =>
+        Array.AsReadOnly(applications.Where(value => value.Declaration is not null)
+            .SelectMany(application => application.Declaration!.FlyoutEntries
+                .Where(entry => entry.Kind is FlyoutKind.ShortHint or FlyoutKind.InteractiveHint)
+                .Select(entry => new HostHintEntry(entry.Identity, entry.Kind,
+                    preferences.HintVisibility?.GetValueOrDefault(IdentityKey(entry.Identity), true) ?? true,
+                    application.IsConnected && application.IsInteractive)))
+            .ToArray());
+
+    public CoreResult<HostSettingsSnapshot> SetHints(HostHintPreferences hints)
+    {
+        lock (gate)
+        {
+            if (disposed) return Fail("settings_closed", "设置已关闭。");
+            if (hints is null) return Fail("settings_invalid", "短提示位置设置无效，保留原值。");
+            var valid = LocalHostSettingsPreferenceStore.Validate(preferences with { Hints = hints });
+            if (!valid.IsSuccess) return Fail(valid.Error!.Code, valid.Error.Message);
+            var committed = store.CommitHints(hints);
+            error = committed.Error;
+            if (committed.IsSuccess) preferences = committed.Value!;
+            Notify();
+            return committed.IsSuccess ? CoreResult<HostSettingsSnapshot>.Success(GetSnapshot()) : CoreResult<HostSettingsSnapshot>.Failure(error!);
+        }
+    }
+
+    public CoreResult<HostSettingsSnapshot> SetHintVisibility(StableIdentity identity, bool visible)
+    {
+        lock (gate)
+        {
+            if (disposed) return Fail("settings_closed", "设置已关闭。");
+            if (identity is null || !HintEntries(snapshots()).Any(entry => entry.Identity == identity))
+                return Fail("hint_not_declared", "当前没有该短提示入口。");
+            var committed = store.CommitHintVisibility(identity, visible);
+            error = committed.Error;
+            if (committed.IsSuccess) preferences = committed.Value!;
             Notify();
             return committed.IsSuccess ? CoreResult<HostSettingsSnapshot>.Success(GetSnapshot()) : CoreResult<HostSettingsSnapshot>.Failure(error!);
         }

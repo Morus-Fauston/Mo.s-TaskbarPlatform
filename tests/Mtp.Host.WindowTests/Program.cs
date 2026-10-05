@@ -53,16 +53,42 @@ public sealed partial class WindowTestApplication : Application
     public WindowTestApplication()
     {
         InitializeComponent();
-        File.WriteAllText(LogPath, "Starting real WinUI dock frame regression.\n");
-        UnhandledException += (_, e) => AppendLog(e.Exception + "\n");
+        if (!Environment.GetCommandLineArgs().Contains("--hint-input-target", StringComparer.Ordinal))
+        {
+            File.WriteAllText(LogPath, "Starting real WinUI dock frame regression.\n");
+            UnhandledException += (_, e) => AppendLog(e.Exception + "\n");
+        }
     }
 
     protected override async void OnLaunched(LaunchActivatedEventArgs args)
     {
         try
         {
+            var launchArguments = Environment.GetCommandLineArgs();
+            int hintTarget = Array.IndexOf(launchArguments, "--hint-input-target");
+            if (hintTarget >= 0 && hintTarget + 1 < launchArguments.Length)
+            {
+                HintInputProcessFixture.RunTarget(launchArguments[hintTarget + 1]);
+                return;
+            }
             // Keep the application alive while the last dock is closed and recreated.
             lifetimeWindow = new Window();
+            if (launchArguments.Contains("--hint-window-only", StringComparer.Ordinal))
+            {
+                await ShortHintNativeTests.RunAsync(message => AppendLog(message + "\n"));
+                Finish(null);
+                return;
+            }
+            if (Environment.GetCommandLineArgs().Contains("--hint-only", StringComparer.Ordinal))
+            {
+                await ShortHintNativeTests.RunAsync(message => AppendLog(message + "\n"));
+                await ShortHintManagerNativeTests.RunAsync(message => AppendLog(message + "\n"));
+                await ShortHintMotionNativeTests.RunAsync(message => AppendLog(message + "\n"));
+                await HintInputProcessFixture.RunAsync(message => AppendLog(message + "\n"));
+                await ShortHintSettingsNativeTests.RunAsync(message => AppendLog(message + "\n"));
+                Finish(null);
+                return;
+            }
             if (Environment.GetCommandLineArgs().Contains("--flyout-scheduling-only", StringComparer.Ordinal))
             {
                 await TaskbarFlyoutNativeRegression.RunAnimationSchedulingRegressionAsync(message => AppendLog(message + "\n"));

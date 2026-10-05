@@ -183,7 +183,7 @@ public sealed class TemplateInteractionController : IDisposable
             else
             {
                 control.Current = null; control.Preview = null;
-                control.Error = result.Accepted ? null : result.Code;
+                control.Error = result.Accepted && result.ActivityRejections is not { Count: > 0 } ? null : result.Code;
                 request.Completion.TrySetResult(result);
                 if (control.Pending is { } pending)
                 {

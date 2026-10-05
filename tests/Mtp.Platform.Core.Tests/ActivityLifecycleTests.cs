@@ -164,6 +164,9 @@ public sealed class ActivityLifecycleTests
         Assert.Equal("AcceptedWithActivityRejections", result.Code);
         Assert.Equal("denied", Assert.Single(result.ActivityRejections!).ActivityId);
         Assert.Equal(result, await reservation.Completion);
+        var hint = Assert.IsType<ActionErrorHint>(tracker.GetLastErrorHint("app"));
+        Assert.Equal(invocation.RequestId, hint.RequestId);
+        Assert.Equal(result, hint.Result);
         Assert.Empty(Content(store).Activities);
         Assert.Equal(1, store.GetSnapshot("app")!.State!.Revision);
     }

@@ -9,6 +9,7 @@ using Microsoft.UI.Xaml.Automation.Provider;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using Mtp.Contracts;
+using Mtp.Host.Flyouts;
 using Mtp.Host.Islands;
 using Mtp.Platform.Core;
 
@@ -28,15 +29,19 @@ internal static class IslandOrganizationNativeRegression
         using var display = new HostDisplayController(new LocalJsonDeclarationSource(Path.Combine(AppContext.BaseDirectory, "declaration.json")),
             new LocalComponentDisplayPreferenceStore(Path.Combine(root, "display.json")));
         using var target = new OwnedIslandTarget();
-        var host = new HostConsoleController(display, display.Load(), new LocalTaskbarDockPreferenceStore(Path.Combine(root, "dock.json")), target.Capture, root);
+        IReadOnlyList<TaskbarDockDisplay> OwnedDisplays() => [new("owned-primary", true,
+            new(-30000, -30000, 1000, 800), new(-30000, -30000, 1000, 720), NativeWindows.GetDpiForWindow(target.Parent))];
+        var host = new HostConsoleController(display, display.Load(), new LocalTaskbarDockPreferenceStore(Path.Combine(root, "dock.json")),
+            target.Capture, root, displayProvider: OwnedDisplays);
         using var settings = new HostSettingsController(display, new LocalHostSettingsPreferenceStore(settingsPath), () => host.Applications,
             host.RetryAsync, () => host.MaterialStatus, host.ApplyAppearance, host.RequestRefresh);
         host.AttachSettings(settings);
         Check(settings.SetAppearance(new(HostTheme.Light, MaterialKind.None, 1)).IsSuccess, "Could not select organization fixture appearance.");
         var adapter = Field<IslandDisplayAdapter>(host, "adapter");
         adapter.ReducedMotionOverride = false;
-        var window = new SettingsWindow(settings, host, () => [new("owned-primary", true, new(-30000, -30000, 1600, 900), new(-30000, -30000, 1600, 860), 96)]);
+        var window = new SettingsWindow(settings, host, OwnedDisplays);
         var processes = new List<Process>();
+        var hintHandles = new HashSet<nint>();
         nint nativeHandle = 0;
         int samples = 0;
         Exception? failure = null;
@@ -116,6 +121,8 @@ internal static class IslandOrganizationNativeRegression
             await Until(() => Snapshot(adapter).Instances.Count == 0, "Hidden entry retained island width.");
             var heldIds = Content().Activities.Select(value => value.ActivityId).ToArray();
             await Action("update");
+            var coordinator = Field<TaskbarFlyoutCoordinator>(host, "flyouts");
+            coordinator.Hints.ReducedMotionOverride = true;
             var add = Find<Button>(island.ContentRoot!, "mtp-template-add");
             long hiddenRevision = State().Revision;
             bool observedBusy = false;
@@ -132,11 +139,17 @@ internal static class IslandOrganizationNativeRegression
             }
             finally { add.UnregisterPropertyChangedCallback(Control.IsEnabledProperty, enabledSubscription); }
             Check(Content().Activities.Select(value => value.ActivityId).SequenceEqual(heldIds), "Hidden entry admitted a new activity.");
+            await Until(() => RejectionHint() is not null, "Native hidden creation did not display its independent rejection hint.");
+            var nativeHint = RejectionHint()!;
+            hintHandles.Add(nativeHint.Handle);
+            Check(HasPermissionReason(host.CurrentError), "Native hidden creation reason is not readable through Host.CurrentError.");
             log("organization-hidden-native-click: " + JsonSerializer.Serialize(new
             {
                 observedBusy, requestId = pendingAdd?.RequestId, completed = true,
                 beforeRevision = hiddenRevision, afterRevision = State().Revision,
                 help = AutomationProperties.GetHelpText(add), heldIds,
+                hint = new { handle = nativeHint.Handle.ToInt64(), nativeHint.Text, mode = nativeHint.Mode.ToString() },
+                reason = host.CurrentError,
                 evidenceScope = "Native click completed; confirmed activities did not increase. This is not a captured click receipt."
             }));
             // Capture a separate real, same-session receipt. Permission notification is asynchronous:
@@ -146,7 +159,7 @@ internal static class IslandOrganizationNativeRegression
             long receiptBeforeRevision = State().Revision;
             using (var receiptDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
             {
-                var receipt = await communication.SendActionAsync(addSlot, new(), receiptDeadline.Token, currentApplication.SessionId);
+                var receipt = await coordinator.SendActionAsync(addSlot, new(), currentApplication.SessionId, receiptDeadline.Token);
                 Check(communication.States.GetSnapshot("counter")!.SessionId == currentApplication.SessionId,
                     "Creation receipt crossed a service session.");
                 bool providerDenied = !receipt.Accepted && receipt.Code == "DisplayNotAllowed" && receipt.ActivityRejections is null;
@@ -154,20 +167,30 @@ internal static class IslandOrganizationNativeRegression
                     rejected.All(value => value.ApplicationId == "counter" && value.FeatureGroupId == "main" && value.ComponentId == "islands" &&
                         !string.IsNullOrWhiteSpace(value.ActivityId) && !heldIds.Contains(value.ActivityId, StringComparer.Ordinal) && value.Code == "DisplayNotAllowed") &&
                     rejected.Select(value => value.ActivityId).Distinct(StringComparer.Ordinal).Count() == rejected.Count;
+                Check(providerDenied || hostFiltered, "Hidden creation lacked an explicit provider rejection or Host activity rejection receipt.");
+                string expectedHint = providerDenied ? receipt.Message :
+                    $"{receipt.ActivityRejections!.Count} 项活动未显示：对应实况岛入口已关闭。可在设置中开启。";
+                await Until(() => RejectionHint()?.Text == expectedHint, "Hidden creation receipt did not produce its matching independent hint.");
+                var receiptHint = RejectionHint()!;
+                hintHandles.Add(receiptHint.Handle);
+                Check(HasPermissionReason(host.CurrentError) && host.CurrentError!.Contains(receipt.Message, StringComparison.Ordinal),
+                    "Hidden creation receipt reason is not readable through Host.CurrentError.");
                 log("organization-hidden-direct-receipt: " + JsonSerializer.Serialize(new
                 {
                     session = currentApplication.SessionId, separateFromNativeClick = true, receipt,
                     classification = providerDenied ? "provider-knew-permission" : hostFiltered ? "host-authoritative-activity-filter" : "unexpected",
                     beforeRevision = receiptBeforeRevision, afterRevision = State().Revision,
-                    heldIds, actualIds = Content().Activities.Select(value => value.ActivityId).ToArray()
+                    heldIds, actualIds = Content().Activities.Select(value => value.ActivityId).ToArray(),
+                    hint = new { handle = receiptHint.Handle.ToInt64(), receiptHint.Text, mode = receiptHint.Mode.ToString() },
+                    reason = host.CurrentError, productionCoordinator = true
                 }));
-                Check(providerDenied || hostFiltered, "Hidden creation lacked an explicit provider rejection or Host activity rejection receipt.");
                 Check(providerDenied ? State().Revision == receiptBeforeRevision : State().Revision == receiptBeforeRevision + 1,
                     "Hidden creation receipt disagrees with its state admission semantics.");
                 Check(Content().Activities.Select(value => value.ActivityId).SequenceEqual(heldIds), "Explicit hidden creation receipt allowed a new activity.");
             }
             visible.IsOn = true;
             await Until(() => Snapshot(adapter).ItemsByKey.ContainsKey(originalKey) && Frame(adapter)!.IsComplete, "Restoring permission failed to restore valid held activity.");
+            Check(Content().Activities.Select(value => value.ActivityId).SequenceEqual(heldIds), "Visibility toggling revoked or recreated held business activities.");
             Check(Snapshot(adapter).ItemsByKey[originalKey].Expanded && Snapshot(adapter).ItemsByKey[originalKey].Handle == originalItem.Handle,
                 "Permission change reset the held item's temporary state.");
             var restoredPreferences = new LocalHostSettingsPreferenceStore(settingsPath).Load();
@@ -191,6 +214,15 @@ internal static class IslandOrganizationNativeRegression
 
             ApplicationState State() => communication.States.GetSnapshot("counter")!.State!;
             DynamicContentState Content() => State().DynamicEntries!.Single(value => value.ComponentId == "islands").Content;
+            ShortHintObservation? RejectionHint() => coordinator.Hints.Inspect().SingleOrDefault(value =>
+                value.Request.Owner is null && value.Request.Entry.ApplicationId == "counter" &&
+                value.Request.Entry.Entry.FeatureGroupId == "main" && value.Request.Entry.Entry.EntryId == "controls" &&
+                value.Request.SessionId == communication.States.GetSnapshot("counter")!.SessionId &&
+                value.Mode == HintPlacementMode.Independent && !value.Closing && NativeWindows.IsWindow(value.Handle) &&
+                HasPermissionReason(value.Text));
+            static bool HasPermissionReason(string? value) => !string.IsNullOrWhiteSpace(value) &&
+                (value.Contains("活动未显示", StringComparison.Ordinal) || value.Contains("显示已关闭", StringComparison.Ordinal) ||
+                    value.Contains("未获显示许可", StringComparison.Ordinal));
             TaskbarItemKey Key(string id) => Snapshot(adapter).ItemsByKey.Keys.Single(value => value.ItemId == id);
             Button ItemButton(TaskbarItemKey key) => Find<Button>(island.ContentRoot!, "mtp-item/" + string.Join("/", key.Component.ApplicationId,
                 key.Component.FeatureGroupId, key.Component.ComponentId, key.ItemId, key.PresenceGeneration.ToString(CultureInfo.InvariantCulture)));
@@ -225,13 +257,14 @@ internal static class IslandOrganizationNativeRegression
             {
                 await Task.WhenAll(processes.Select(process => process.WaitForExitAsync(deadline.Token)));
                 foreach (var process in processes) log($"organizationOwnedPid={process.Id}; exited={process.HasExited}");
-                Check(shutdown && (nativeHandle == 0 || !NativeWindows.IsWindow(nativeHandle)), "Organization cleanup failed.");
+                Check(shutdown && (nativeHandle == 0 || !NativeWindows.IsWindow(nativeHandle)) &&
+                    hintHandles.All(handle => !NativeWindows.IsWindow(handle)), "Organization cleanup failed.");
             }
             catch (Exception cleanup) when (failure is not null) { log("organization-cleanup-after-failure: " + cleanup); }
             finally { foreach (var process in processes) process.Dispose(); }
         }
         Check(samples >= 6 && clock.Elapsed < TimeSpan.FromSeconds(45), "Organization evidence incomplete or scenario exceeded 45 seconds.");
-        log($"organization-pass: samples={samples}; elapsedMs={clock.ElapsedMilliseconds}; trueSdk=true; productionSettings=true; groupingAndPermission=true; stableIdentity=true; nativeAndProcessCleanup=true; evidence={root}");
+        log($"organization-pass: samples={samples}; elapsedMs={clock.ElapsedMilliseconds}; trueSdk=true; productionSettings=true; groupingAndPermission=true; stableIdentity=true; activityRejectionHint=true; nativeAndProcessCleanup=true; evidence={root}");
 
         async Task Until(Func<bool> condition, string error)
         {
