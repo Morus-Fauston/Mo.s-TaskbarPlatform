@@ -18,6 +18,7 @@
     <ProjectReference Include="../Mtp.DynamicContent.ProcessProbe/Mtp.DynamicContent.ProcessProbe.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="../Mtp.Flyout.ProcessProbe/Mtp.Flyout.ProcessProbe.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="../Mtp.Action.ProcessProbe/Mtp.Action.ProcessProbe.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="../Mtp.Heartbeat.ProcessProbe/Mtp.Heartbeat.ProcessProbe.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
   <Import Project="../../build/CommunicationRuntimes.targets" />
   <Target Name="CopyCommunicationProbe" AfterTargets="Build">
@@ -55,5 +56,14 @@
       <_ActionProbeFiles Include="@(_ActionProbeAssembly);@(_ActionProbeAssembly->'%(RootDir)%(Directory)Mtp.Action.ProcessProbe.deps.json');@(_ActionProbeAssembly->'%(RootDir)%(Directory)Mtp.Action.ProcessProbe.runtimeconfig.json');@(_ActionProbeAssembly->'%(RootDir)%(Directory)Mtp.Contracts.dll');@(_ActionProbeAssembly->'%(RootDir)%(Directory)Mtp.Transport.dll');@(_ActionProbeAssembly->'%(RootDir)%(Directory)Mtp.Sdk.dll')" />
     </ItemGroup>
     <Copy SourceFiles="@(_ActionProbeFiles)" DestinationFolder="$(OutDir)ActionProcessProbe" />
+  </Target>
+  <Target Name="CopyHeartbeatProbe" AfterTargets="Build">
+    <MSBuild Projects="../Mtp.Heartbeat.ProcessProbe/Mtp.Heartbeat.ProcessProbe.csproj" Targets="GetTargetPath" Properties="Configuration=$(Configuration);TargetFramework=net10.0">
+      <Output TaskParameter="TargetOutputs" ItemName="_HeartbeatProbeAssembly" />
+    </MSBuild>
+    <ItemGroup>
+      <_HeartbeatProbeFiles Include="@(_HeartbeatProbeAssembly);@(_HeartbeatProbeAssembly->'%(RootDir)%(Directory)Mtp.Heartbeat.ProcessProbe.deps.json');@(_HeartbeatProbeAssembly->'%(RootDir)%(Directory)Mtp.Heartbeat.ProcessProbe.runtimeconfig.json');@(_HeartbeatProbeAssembly->'%(RootDir)%(Directory)Mtp.Contracts.dll');@(_HeartbeatProbeAssembly->'%(RootDir)%(Directory)Mtp.Transport.dll');@(_HeartbeatProbeAssembly->'%(RootDir)%(Directory)Mtp.Sdk.dll')" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_HeartbeatProbeFiles)" DestinationFolder="$(OutDir)HeartbeatProcessProbe" />
   </Target>
 </Project>

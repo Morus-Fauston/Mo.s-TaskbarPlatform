@@ -35,6 +35,8 @@ public sealed class HostBrokerSession : IAsyncDisposable
     private readonly NamedPipeServerStream control;
     private readonly Dictionary<string, LaunchRegistration> registrations;
     private readonly Dictionary<string, Process> services = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, (Process Process, string SessionId)> serviceSessions = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, OwnedServiceExit> serviceProcessExits = new(StringComparer.Ordinal);
     private readonly List<Task> drains = [];
     private readonly SemaphoreSlim lifecycle = new(1);
     private readonly string servicePipe;
@@ -70,6 +72,10 @@ public sealed class HostBrokerSession : IAsyncDisposable
     public int BrokerProcessId => broker?.Id ?? throw new InvalidOperationException("Broker not started.");
     public string? LastError => Volatile.Read(ref lastError);
     public int PeakPendingRequests => Volatile.Read(ref peakPendingRequests);
+    public IReadOnlyList<OwnedServiceExit> ServiceProcessExits
+    {
+        get { lock (services) return Array.AsReadOnly(serviceProcessExits.Values.ToArray()); }
+    }
     public IReadOnlyList<int> ServiceProcessIds
     {
         get { lock (services) return services.Values.Select(p => p.Id).ToArray(); }
@@ -213,12 +219,18 @@ public sealed class HostBrokerSession : IAsyncDisposable
 
     private async Task RunActionClockAsync()
     {
+        var exitCheckTicks = 0;
         try
         {
             while (!lifetime.IsCancellationRequested)
             {
                 await Task.Delay(250, lifetime.Token).ConfigureAwait(false);
                 Actions.Tick();
+                if (++exitCheckTicks == 4)
+                {
+                    exitCheckTicks = 0;
+                    ObserveOwnedServiceExits();
+                }
             }
         }
         catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
@@ -238,7 +250,7 @@ public sealed class HostBrokerSession : IAsyncDisposable
                         message.ApplicationId.Length > DeclarationValidator.MaximumIdLength || string.IsNullOrWhiteSpace(message.SessionId) ||
                         message.SessionId.Length > DeclarationValidator.MaximumIdLength || message.Action is not null ||
                         message.Result is not null || message.Declaration is not null || message.State is not null ||
-                        message.Flyout is not null || message.BrokerLoad is not null || !string.IsNullOrEmpty(message.Ticket) ||
+                        message.Flyout is not null || message.BrokerLoad is not null || message.Heartbeat is not null || !string.IsNullOrEmpty(message.Ticket) ||
                         !string.IsNullOrEmpty(message.StartRequestId))
                         throw new IOException("InvalidActionCompletionEnvelope");
                     Actions.Receive(message.ApplicationId, message.SessionId, completion, States.GetSnapshot(message.ApplicationId),
@@ -252,11 +264,21 @@ public sealed class HostBrokerSession : IAsyncDisposable
                         throw new IOException("InvalidBrokerLoad");
                     Volatile.Write(ref peakPendingRequests, load.PeakPendingRequests);
                 }
-                var previous = States.GetSnapshot(message.ApplicationId);
-                var response = States.Handle(message);
-                if (response.Result?.Accepted == true &&
-                    (message.Kind == MessageKind.Disconnected || (message.Kind == MessageKind.Welcome && previous is not null)))
-                    Actions.EndSession(message.ApplicationId, previous?.SessionId ?? message.SessionId);
+                ProtocolMessage response;
+                lock (services)
+                {
+                    var previous = States.GetSnapshot(message.ApplicationId);
+                    if (message.Kind == MessageKind.Disconnected && TryRecordOwnedServiceExit(message.ApplicationId, message.SessionId) is not null)
+                        message = message with { Result = ProtocolResult.Reject("ProcessExited", "托管服务进程已退出") };
+                    response = States.Handle(message);
+                    if (response.Result?.Accepted == true)
+                    {
+                        if (message.Kind == MessageKind.Welcome && Volatile.Read(ref disposed) == 0 && services.TryGetValue(message.ApplicationId, out var process))
+                            serviceSessions[message.ApplicationId] = (process, message.SessionId);
+                        if (message.Kind == MessageKind.Disconnected || (message.Kind == MessageKind.Welcome && previous is not null))
+                            Actions.EndSession(message.ApplicationId, previous?.SessionId ?? message.SessionId);
+                    }
+                }
                 if (message.Kind != MessageKind.Disconnected)
                     await WriteControlAsync(response, lifetime.Token).ConfigureAwait(false);
             }
@@ -281,6 +303,53 @@ public sealed class HostBrokerSession : IAsyncDisposable
         }
     }
 
+    private void ObserveOwnedServiceExits()
+    {
+        lock (services)
+        {
+            if (Volatile.Read(ref disposed) != 0) return;
+            foreach (var pair in serviceSessions)
+            {
+                if (serviceProcessExits.TryGetValue(pair.Key, out var observed) && observed.SessionId == pair.Value.SessionId) continue;
+                var exit = TryRecordOwnedServiceExit(pair.Key, pair.Value.SessionId);
+                if (exit is null) continue;
+                // A later observed process exit adds a fact; the Store retains any earlier disconnect reason.
+                States.Handle(new ProtocolMessage
+                {
+                    Kind = MessageKind.Disconnected,
+                    ApplicationId = exit.ApplicationId,
+                    SessionId = exit.SessionId,
+                    Result = ProtocolResult.Reject("ProcessExited", "托管服务进程已退出")
+                });
+                Actions.EndSession(exit.ApplicationId, exit.SessionId);
+            }
+        }
+    }
+
+    // Caller holds services: process identity, session binding and shutdown transition are one observation.
+    private OwnedServiceExit? TryRecordOwnedServiceExit(string applicationId, string sessionId)
+    {
+        if (Volatile.Read(ref disposed) != 0 ||
+            !services.TryGetValue(applicationId, out var process) ||
+            !serviceSessions.TryGetValue(applicationId, out var bound) ||
+            !ReferenceEquals(bound.Process, process) || bound.SessionId != sessionId ||
+            States.GetSnapshot(applicationId)?.SessionId != sessionId) return null;
+        try
+        {
+            if (!process.HasExited) return null;
+            if (serviceProcessExits.TryGetValue(applicationId, out var existing) &&
+                existing.SessionId == sessionId && existing.ProcessId == process.Id) return existing;
+            var exit = new OwnedServiceExit(applicationId, sessionId, process.Id, process.ExitCode);
+            serviceProcessExits[applicationId] = exit;
+            return exit;
+        }
+        catch (InvalidOperationException)
+        {
+            // Failed startup may already have disposed this owned process before removing its registration.
+            return null;
+        }
+    }
+
     private Process StartOwned(string path, IReadOnlyList<string>? arguments = null)
     {
         if (!File.Exists(path)) throw new FileNotFoundException("Registered runtime executable missing.", path);
@@ -299,17 +368,20 @@ public sealed class HostBrokerSession : IAsyncDisposable
         if (arguments is not null)
             foreach (var argument in arguments) info.ArgumentList.Add(argument);
         var process = Process.Start(info) ?? throw new IOException("ProcessStartFailed");
-        drains.Add(DrainAsync(process.StandardOutput));
-        drains.Add(DrainAsync(process.StandardError));
+        drains.Add(DrainOutput(process.StandardOutput));
+        drains.Add(DrainOutput(process.StandardError));
         return process;
     }
 
-    private async Task DrainAsync(StreamReader reader)
+    private static Task DrainOutput(StreamReader reader) => Task.Factory.StartNew(() =>
     {
+        // Windows inherited anonymous pipes use synchronous handles. Async-over-sync
+        // reads would occupy shared pool workers for the entire child lifetime.
+        // At most two dedicated readers per owned process; EOF releases each reader.
         var buffer = new char[1024];
-        try { while (await reader.ReadAsync(buffer.AsMemory(), lifetime.Token).ConfigureAwait(false) != 0) { } }
-        catch (Exception error) when (error is IOException or OperationCanceledException or ObjectDisposedException) { }
-    }
+        try { while (reader.Read(buffer, 0, buffer.Length) != 0) { } }
+        catch (Exception error) when (error is IOException or ObjectDisposedException) { }
+    }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
 
     private static string Secret() => Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
     private static bool SecretEquals(string expected, string actual) => actual is not null && actual.Length == expected.Length &&
@@ -329,7 +401,7 @@ public sealed class HostBrokerSession : IAsyncDisposable
         try
         {
             if (disposed == 2) return;
-            Interlocked.Exchange(ref disposed, 1);
+            lock (services) Interlocked.Exchange(ref disposed, 1);
             await lifetime.CancelAsync().ConfigureAwait(false);
             Actions.Shutdown();
             actionDispatch.Writer.TryComplete();
@@ -352,8 +424,8 @@ public sealed class HostBrokerSession : IAsyncDisposable
                 catch (Exception error) { failures.Add(error); }
             if (broker is not null)
                 try { await StopOwnedAsync(broker).ConfigureAwait(false); broker = null; } catch (Exception error) { failures.Add(error); }
-            await Task.WhenAll(drains).ConfigureAwait(false);
             if (failures.Count != 0) throw new AggregateException("Owned process cleanup failed.", failures);
+            await Task.WhenAll(drains).ConfigureAwait(false);
             lifetime.Dispose();
             Interlocked.Exchange(ref disposed, 2);
         }

@@ -105,6 +105,18 @@ internal static class BrokerCounterRegression
                 "Action confirmation was not rendered in the native label.");
             log($"PASS: real WinUI Button Invoke -> SDK handler -> confirmed reading {controller.Component.Text}; sameHwnd={handle}.");
 
+            processes[1].Kill(entireProcessTree: true);
+            await processes[1].WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            await WaitUntilAsync(() => controller.Component?.Status == CapabilityStatus.Unavailable && !actionButton!.IsEnabled &&
+                communication.ServiceProcessExits.Any(exit => exit.ProcessId == pids[1]), TimeSpan.FromSeconds(5),
+                () => "Owned service exit did not disable the native action or record its process identity.");
+            var unavailable = communication.States.GetSnapshot("counter")!;
+            Check(unavailable.State is not null && controller.Component!.Text == unavailable.State.Components.Single().Text,
+                "Service loss discarded the last confirmed reading.");
+            Check(island.Handle == handle && island.IsAlive && NativeWindows.IsWindow(target.Parent),
+                "Service loss destroyed the existing component or parent.");
+            log($"PASS: owned counter exit disables real native button, preserves reading={controller.Component!.Text}, sameHwnd={handle}; reason={unavailable.LastError?.Code}.");
+
             window.Close();
             await WaitUntilAsync(() => controller.Session.State == IslandDisplayState.Closed &&
                 !NativeWindows.IsWindow(handle) && !NativeWindows.IsWindow(bridge), TimeSpan.FromSeconds(5),

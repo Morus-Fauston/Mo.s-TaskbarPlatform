@@ -31,6 +31,7 @@ public sealed class SdkClient : IAsyncDisposable
         new BoundedChannelOptions(ActionLimits.MaximumOutstandingPerApplication) { SingleReader = true, SingleWriter = true });
     private readonly Task reader;
     private readonly Task actionWorker;
+    private readonly Task heartbeatWorker;
     private TaskCompletionSource<ProtocolResult>? pendingResponse;
     private string? pendingRequestId;
     private long lastActionSequence;
@@ -44,6 +45,7 @@ public sealed class SdkClient : IAsyncDisposable
         this.actionHandler = actionHandler;
         reader = ReadMessagesAsync();
         actionWorker = RunActionsAsync();
+        heartbeatWorker = RunHeartbeatsAsync();
     }
 
     public string SessionId { get; }
@@ -89,7 +91,7 @@ public sealed class SdkClient : IAsyncDisposable
                 RequestId = request,
             }, deadline.Token).ConfigureAwait(false);
             var welcome = await LengthPrefixedJson.ReadAsync<ProtocolMessage>(pipe, deadline.Token).ConfigureAwait(false);
-            if (welcome.BrokerLoad is not null || welcome.Flyout is not null || welcome.Action is not null || welcome.ActionCompletion is not null) throw new ProtocolException("InvalidWelcome");
+            if (welcome.BrokerLoad is not null || welcome.Flyout is not null || welcome.Action is not null || welcome.ActionCompletion is not null || welcome.Heartbeat is not null) throw new ProtocolException("InvalidWelcome");
             if (welcome.Kind == MessageKind.Result && welcome.Result?.Accepted == false)
                 throw new ProtocolException(welcome.Result.Code);
             if (welcome.Version != ProtocolLimits.Version || welcome.Kind != MessageKind.Welcome || welcome.RequestId != request ||
@@ -173,7 +175,7 @@ public sealed class SdkClient : IAsyncDisposable
                 var message = await LengthPrefixedJson.ReadAsync<ProtocolMessage>(pipe, lifetime.Token, Timeout.InfiniteTimeSpan).ConfigureAwait(false);
                 if (message.Version != ProtocolLimits.Version || message.ApplicationId != applicationId || message.SessionId != SessionId ||
                     !ValidIdentity(message.RequestId) || message.Ticket != "" || message.StartRequestId != "" ||
-                    message.Declaration is not null || message.State is not null || message.BrokerLoad is not null || message.Flyout is not null || message.ActionCompletion is not null)
+                    message.Declaration is not null || message.State is not null || message.BrokerLoad is not null || message.Flyout is not null || message.ActionCompletion is not null || message.Heartbeat is not null)
                     throw new ProtocolException("InvalidResponse");
                 if (message.Kind == MessageKind.Result && message.Action is null && ValidResult(message.Result))
                 {
@@ -243,6 +245,29 @@ public sealed class SdkClient : IAsyncDisposable
         }
     }
 
+    private async Task RunHeartbeatsAsync()
+    {
+        using var timer = new PeriodicTimer(HeartbeatMonitor.HeartbeatInterval);
+        long sequence = 0;
+        try
+        {
+            while (await timer.WaitForNextTickAsync(lifetime.Token).ConfigureAwait(false))
+            {
+                if (sequence == long.MaxValue) throw new ProtocolException("HeartbeatSequenceExhausted");
+                await WriteAsync(new ProtocolMessage
+                {
+                    Kind = MessageKind.Heartbeat,
+                    ApplicationId = applicationId,
+                    SessionId = SessionId,
+                    RequestId = Guid.NewGuid().ToString("N"),
+                    Heartbeat = new(++sequence, DateTimeOffset.UtcNow)
+                }, lifetime.Token).ConfigureAwait(false);
+            }
+        }
+        catch (Exception exception) when (exception is IOException or OperationCanceledException or ObjectDisposedException) { }
+        finally { Stop(); }
+    }
+
     private Task CompleteActionAsync(ActionCompletion completion) => WriteAsync(new ProtocolMessage
     {
         Kind = MessageKind.ActionCompleted,
@@ -269,7 +294,7 @@ public sealed class SdkClient : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         Stop();
-        await Task.WhenAll(reader, actionWorker).ConfigureAwait(false);
+        await Task.WhenAll(reader, actionWorker, heartbeatWorker).ConfigureAwait(false);
         lifetime.Dispose();
     }
 }

@@ -4,4 +4,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
   </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Mtp.Contracts/Mtp.Contracts.csproj" />
+  </ItemGroup>
 </Project>

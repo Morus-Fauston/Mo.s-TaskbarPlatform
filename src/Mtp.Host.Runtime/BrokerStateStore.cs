@@ -120,11 +120,17 @@ public sealed class BrokerStateStore
             return ProtocolResult.Reject("StaleSession", "会话已失效");
         if (message.Kind == MessageKind.Disconnected)
         {
+            if (!previous.IsConnected) return ProtocolResult.Success("AlreadyDisconnected");
+            var failure = message.Result is { Accepted: false } reason &&
+                reason.Code is "ProcessExited" or "PipeDisconnected" or "HeartbeatTimedOut" &&
+                reason.Message is { Length: <= ProtocolLimits.MaximumTextLength } &&
+                (reason.Path is null || reason.Path.Length <= ProtocolLimits.MaximumTextLength)
+                ? reason : ProtocolResult.Reject("Disconnected", "应用连接已中断");
             snapshots[message.ApplicationId] = previous with
             {
                 IsConnected = false,
                 IsInteractive = false,
-                LastError = ProtocolResult.Reject("Disconnected", "应用连接已中断")
+                LastError = failure
             };
             return ProtocolResult.Success();
         }

@@ -23,6 +23,7 @@ public sealed class BrokerServer : IAsyncDisposable
     private int disposed;
     private int started;
     private int peakPendingRequests;
+    private readonly HeartbeatMonitor heartbeats = new();
 
     public BrokerServer(BrokerLaunch launch)
     {
@@ -52,12 +53,13 @@ public sealed class BrokerServer : IAsyncDisposable
         var accepted = await LengthPrefixedJson.ReadAsync<ProtocolMessage>(control, token).ConfigureAwait(false);
         if (accepted.Version != ProtocolLimits.Version || accepted.Kind != MessageKind.Welcome ||
             accepted.ApplicationId != "" || accepted.SessionId != "" || accepted.RequestId != "" ||
-            accepted.Ticket != "" || accepted.StartRequestId != "" || accepted.Declaration is not null || accepted.State is not null || accepted.Result is not null || accepted.BrokerLoad is not null || accepted.Flyout is not null || accepted.Action is not null || accepted.ActionCompletion is not null)
+            accepted.Ticket != "" || accepted.StartRequestId != "" || accepted.Declaration is not null || accepted.State is not null || accepted.Result is not null || accepted.BrokerLoad is not null || accepted.Flyout is not null || accepted.Action is not null || accepted.ActionCompletion is not null || accepted.Heartbeat is not null)
             throw new ProtocolException("HostHandshakeRejected");
 
         var listeners = new List<NamedPipeServerStream>();
         var workers = new List<Task>();
         Task? receiver = null;
+        Task? heartbeatClock = null;
         try
         {
             // Create the listeners before ready, so Host cannot race pipe creation.
@@ -65,6 +67,8 @@ public sealed class BrokerServer : IAsyncDisposable
             receiver = ReceiveHostAsync(token);
             await WriteHostAsync(new ProtocolMessage { Kind = MessageKind.Welcome, RequestId = "broker-ready" }, token).ConfigureAwait(false);
             foreach (var listener in listeners) workers.Add(ServeSlotAsync(listener, token));
+            heartbeatClock = RunHeartbeatClockAsync(token);
+            workers.Add(heartbeatClock);
             var first = await Task.WhenAny(workers.Append(receiver)).ConfigureAwait(false);
             await first.ConfigureAwait(false);
         }
@@ -76,7 +80,22 @@ public sealed class BrokerServer : IAsyncDisposable
             if (receiver is not null) workers.Add(receiver);
             try { await Task.WhenAll(workers).ConfigureAwait(false); }
             catch (Exception exception) when (exception is IOException or OperationCanceledException or ObjectDisposedException) { }
+            heartbeats.Shutdown();
         }
+    }
+
+    private async Task RunHeartbeatClockAsync(CancellationToken token)
+    {
+        using var timer = new PeriodicTimer(HeartbeatMonitor.DetectionInterval);
+        try
+        {
+            while (await timer.WaitForNextTickAsync(token).ConfigureAwait(false))
+                foreach (var fault in heartbeats.Tick())
+                    lock (gate)
+                        if (connections.TryGetValue(fault.ApplicationId, out var current) && current.SessionId == fault.SessionId)
+                            current.Stop();
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
     }
 
     private NamedPipeServerStream CreateListener() => new(launch.ServicePipeName, PipeDirection.InOut,
@@ -135,7 +154,11 @@ public sealed class BrokerServer : IAsyncDisposable
                 return;
             }
             connection = new ServiceConnection(application, session, pipe, token);
-            lock (gate) connections.Add(application, connection);
+            lock (gate)
+            {
+                connections.Add(application, connection);
+                if (!heartbeats.StartSession(application, session).Accepted) throw new ProtocolException("InvalidHeartbeatSession");
+            }
             connection.OrdinaryWorker = ProcessOrdinaryRequestsAsync(connection);
             await connection.WriteAsync(welcome, handshake.Token).ConfigureAwait(false);
             while (!token.IsCancellationRequested)
@@ -150,6 +173,14 @@ public sealed class BrokerServer : IAsyncDisposable
                     !sessions.TryGetValue(application, out var current) || current != session)
                 {
                     await connection.ReplyAsync(message, ProtocolResult.Reject("SessionMismatch", "会话身份不匹配"), token).ConfigureAwait(false);
+                    continue;
+                }
+                if (message.Kind == MessageKind.Heartbeat)
+                {
+                    if (!ValidServicePayload(message)) throw new ProtocolException("InvalidHeartbeat");
+                    var pulse = message.Heartbeat!;
+                    // Duplicate pulses and ordinary business traffic never refresh liveness.
+                    heartbeats.Receive(application, session, pulse.Sequence, pulse.SentAt);
                     continue;
                 }
                 if (message.Kind == MessageKind.ActionCompleted)
@@ -174,6 +205,12 @@ public sealed class BrokerServer : IAsyncDisposable
         }
         finally
         {
+            HeartbeatFailureReason failure = HeartbeatFailureReason.PipeDisconnected;
+            if (application is not null && session is not null)
+            {
+                heartbeats.ReportFault(application, session, HeartbeatFailureReason.PipeDisconnected);
+                failure = heartbeats.GetSnapshot(application)?.Failure ?? failure;
+            }
             if (connection is not null)
             {
                 lock (gate)
@@ -197,9 +234,16 @@ public sealed class BrokerServer : IAsyncDisposable
                 {
                     using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
                     deadline.CancelAfter(TimeSpan.FromSeconds(5));
-                    await WriteHostAsync(new ProtocolMessage { Kind = MessageKind.Disconnected, ApplicationId = application, SessionId = session }, deadline.Token).ConfigureAwait(false);
+                    await WriteHostAsync(new ProtocolMessage
+                    {
+                        Kind = MessageKind.Disconnected,
+                        ApplicationId = application,
+                        SessionId = session,
+                        Result = ProtocolResult.Reject(failure.ToString(), failure == HeartbeatFailureReason.HeartbeatTimedOut ? "应用心跳超时" : "应用管道已断开")
+                    }, deadline.Token).ConfigureAwait(false);
                 }
                 catch (Exception exception) when (exception is IOException or OperationCanceledException or ObjectDisposedException) { }
+                finally { heartbeats.EndSession(application, session); }
             }
         }
     }
@@ -237,7 +281,7 @@ public sealed class BrokerServer : IAsyncDisposable
     {
         if (message.Version != ProtocolLimits.Version || !ValidIdentity(message.RequestId) ||
             message.Ticket != "" || message.StartRequestId != "" || message.Result is not null || message.Declaration is not null ||
-            message.State is not null || message.BrokerLoad is not null || message.Flyout is not null || message.ActionCompletion is not null ||
+            message.State is not null || message.BrokerLoad is not null || message.Flyout is not null || message.ActionCompletion is not null || message.Heartbeat is not null ||
             message.Action is not { } action || action.RequestId != message.RequestId || action.Sequence <= 0)
             throw new ProtocolException("InvalidHostAction");
         ProtocolResult? rejection = null;
@@ -386,7 +430,7 @@ public sealed class BrokerServer : IAsyncDisposable
         if (hello.Version != ProtocolLimits.Version) return ProtocolResult.Reject("UnsupportedVersion", "协议版本不支持");
         if (hello.Kind != MessageKind.Hello || !ValidIdentity(hello.ApplicationId) || !ValidIdentity(hello.StartRequestId) || !ValidIdentity(hello.RequestId) ||
             string.IsNullOrWhiteSpace(hello.Ticket) || hello.Ticket.Length > 256 || hello.SessionId != "" ||
-            hello.Declaration is not null || hello.State is not null || hello.Result is not null || hello.BrokerLoad is not null || hello.Flyout is not null || hello.Action is not null || hello.ActionCompletion is not null)
+            hello.Declaration is not null || hello.State is not null || hello.Result is not null || hello.BrokerLoad is not null || hello.Flyout is not null || hello.Action is not null || hello.ActionCompletion is not null || hello.Heartbeat is not null)
             return ProtocolResult.Reject("InvalidHandshake", "连接声明无效");
         lock (gate)
         {
@@ -459,7 +503,7 @@ public sealed class BrokerServer : IAsyncDisposable
                     continue;
                 }
                 if (message.Version != ProtocolLimits.Version || message.Kind != MessageKind.Result || message.Result is null || !ValidIdentity(message.RequestId) ||
-                    message.Ticket != "" || message.StartRequestId != "" || message.Declaration is not null || message.State is not null || message.BrokerLoad is not null || message.Flyout is not null || message.Action is not null || message.ActionCompletion is not null)
+                    message.Ticket != "" || message.StartRequestId != "" || message.Declaration is not null || message.State is not null || message.BrokerLoad is not null || message.Flyout is not null || message.Action is not null || message.ActionCompletion is not null || message.Heartbeat is not null)
                     throw new ProtocolException("InvalidHostResponse");
                 TaskCompletionSource<ProtocolMessage>? completion;
                 lock (gate) pending.TryGetValue(message.RequestId, out completion);
@@ -483,10 +527,14 @@ public sealed class BrokerServer : IAsyncDisposable
     {
         if (!ValidIdentity(message.RequestId) || message.Ticket != "" || message.StartRequestId != "" || message.Result is not null || message.BrokerLoad is not null)
             return false;
+        if (message.Kind == MessageKind.Heartbeat)
+            return message.Declaration is null && message.State is null && message.Flyout is null && message.Action is null && message.ActionCompletion is null &&
+                message.Heartbeat is { Sequence: > 0 } pulse && pulse.SentAt != default;
+        if (message.Heartbeat is not null) return false;
         if (message.Kind == MessageKind.ActionCompleted)
             return message.Action is null && message.Declaration is null && message.State is null && message.Flyout is null &&
                 message.ActionCompletion is { } completion && completion.RequestId == message.RequestId && completion.Sequence > 0 && ValidResult(completion.Result);
-        if (message.Action is not null || message.ActionCompletion is not null) return false;
+        if (message.Action is not null || message.ActionCompletion is not null || message.Heartbeat is not null) return false;
         return message.Kind switch
         {
             MessageKind.Declare => message.Declaration is not null && message.State is not null && message.Flyout is null,

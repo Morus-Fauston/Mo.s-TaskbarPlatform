@@ -58,3 +58,15 @@ powershell -ExecutionPolicy Bypass -File tests/Mtp.Host.WindowTests/Run.ps1 -Sce
 ~~~
 
 动作夹具包含真实双服务、业务失败、4个未终局请求预算、5秒超时、取消后迟到结果、旧会话/错序号/重复结果和并发发送。原生回归通过实际WinUI按钮AutomationPeer调用Click链，检查协议确认后的值以及同一HWND和退出清理；这不是人工点击或动画外观验收。
+
+四期心跳与故障隔离验证入口：
+
+~~~powershell
+dotnet test tests/Mtp.Communication.Tests/Mtp.Communication.Tests.csproj -c Release --filter FullyQualifiedName~HeartbeatProcessTests
+~~~
+
+SDK每秒发送独立心跳，Broker以接收端单调时钟每秒检查5秒阈值；业务静止不等于失联，重复序号和业务State不续命。故障保留首因及最后确认值；进程退出另记当前自有PID/会话/退出码事实。原生broker场景也检查终止自有计数器后按钮禁用、读数保留、HWND不变。
+
+部分通信测试夹具仍共享testhost线程池（Windows继承标准管道的异步封装会占用worker），测试集合最多并行2组；每组内部的双服务、4动作并发和故障隔离仍真实并行。不要通过扩大业务超时掩盖测试夹具资源竞争。
+
+Host产品进程的stdout/stderr使用每进程两条专用同步排空线程，最多34条，避免挤占协议线程池；16服务上限由HeartbeatProcessTests的One_host_starts_all_sixteen测试覆盖。清理失败保留资源所有权并立即返回，不等待仍存活进程的输出EOF。

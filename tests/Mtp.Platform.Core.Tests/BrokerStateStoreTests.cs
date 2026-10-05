@@ -5,6 +5,26 @@ namespace Mtp.Platform.Core.Tests;
 
 public sealed class BrokerStateStoreTests
 {
+    [Theory]
+    [InlineData("ProcessExited")]
+    [InlineData("PipeDisconnected")]
+    [InlineData("HeartbeatTimedOut")]
+    public void Session_fault_preserves_first_reason_and_last_confirmed_value(string code)
+    {
+        var store = Ready();
+        var before = store.GetSnapshot("counter")!.State;
+        Assert.True(store.Handle(Message(MessageKind.Disconnected) with { Result = ProtocolResult.Reject(code, "失联原因") }).Result!.Accepted);
+        Assert.Equal(code, store.GetSnapshot("counter")!.LastError!.Code);
+        Assert.Same(before, store.GetSnapshot("counter")!.State);
+        Assert.False(store.GetSnapshot("counter")!.IsInteractive);
+        store.Handle(Message(MessageKind.Disconnected));
+        Assert.Equal(code, store.GetSnapshot("counter")!.LastError!.Code);
+        store.Handle(Message(MessageKind.Welcome, "session-new"));
+        Assert.False(store.Handle(Message(MessageKind.Disconnected)).Result!.Accepted);
+        Assert.True(store.GetSnapshot("counter")!.IsConnected);
+        Assert.Null(store.GetSnapshot("counter")!.LastError);
+    }
+
     [Fact]
     public void Action_confirmation_keeps_newer_readings_and_still_validates_late_payloads()
     {
