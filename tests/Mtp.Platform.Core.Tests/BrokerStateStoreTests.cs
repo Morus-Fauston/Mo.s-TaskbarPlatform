@@ -5,6 +5,40 @@ namespace Mtp.Platform.Core.Tests;
 
 public sealed class BrokerStateStoreTests
 {
+    [Fact]
+    public void Recovery_readiness_cannot_revive_a_rejected_or_payload_mixed_declaration()
+    {
+        var store = Ready();
+        store.RequireSessionReady("counter");
+        store.Handle(Message(MessageKind.Welcome, "new"));
+        Assert.False(store.Handle(Message(MessageKind.SessionReady, "new")).Result!.Accepted);
+        store.Handle(Message(MessageKind.Declare, "new") with { Declaration = Declaration(), State = State(0) });
+        Assert.False(store.Handle(Message(MessageKind.SessionReady, "new") with { State = State(1) }).Result!.Accepted);
+        Assert.False(store.GetSnapshot("counter")!.IsInteractive);
+        Assert.False(store.Handle(Message(MessageKind.Declare, "new") with { Declaration = Declaration(), State = State(0) }).Result!.Accepted);
+        Assert.False(store.Handle(Message(MessageKind.State, "new") with { State = State(1) }).Result!.Accepted);
+        Assert.False(store.Handle(Message(MessageKind.SessionReady, "new")).Result!.Accepted);
+        Assert.False(store.GetSnapshot("counter")!.IsInteractive);
+    }
+
+    [Fact]
+    public void Recovery_accepts_fresh_state_but_waits_for_current_session_readiness_to_unlock_actions()
+    {
+        var store = Ready();
+        Assert.True(store.RequireSessionReady("counter").Accepted);
+        Assert.False(store.GetSnapshot("counter")!.IsInteractive);
+        store.Handle(Message(MessageKind.Welcome, "session-new"));
+        Assert.True(store.Handle(Message(MessageKind.Declare, "session-new") with { Declaration = Declaration(), State = State(0) }).Result!.Accepted);
+        Assert.False(store.GetSnapshot("counter")!.IsInteractive);
+        Assert.True(store.Handle(Message(MessageKind.State, "session-new") with { State = State(1, "fresh") }).Result!.Accepted);
+        Assert.False(store.GetSnapshot("counter")!.IsInteractive);
+        Assert.False(store.Handle(Message(MessageKind.SessionReady)).Result!.Accepted);
+        Assert.True(store.Handle(Message(MessageKind.SessionReady, "session-new")).Result!.Accepted);
+        Assert.True(store.GetSnapshot("counter")!.IsInteractive);
+        Assert.Equal("fresh", store.GetSnapshot("counter")!.State!.Components.Single().Text);
+        Assert.Null(store.GetSnapshot("counter")!.LastError);
+    }
+
     [Theory]
     [InlineData("ProcessExited")]
     [InlineData("PipeDisconnected")]

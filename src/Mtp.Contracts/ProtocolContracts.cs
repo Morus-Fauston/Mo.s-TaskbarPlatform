@@ -13,7 +13,7 @@ public static class ProtocolLimits
     public const int TicketLifetimeSeconds = 30;
 }
 
-public enum MessageKind { Hello, Welcome, Declare, State, Result, Disconnected, FlyoutRequest, ActionRequest, ActionCompleted, Heartbeat }
+public enum MessageKind { Hello, Welcome, Declare, State, Result, Disconnected, FlyoutRequest, ActionRequest, ActionCompleted, Heartbeat, RegisterLaunch, SessionReady }
 
 /// <summary>Internal wire envelope. SDK applications use the provider API instead.</summary>
 public sealed record ProtocolMessage
@@ -33,6 +33,7 @@ public sealed record ProtocolMessage
     public ActionInvocation? Action { get; init; }
     public ActionCompletion? ActionCompletion { get; init; }
     public HeartbeatPulse? Heartbeat { get; init; }
+    public LaunchRegistration? Registration { get; init; }
 }
 
 public sealed record HeartbeatPulse(long Sequence, DateTimeOffset SentAt);

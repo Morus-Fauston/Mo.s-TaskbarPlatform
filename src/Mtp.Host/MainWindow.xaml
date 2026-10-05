@@ -27,6 +27,8 @@
       <ComboBox x:Name="TargetDisplayCombo" Header="目标显示器" HorizontalAlignment="Stretch" SelectionChanged="TargetDisplayCombo_SelectionChanged"/>
       <NumberBox x:Name="RightGapInput" Header="右侧避让距离（0–64 DIP）" Value="8" Minimum="0" Maximum="64" SpinButtonPlacementMode="Inline" ValueChanged="RightGapInput_ValueChanged"/>
       <Button x:Name="RetryButton" Content="重试内容岛嵌入" Click="Retry_Click"/>
+      <TextBlock x:Name="CommunicationStatusText" TextWrapping="Wrap"/>
+      <Button x:Name="RetryCommunicationButton" Content="重试通信" Click="RetryCommunication_Click"/>
       <TextBlock Text="故障注入 · 仅本次会话" Style="{StaticResource SubtitleTextBlockStyle}"/>
       <StackPanel Orientation="Horizontal" Spacing="8">
        <Button x:Name="SimulateButton" Content="模拟任务栏不可用" Click="Simulate_Click"/>

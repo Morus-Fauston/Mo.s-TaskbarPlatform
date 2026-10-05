@@ -14,7 +14,7 @@ try
         await Task.Delay(interval, shutdown.Token);
         var result = await client.PublishAsync(provider!.Tick(), shutdown.Token);
         // A newer action confirmation can overtake an already captured automatic tick.
-        if (!result.Accepted && result.Code != "StaleRevision") { Console.Error.WriteLine("CounterRejected:" + result.Code); return 2; }
+        if (!result.Accepted && result.Code is not ("StaleRevision" or "Reconnecting" or "Unavailable")) { Console.Error.WriteLine("CounterRejected:" + result.Code); return 2; }
     }
     return 0;
 }

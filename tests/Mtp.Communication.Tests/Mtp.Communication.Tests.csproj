@@ -19,6 +19,7 @@
     <ProjectReference Include="../Mtp.Flyout.ProcessProbe/Mtp.Flyout.ProcessProbe.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="../Mtp.Action.ProcessProbe/Mtp.Action.ProcessProbe.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="../Mtp.Heartbeat.ProcessProbe/Mtp.Heartbeat.ProcessProbe.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="../Mtp.Recovery.ProcessProbe/Mtp.Recovery.ProcessProbe.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
   <Import Project="../../build/CommunicationRuntimes.targets" />
   <Target Name="CopyCommunicationProbe" AfterTargets="Build">
@@ -65,5 +66,14 @@
       <_HeartbeatProbeFiles Include="@(_HeartbeatProbeAssembly);@(_HeartbeatProbeAssembly->'%(RootDir)%(Directory)Mtp.Heartbeat.ProcessProbe.deps.json');@(_HeartbeatProbeAssembly->'%(RootDir)%(Directory)Mtp.Heartbeat.ProcessProbe.runtimeconfig.json');@(_HeartbeatProbeAssembly->'%(RootDir)%(Directory)Mtp.Contracts.dll');@(_HeartbeatProbeAssembly->'%(RootDir)%(Directory)Mtp.Transport.dll');@(_HeartbeatProbeAssembly->'%(RootDir)%(Directory)Mtp.Sdk.dll')" />
     </ItemGroup>
     <Copy SourceFiles="@(_HeartbeatProbeFiles)" DestinationFolder="$(OutDir)HeartbeatProcessProbe" />
+  </Target>
+  <Target Name="CopyRecoveryProbe" AfterTargets="Build">
+    <MSBuild Projects="../Mtp.Recovery.ProcessProbe/Mtp.Recovery.ProcessProbe.csproj" Targets="GetTargetPath" Properties="Configuration=$(Configuration);TargetFramework=net10.0">
+      <Output TaskParameter="TargetOutputs" ItemName="_RecoveryProbeAssembly" />
+    </MSBuild>
+    <ItemGroup>
+      <_RecoveryProbeFiles Include="@(_RecoveryProbeAssembly);@(_RecoveryProbeAssembly->'%(RootDir)%(Directory)Mtp.Recovery.ProcessProbe.deps.json');@(_RecoveryProbeAssembly->'%(RootDir)%(Directory)Mtp.Recovery.ProcessProbe.runtimeconfig.json');@(_RecoveryProbeAssembly->'%(RootDir)%(Directory)Mtp.Contracts.dll');@(_RecoveryProbeAssembly->'%(RootDir)%(Directory)Mtp.Transport.dll');@(_RecoveryProbeAssembly->'%(RootDir)%(Directory)Mtp.Sdk.dll')" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_RecoveryProbeFiles)" DestinationFolder="$(OutDir)RecoveryProcessProbe" />
   </Target>
 </Project>

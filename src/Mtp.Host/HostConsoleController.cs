@@ -48,6 +48,36 @@ internal sealed class HostConsoleController
     public string Notice { get; private set; } = "";
     public StructuredError? PreferenceError { get; private set; }
     public bool PopupOpen => adapter.PopupOpen;
+    public bool CanRetryCommunication => !closing && communication is not null &&
+        (communication.BrokerRecovery.CanRetry || communication.GetRecovery("counter")?.CanRetry == true);
+    public string CommunicationStatus => communication is null ? "通信尚未启动" :
+        $"平台通信：{RecoveryLabel(communication.BrokerRecovery)}；计数器：{RecoveryLabel(communication.GetRecovery("counter"))}";
+
+    private static string RecoveryLabel(RecoverySnapshot? value) => value?.State switch
+    {
+        RecoveryState.Available => "已连接",
+        RecoveryState.Recovering => "正在恢复",
+        RecoveryState.Exhausted => "恢复已停止，可手动重试" + (value.Error is null ? "" : $"（{value.Error}）"),
+        _ => "尚未连接"
+    };
+
+    public async Task RetryCommunicationAsync()
+    {
+        if (!CanRetryCommunication || communication is null) return;
+        try
+        {
+            var pending = communication.BrokerRecovery.CanRetry
+                ? communication.RetryBrokerAsync(communicationLifetime.Token)
+                : communication.RetryApplicationAsync("counter", communicationLifetime.Token);
+            Refresh();
+            var result = await pending;
+            Tests.Observe("communication-retry", new { result.Code, result.Accepted });
+            if (!result.Accepted) AddError(new(result.Code, result.Message));
+        }
+        catch (Exception error) when (error is IOException or OperationCanceledException or ObjectDisposedException)
+        { if (!closing) AddError(new("communication_retry_failed", error.Message)); }
+        finally { Refresh(); }
+    }
     public event Action? Changed;
     public Action<string> OpenDirectory { get; set; } = path => System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(path) { UseShellExecute = true });
 

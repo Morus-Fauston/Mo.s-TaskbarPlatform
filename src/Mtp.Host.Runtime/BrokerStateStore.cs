@@ -33,6 +33,8 @@ public sealed class BrokerStateStore
     private readonly HashSet<string> registered;
     private readonly Dictionary<string, BrokerApplicationSnapshot> snapshots = new(StringComparer.Ordinal);
     private readonly HashSet<string> declaredApplications = new(StringComparer.Ordinal);
+    private readonly HashSet<string> validDeclarations = new(StringComparer.Ordinal);
+    private readonly HashSet<string> awaitingReady = new(StringComparer.Ordinal);
     private readonly DeclarationValidator validator = new();
     private readonly TimeProvider clock;
 
@@ -57,6 +59,19 @@ public sealed class BrokerStateStore
     public BrokerApplicationSnapshot? GetSnapshot(string applicationId)
     {
         lock (sync) return snapshots.GetValueOrDefault(applicationId);
+    }
+
+    public ProtocolResult RequireSessionReady(string applicationId)
+    {
+        lock (sync)
+        {
+            if (!registered.Contains(applicationId)) return ProtocolResult.Reject("UnknownApplication", "应用未登记");
+            awaitingReady.Add(applicationId);
+            validDeclarations.Remove(applicationId);
+            if (snapshots.TryGetValue(applicationId, out var previous))
+                snapshots[applicationId] = previous with { IsInteractive = false };
+            return ProtocolResult.Success();
+        }
     }
 
     /// <summary>A matched action may finish after a newer ordinary update; it never rolls readings back.</summary>
@@ -112,6 +127,7 @@ public sealed class BrokerStateStore
             if (previous?.SessionId == message.SessionId)
                 return ProtocolResult.Reject("DuplicateSession", "会话已登记");
             declaredApplications.Remove(message.ApplicationId);
+            validDeclarations.Remove(message.ApplicationId);
             snapshots[message.ApplicationId] = new(message.ApplicationId, message.SessionId,
                 previous?.Declaration, previous?.State, true, false, null);
             return ProtocolResult.Success();
@@ -135,12 +151,25 @@ public sealed class BrokerStateStore
             return ProtocolResult.Success();
         }
         if (!previous.IsConnected) return ProtocolResult.Reject("Disconnected", "应用连接已中断");
+        if (message.Kind == MessageKind.SessionReady)
+        {
+            if (message.Declaration is not null || message.State is not null || message.Result is not null ||
+                message.Action is not null || message.ActionCompletion is not null || message.Heartbeat is not null ||
+                message.Flyout is not null || message.Registration is not null || message.BrokerLoad is not null ||
+                message.Ticket != "" || message.StartRequestId != "")
+                return ProtocolResult.Reject("InvalidEnvelope", "就绪通知包含不允许的载荷");
+            if (!validDeclarations.Contains(message.ApplicationId))
+                return ProtocolResult.Reject("DeclarationRequired", "当前会话完整声明尚未确认");
+            awaitingReady.Remove(message.ApplicationId);
+            snapshots[message.ApplicationId] = previous with { IsInteractive = true, LastError = null };
+            return ProtocolResult.Success();
+        }
         if (message.Kind == MessageKind.FlyoutRequest)
             return FlyoutRequests.Handle(message.ApplicationId, message.SessionId, message.Flyout,
                 previous, previous.Declaration?.FlyoutEntries ?? []);
         if (message.Kind == MessageKind.State)
         {
-            if (!previous.IsInteractive || previous.Declaration is null)
+            if (!validDeclarations.Contains(message.ApplicationId) || previous.Declaration is null)
                 return ProtocolResult.Reject("DeclarationRequired", "完整声明尚未确认");
             var stateError = ValidateState(message.State, previous.Declaration, out var frozen);
             if (stateError is not null) return stateError;
@@ -161,11 +190,12 @@ public sealed class BrokerStateStore
             var stateError = ValidateState(message.State, declaration.Value!, out var frozen);
             if (stateError is not null) return RejectDeclaration(previous, stateError);
             declaredApplications.Add(message.ApplicationId);
+            validDeclarations.Add(message.ApplicationId);
             snapshots[message.ApplicationId] = previous with
             {
                 Declaration = declaration.Value,
                 State = frozen,
-                IsInteractive = true,
+                IsInteractive = !awaitingReady.Contains(message.ApplicationId),
                 LastError = null
             };
             FlyoutRequests.SynchronizeDeclaration(snapshots[message.ApplicationId], declaration.Value!.FlyoutEntries);
@@ -176,6 +206,7 @@ public sealed class BrokerStateStore
 
     private ProtocolResult RejectDeclaration(BrokerApplicationSnapshot previous, ProtocolResult error)
     {
+        validDeclarations.Remove(previous.ApplicationId);
         snapshots[previous.ApplicationId] = previous with { IsInteractive = false, LastError = error };
         return error;
     }

@@ -62,6 +62,8 @@ public sealed partial class MainWindow : Window
             };
             DockStatusText.Text = $"{state} · {controller.TargetSummary}";
             TargetDetails.Text = controller.Target;
+            CommunicationStatusText.Text = controller.CommunicationStatus;
+            RetryCommunicationButton.IsEnabled = controller.CanRetryCommunication;
             displaySelection?.Refresh();
             var tests = controller.Tests;
             var active = tests.IsRunning;
@@ -124,6 +126,7 @@ public sealed partial class MainWindow : Window
     private void RightGapInput_ValueChanged(NumberBox sender, NumberBoxValueChangedEventArgs args) => displaySelection?.GapChanged(args.NewValue);
     private void Material_Changed(object sender, SelectionChangedEventArgs args) { if (AlphaCombo is not null) AlphaCombo.IsEnabled = MaterialCombo.SelectedIndex == 0 && !controller.Tests.IsRunning; }
     private void Retry_Click(object sender, RoutedEventArgs args) => controller.Execute(controller.Retry);
+    private async void RetryCommunication_Click(object sender, RoutedEventArgs args) => await controller.RetryCommunicationAsync();
     private void Simulate_Click(object sender, RoutedEventArgs args) => controller.Execute(() => controller.SetSimulation(true));
     private void ClearSimulation_Click(object sender, RoutedEventArgs args) => controller.Execute(() => controller.SetSimulation(false));
     private void StartCase_Click(object sender, RoutedEventArgs args) => controller.Execute(() => controller.Tests.Start(Selection(false)));

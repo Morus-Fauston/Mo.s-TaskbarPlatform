@@ -1,4 +1,3 @@
-using System.IO.Pipes;
 using System.Threading.Channels;
 using Mtp.Contracts;
 using Mtp.Transport;
@@ -15,286 +14,231 @@ public interface IActionHandler
     Task<ActionCompletion> HandleAsync(ActionInvocation action, CancellationToken cancellationToken);
 }
 
-/// <summary>Hides framing and credentials from application business logic.</summary>
+/// <summary>Owns credential delivery and connection generations; business requests are never replayed.</summary>
 public sealed class SdkClient : IAsyncDisposable
 {
-    private readonly NamedPipeClientStream pipe;
-    private readonly string applicationId;
-    private readonly SemaphoreSlim requestGate = new(1, 1);
+    private readonly object gate = new();
     private readonly CancellationTokenSource lifetime = new();
-    private int disposed;
-    private long flyoutSequence;
-    private readonly SemaphoreSlim writer = new(1, 1);
-    private readonly object responseGate = new();
-    private readonly IActionHandler? actionHandler;
-    private readonly Channel<ActionInvocation> actions = Channel.CreateBounded<ActionInvocation>(
-        new BoundedChannelOptions(ActionLimits.MaximumOutstandingPerApplication) { SingleReader = true, SingleWriter = true });
-    private readonly Task reader;
-    private readonly Task actionWorker;
-    private readonly Task heartbeatWorker;
-    private TaskCompletionSource<ProtocolResult>? pendingResponse;
-    private string? pendingRequestId;
-    private long lastActionSequence;
-    private int outstandingActions;
+    private readonly string applicationId;
+    private readonly IDeclarationProvider provider;
+    private readonly IActionHandler? handler;
+    private readonly Stream? credentialsInput;
+    private readonly Channel<Credential> credentials = Channel.CreateBounded<Credential>(
+        new BoundedChannelOptions(1) { SingleReader = true, SingleWriter = true, FullMode = BoundedChannelFullMode.DropOldest });
+    private SdkConnection? connection;
+    private CancellationTokenSource? connecting;
+    private Task credentialReader = Task.CompletedTask;
+    private Task recoveryWorker = Task.CompletedTask;
+    private Task? disposal;
+    private string lastSessionId;
+    private string lastLaunchId;
+    private long latestGeneration;
+    private bool inputAvailable;
+    private bool disposed;
+    private ProtocolResult? lastError;
 
-    private SdkClient(NamedPipeClientStream pipe, string applicationId, string sessionId, IActionHandler? actionHandler)
+    private SdkClient(ServiceLaunch launch, IDeclarationProvider provider, IActionHandler? handler, SdkConnection connection, Stream? input)
     {
-        this.pipe = pipe;
-        this.applicationId = applicationId;
-        SessionId = sessionId;
-        this.actionHandler = actionHandler;
-        reader = ReadMessagesAsync();
-        actionWorker = RunActionsAsync();
-        heartbeatWorker = RunHeartbeatsAsync();
+        applicationId = launch.ApplicationId;
+        this.provider = provider;
+        this.handler = handler ?? provider as IActionHandler;
+        this.connection = connection;
+        credentialsInput = input;
+        inputAvailable = input is not null;
+        lastSessionId = connection.SessionId;
+        lastLaunchId = launch.StartRequestId;
     }
 
-    public string SessionId { get; }
+    public string SessionId { get { lock (gate) return lastSessionId; } }
+    public bool IsConnected { get { lock (gate) return !disposed && connection?.IsConnected == true; } }
+    public ProtocolResult? LastError
+    {
+        get { lock (gate) return connection?.IsConnected == true ? lastError : Unavailable(); }
+    }
 
-    /// <summary>Reads Host-issued startup credentials without exposing framing to business code.</summary>
-    public static Task<SdkClient> ConnectFromStandardInputAsync(IDeclarationProvider provider, CancellationToken cancellationToken = default, IActionHandler? actionHandler = null)
+    public static Task<SdkClient> ConnectFromStandardInputAsync(IDeclarationProvider provider,
+        CancellationToken cancellationToken = default, IActionHandler? actionHandler = null)
     {
         ArgumentNullException.ThrowIfNull(provider);
         return ConnectFromStandardInputAsync(_ => provider, cancellationToken, actionHandler);
     }
 
-    /// <summary>The factory constructs a provider for the application identity issued by Host.</summary>
-    public static async Task<SdkClient> ConnectFromStandardInputAsync(Func<string, IDeclarationProvider> providerFactory, CancellationToken cancellationToken = default, IActionHandler? actionHandler = null)
+    public static async Task<SdkClient> ConnectFromStandardInputAsync(Func<string, IDeclarationProvider> providerFactory,
+        CancellationToken cancellationToken = default, IActionHandler? actionHandler = null)
     {
         ArgumentNullException.ThrowIfNull(providerFactory);
-        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        deadline.CancelAfter(TimeSpan.FromSeconds(5));
-        using var input = Console.OpenStandardInput();
-        var launch = await LengthPrefixedJson.ReadAsync<ServiceLaunch>(input, deadline.Token).ConfigureAwait(false);
-        var provider = providerFactory(launch.ApplicationId) ?? throw new ArgumentException("DeclarationProviderRequired", nameof(providerFactory));
-        deadline.Token.ThrowIfCancellationRequested();
-        return await ConnectAsync(launch, provider, deadline.Token, actionHandler).ConfigureAwait(false);
-    }
-
-    public static async Task<SdkClient> ConnectAsync(ServiceLaunch launch, IDeclarationProvider provider, CancellationToken cancellationToken = default, IActionHandler? actionHandler = null)
-    {
-        ArgumentNullException.ThrowIfNull(launch);
-        ArgumentNullException.ThrowIfNull(provider);
-        var pipe = new NamedPipeClientStream(".", launch.PipeName, PipeDirection.InOut, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
-        SdkClient? client = null;
+        var input = StandardInputCredentials.Open();
         try
         {
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            deadline.CancelAfter(TimeSpan.FromSeconds(5));
-            await pipe.ConnectAsync(deadline.Token).ConfigureAwait(false);
-            var request = Guid.NewGuid().ToString("N");
-            await LengthPrefixedJson.WriteAsync(pipe, new ProtocolMessage
-            {
-                Kind = MessageKind.Hello,
-                ApplicationId = launch.ApplicationId,
-                StartRequestId = launch.StartRequestId,
-                Ticket = launch.Ticket,
-                RequestId = request,
-            }, deadline.Token).ConfigureAwait(false);
-            var welcome = await LengthPrefixedJson.ReadAsync<ProtocolMessage>(pipe, deadline.Token).ConfigureAwait(false);
-            if (welcome.BrokerLoad is not null || welcome.Flyout is not null || welcome.Action is not null || welcome.ActionCompletion is not null || welcome.Heartbeat is not null) throw new ProtocolException("InvalidWelcome");
-            if (welcome.Kind == MessageKind.Result && welcome.Result?.Accepted == false)
-                throw new ProtocolException(welcome.Result.Code);
-            if (welcome.Version != ProtocolLimits.Version || welcome.Kind != MessageKind.Welcome || welcome.RequestId != request ||
-                welcome.ApplicationId != launch.ApplicationId || string.IsNullOrWhiteSpace(welcome.SessionId) || welcome.SessionId.Length > 256 ||
-                welcome.Ticket != "" || welcome.StartRequestId != "" || welcome.Declaration is not null || welcome.State is not null || welcome.Result is not null)
-                throw new ProtocolException("InvalidWelcome");
-            client = new SdkClient(pipe, launch.ApplicationId, welcome.SessionId, actionHandler ?? provider as IActionHandler);
-            var snapshot = await provider.GetSnapshotAsync(deadline.Token).WaitAsync(deadline.Token).ConfigureAwait(false);
-            var declaration = await client.SendAsync(new ProtocolMessage { Kind = MessageKind.Declare, Declaration = snapshot.Declaration, State = snapshot.State }, deadline.Token).ConfigureAwait(false);
-            if (!declaration.Accepted) throw new ProtocolException(declaration.Code);
+            deadline.CancelAfter(TimeSpan.FromSeconds(RecoveryLimits.ConnectionTimeoutSeconds));
+            var launch = await LengthPrefixedJson.ReadAsync<ServiceLaunch>(input, deadline.Token).ConfigureAwait(false);
+            ValidateLaunch(launch);
+            var provider = providerFactory(launch.ApplicationId) ?? throw new ArgumentException("DeclarationProviderRequired", nameof(providerFactory));
+            var connection = await SdkConnection.ConnectAsync(launch, provider, deadline.Token, actionHandler).ConfigureAwait(false);
+            var client = new SdkClient(launch, provider, actionHandler, connection, input);
+            client.credentialReader = client.ReadCredentialsAsync();
+            client.recoveryWorker = client.RecoverAsync();
             return client;
         }
-        catch
-        {
-            if (client is not null) await client.DisposeAsync().ConfigureAwait(false);
-            else await pipe.DisposeAsync().ConfigureAwait(false);
-            throw;
-        }
+        catch { input.Dispose(); throw; }
+    }
+
+    public static async Task<SdkClient> ConnectAsync(ServiceLaunch launch, IDeclarationProvider provider,
+        CancellationToken cancellationToken = default, IActionHandler? actionHandler = null)
+    {
+        ArgumentNullException.ThrowIfNull(provider);
+        ValidateLaunch(launch);
+        var connection = await SdkConnection.ConnectAsync(launch, provider, cancellationToken, actionHandler).ConfigureAwait(false);
+        return new(launch, provider, actionHandler, connection, null);
     }
 
     public Task<ProtocolResult> PublishAsync(ApplicationState state, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(state);
-        return SendAsync(new ProtocolMessage { Kind = MessageKind.State, State = state }, cancellationToken);
+        return SendAsync(current => current.PublishAsync(state, cancellationToken), cancellationToken);
     }
 
     public Task<ProtocolResult> RequestFlyoutAsync(FlyoutRequest request, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
-        return SendAsync(new ProtocolMessage { Kind = MessageKind.FlyoutRequest, Flyout = request }, cancellationToken);
+        return SendAsync(current => current.RequestFlyoutAsync(request, cancellationToken), cancellationToken);
     }
 
-    private async Task<ProtocolResult> SendAsync(ProtocolMessage message, CancellationToken cancellationToken)
+    private async Task<ProtocolResult> SendAsync(Func<SdkConnection, Task<ProtocolResult>> send, CancellationToken token)
     {
-        ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
-        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lifetime.Token);
-        deadline.CancelAfter(TimeSpan.FromSeconds(5));
-        // Reject excess publishers immediately; never accumulate an unbounded semaphore wait queue.
-        if (!await requestGate.WaitAsync(0, deadline.Token).ConfigureAwait(false)) return ProtocolResult.Reject("Busy", "上一条状态仍在等待确认");
-        try
+        token.ThrowIfCancellationRequested();
+        SdkConnection current;
+        lock (gate)
         {
-            message = message with { ApplicationId = applicationId, SessionId = SessionId, RequestId = Guid.NewGuid().ToString("N") };
-            if (message.Flyout is { } request)
-            {
-                if (flyoutSequence == long.MaxValue) throw new ProtocolException("RequestSequenceExhausted");
-                message = message with { Flyout = request with { RequestId = message.RequestId, RequestSequence = ++flyoutSequence } };
-            }
-            var completion = new TaskCompletionSource<ProtocolResult>(TaskCreationOptions.RunContinuationsAsynchronously);
-            lock (responseGate) { pendingResponse = completion; pendingRequestId = message.RequestId; }
-            await WriteAsync(message, deadline.Token).ConfigureAwait(false);
-            return await completion.Task.WaitAsync(deadline.Token).ConfigureAwait(false);
+            ObjectDisposedException.ThrowIf(disposed, this);
+            if (connection?.IsConnected != true) return Unavailable();
+            current = connection;
         }
-        catch
+        try { return await send(current).ConfigureAwait(false); }
+        catch (Exception error) when (
+            error is IOException and not ProtocolException or ObjectDisposedException ||
+            error is ProtocolException { Code: "end_of_stream" or "truncated_frame" } ||
+            error is OperationCanceledException && !token.IsCancellationRequested)
         {
-            // A cancelled or partial request cannot safely reuse the byte stream.
-            Stop();
-            throw;
-        }
-        finally
-        {
-            lock (responseGate) { pendingResponse = null; pendingRequestId = null; }
-            requestGate.Release();
+            // Framing, payload and envelope violations retain their exact cause for callers.
+            // Only a closed transport or connection lifetime/deadline becomes an offline result.
+            token.ThrowIfCancellationRequested();
+            lock (gate) return Unavailable();
         }
     }
 
-    private async Task WriteAsync(ProtocolMessage message, CancellationToken token)
-    {
-        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token, lifetime.Token);
-        deadline.CancelAfter(TimeSpan.FromSeconds(5));
-        await writer.WaitAsync(deadline.Token).ConfigureAwait(false);
-        try { await LengthPrefixedJson.WriteAsync(pipe, message, deadline.Token).ConfigureAwait(false); }
-        finally { writer.Release(); }
-    }
-
-    private async Task ReadMessagesAsync()
+    private async Task ReadCredentialsAsync()
     {
         try
         {
             while (!lifetime.IsCancellationRequested)
             {
-                var message = await LengthPrefixedJson.ReadAsync<ProtocolMessage>(pipe, lifetime.Token, Timeout.InfiniteTimeSpan).ConfigureAwait(false);
-                if (message.Version != ProtocolLimits.Version || message.ApplicationId != applicationId || message.SessionId != SessionId ||
-                    !ValidIdentity(message.RequestId) || message.Ticket != "" || message.StartRequestId != "" ||
-                    message.Declaration is not null || message.State is not null || message.BrokerLoad is not null || message.Flyout is not null || message.ActionCompletion is not null || message.Heartbeat is not null)
-                    throw new ProtocolException("InvalidResponse");
-                if (message.Kind == MessageKind.Result && message.Action is null && ValidResult(message.Result))
+                var launch = await LengthPrefixedJson.ReadAsync<ServiceLaunch>(credentialsInput!, lifetime.Token, Timeout.InfiniteTimeSpan).ConfigureAwait(false);
+                ValidateLaunch(launch);
+                lock (gate)
                 {
-                    lock (responseGate)
-                    {
-                        if (message.RequestId != pendingRequestId || pendingResponse is null) throw new ProtocolException("InvalidResponse");
-                        pendingResponse.TrySetResult(message.Result!);
-                    }
+                    if (launch.ApplicationId != applicationId) throw new ProtocolException("CredentialIdentityMismatch");
+                    if (launch.StartRequestId == lastLaunchId) continue;
+                    lastLaunchId = launch.StartRequestId;
+                    connecting?.Cancel();
+                    if (!credentials.Writer.TryWrite(new(++latestGeneration, launch))) break;
                 }
-                else if (message.Kind == MessageKind.ActionRequest && message.Result is null && message.Action is { } action &&
-                    action.RequestId == message.RequestId && action.Sequence > 0 && action.Slot is not null && action.Slot.ApplicationId == applicationId && action.Parameter is not null)
-                {
-                    // Replayed sequences never execute twice, even after a result has left the queue.
-                    if (action.Sequence <= lastActionSequence) continue;
-                    lastActionSequence = action.Sequence;
-                    if (Interlocked.Increment(ref outstandingActions) > ActionLimits.MaximumOutstandingPerApplication)
-                    {
-                        Interlocked.Decrement(ref outstandingActions);
-                        await CompleteActionAsync(new(action.RequestId, action.Sequence, ProtocolResult.Reject("Busy", "动作队列已满"))).ConfigureAwait(false);
-                    }
-                    else if (!actions.Writer.TryWrite(action))
-                    {
-                        Interlocked.Decrement(ref outstandingActions);
-                        throw new ProtocolException("ActionQueueClosed");
-                    }
-                }
-                else throw new ProtocolException("InvalidResponse");
             }
         }
-        catch (Exception exception)
+        catch (Exception error) when (error is IOException or OperationCanceledException or ObjectDisposedException or ArgumentException)
         {
-            lock (responseGate) pendingResponse?.TrySetException(exception);
+            lock (gate) lastError = ProtocolResult.Reject("CredentialChannelClosed", "恢复凭据通道已关闭");
         }
-        finally { Stop(); }
-    }
-
-    private async Task RunActionsAsync()
-    {
-        try
-        {
-            await foreach (var action in actions.Reader.ReadAllAsync(lifetime.Token).ConfigureAwait(false))
-            {
-                ActionCompletion completion;
-                try
-                {
-                    completion = actionHandler is null
-                        ? new(action.RequestId, action.Sequence, ProtocolResult.Reject("ActionNotAvailable", "应用未提供动作处理器"))
-                        : await actionHandler.HandleAsync(action, lifetime.Token).WaitAsync(lifetime.Token).ConfigureAwait(false);
-                    if (completion is null || completion.RequestId != action.RequestId || completion.Sequence != action.Sequence || !ValidResult(completion.Result))
-                        completion = new(action.RequestId, action.Sequence, ProtocolResult.Reject("InvalidActionResult", "动作返回无效结果"));
-                }
-                catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { break; }
-                catch (Exception)
-                {
-                    completion = new(action.RequestId, action.Sequence, ProtocolResult.Reject("ActionFailed", "动作执行失败"));
-                }
-                lifetime.Token.ThrowIfCancellationRequested();
-                await CompleteActionAsync(completion).ConfigureAwait(false);
-                Interlocked.Decrement(ref outstandingActions);
-            }
-        }
-        catch (Exception exception) when (exception is IOException or OperationCanceledException or ObjectDisposedException) { }
         finally
         {
-            Stop();
-            while (actions.Reader.TryRead(out _)) { }
+            lock (gate) inputAvailable = false;
+            credentials.Writer.TryComplete();
         }
     }
 
-    private async Task RunHeartbeatsAsync()
+    private async Task RecoverAsync()
     {
-        using var timer = new PeriodicTimer(HeartbeatMonitor.HeartbeatInterval);
-        long sequence = 0;
         try
         {
-            while (await timer.WaitForNextTickAsync(lifetime.Token).ConfigureAwait(false))
+            await foreach (var credential in credentials.Reader.ReadAllAsync(lifetime.Token).ConfigureAwait(false))
             {
-                if (sequence == long.MaxValue) throw new ProtocolException("HeartbeatSequenceExhausted");
-                await WriteAsync(new ProtocolMessage
+                SdkConnection? previous;
+                using var attempt = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+                attempt.CancelAfter(TimeSpan.FromSeconds(RecoveryLimits.ConnectionTimeoutSeconds));
+                lock (gate)
                 {
-                    Kind = MessageKind.Heartbeat,
-                    ApplicationId = applicationId,
-                    SessionId = SessionId,
-                    RequestId = Guid.NewGuid().ToString("N"),
-                    Heartbeat = new(++sequence, DateTimeOffset.UtcNow)
-                }, lifetime.Token).ConfigureAwait(false);
+                    if (credential.Generation != latestGeneration) continue;
+                    previous = connection;
+                    connection = null;
+                    connecting = attempt;
+                    lastError = ProtocolResult.Reject("Reconnecting", "正在恢复平台连接");
+                }
+                SdkConnection? candidate = null;
+                try
+                {
+                    if (previous is not null) await previous.DisposeAsync().ConfigureAwait(false);
+                    // Host owns retry budgets and backoff. Every delivered ticket is tried exactly once.
+                    candidate = await SdkConnection.ConnectAsync(credential.Launch, provider, attempt.Token, handler).ConfigureAwait(false);
+                    lock (gate)
+                    {
+                        if (!disposed && credential.Generation == latestGeneration)
+                        {
+                            connection = candidate;
+                            lastSessionId = candidate.SessionId;
+                            lastError = null;
+                            candidate = null;
+                        }
+                    }
+                }
+                catch (Exception)
+                {
+                    lock (gate)
+                        if (credential.Generation == latestGeneration) lastError = ProtocolResult.Reject("Reconnecting", "本次连接未完成，等待新的恢复凭据");
+                }
+                finally
+                {
+                    lock (gate) if (ReferenceEquals(connecting, attempt)) connecting = null;
+                    if (candidate is not null) await candidate.DisposeAsync().ConfigureAwait(false);
+                }
             }
         }
-        catch (Exception exception) when (exception is IOException or OperationCanceledException or ObjectDisposedException) { }
-        finally { Stop(); }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
+        finally { while (credentials.Reader.TryRead(out _)) { } }
     }
 
-    private Task CompleteActionAsync(ActionCompletion completion) => WriteAsync(new ProtocolMessage
-    {
-        Kind = MessageKind.ActionCompleted,
-        ApplicationId = applicationId,
-        SessionId = SessionId,
-        RequestId = completion.RequestId,
-        ActionCompletion = completion
-    }, lifetime.Token);
+    private ProtocolResult Unavailable() => ProtocolResult.Reject(inputAvailable && !disposed ? "Reconnecting" : "Unavailable",
+        inputAvailable && !disposed ? "平台连接暂不可用，等待恢复" : "平台连接不可用");
 
-    private static bool ValidIdentity(string? value) => !string.IsNullOrWhiteSpace(value) && value.Length <= 256 && value == value.Trim();
-    private static bool ValidResult(ProtocolResult? result) => result is not null && ValidIdentity(result.Code) &&
-        result.Message is not null && result.Message.Length <= ProtocolLimits.MaximumTextLength &&
-        (result.Path is null || result.Path.Length <= ProtocolLimits.MaximumTextLength);
-
-    private void Stop()
+    private static void ValidateLaunch(ServiceLaunch? launch)
     {
-        if (Interlocked.Exchange(ref disposed, 1) != 0) return;
-        lifetime.Cancel();
-        actions.Writer.TryComplete();
-        pipe.Dispose();
-        lock (responseGate) pendingResponse?.TrySetCanceled();
+        if (launch is null || !ValidId(launch.PipeName) || !ValidId(launch.ApplicationId) || !ValidId(launch.StartRequestId) || !ValidId(launch.Ticket))
+            throw new ProtocolException("InvalidServiceLaunch");
+    }
+    private static bool ValidId(string? value) => !string.IsNullOrWhiteSpace(value) && value.Length <= 256 && value == value.Trim();
+
+    public ValueTask DisposeAsync()
+    {
+        lock (gate)
+        {
+            if (disposal is not null) return new(disposal);
+            disposed = true;
+            disposal = DisposeCoreAsync();
+            return new(disposal);
+        }
     }
 
-    public async ValueTask DisposeAsync()
+    private async Task DisposeCoreAsync()
     {
-        Stop();
-        await Task.WhenAll(reader, actionWorker, heartbeatWorker).ConfigureAwait(false);
+        await lifetime.CancelAsync().ConfigureAwait(false);
+        credentialsInput?.Dispose();
+        credentials.Writer.TryComplete();
+        await Task.WhenAll(credentialReader, recoveryWorker).ConfigureAwait(false);
+        SdkConnection? current;
+        lock (gate) { current = connection; connection = null; }
+        if (current is not null) await current.DisposeAsync().ConfigureAwait(false);
         lifetime.Dispose();
     }
+
+    private sealed record Credential(long Generation, ServiceLaunch Launch);
 }

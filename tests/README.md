@@ -70,3 +70,14 @@ SDK每秒发送独立心跳，Broker以接收端单调时钟每秒检查5秒阈�
 部分通信测试夹具仍共享testhost线程池（Windows继承标准管道的异步封装会占用worker），测试集合最多并行2组；每组内部的双服务、4动作并发和故障隔离仍真实并行。不要通过扩大业务超时掩盖测试夹具资源竞争。
 
 Host产品进程的stdout/stderr使用每进程两条专用同步排空线程，最多34条，避免挤占协议线程池；16服务上限由HeartbeatProcessTests的One_host_starts_all_sixteen测试覆盖。清理失败保留资源所有权并立即返回，不等待仍存活进程的输出EOF。
+
+## 四期有限恢复
+
+Host按应用20秒窗口、最多3份新票据和一次自有服务重启恢复，Broker自动替换最多3次且总窗口25秒；短暂成功不补满预算，手动重试才开启对应对象的新预算。初始声明5秒未确认也进入恢复。Broker故障先保留健康服务，由SDK新凭据读泵重新取当前快照；离线业务请求不缓存、不重放。恢复声明与首个心跳就绪后才解锁交互。
+
+~~~powershell
+dotnet test tests/Mtp.Communication.Tests/Mtp.Communication.Tests.csproj -c Release --filter 'FullyQualifiedName~RecoveryProcessTests|FullyQualifiedName~InitialServiceRecoveryTests'
+powershell -ExecutionPolicy Bypass -File tests/Mtp.Host.WindowTests/Run.ps1 -Scenario broker -EvidenceDirectory .scratch/四期开发/evidence/03/<新批次>
+~~~
+
+恢复夹具验证真实Broker新代次、健康PID保留、当前快照重取、SDK关闭、20秒窗口/一次重启/手动应用恢复及恢复中关闭。原生broker场景覆盖3次自动替换、预算耗尽后的实际“重试通信”按钮、独立应用重启预算和同一HWND；仅操作测试自有进程，不代替人工桌面验收。

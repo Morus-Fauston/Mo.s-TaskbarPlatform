@@ -24,6 +24,10 @@ public sealed class BrokerServer : IAsyncDisposable
     private int started;
     private int peakPendingRequests;
     private readonly HeartbeatMonitor heartbeats = new();
+    private readonly HashSet<string> allowedApplications;
+    private readonly Dictionary<string, string> lastLaunchIds = new(StringComparer.Ordinal);
+    private readonly Channel<ProtocolMessage> registrationReplies = Channel.CreateBounded<ProtocolMessage>(
+        new BoundedChannelOptions(ProtocolLimits.MaximumApplications) { SingleReader = true, SingleWriter = true });
 
     public BrokerServer(BrokerLaunch launch)
     {
@@ -39,6 +43,8 @@ public sealed class BrokerServer : IAsyncDisposable
                 !registrations.TryAdd(registration.ApplicationId, registration with { ExpiresAt = registration.ExpiresAt < latestExpiry ? registration.ExpiresAt : latestExpiry }))
                 throw new ProtocolException("InvalidLaunch");
         }
+        allowedApplications = registrations.Keys.ToHashSet(StringComparer.Ordinal);
+        foreach (var registration in registrations.Values) lastLaunchIds.Add(registration.ApplicationId, registration.StartRequestId);
         this.launch = launch;
         control = new NamedPipeClientStream(".", launch.HostPipeName, PipeDirection.InOut, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
     }
@@ -53,7 +59,7 @@ public sealed class BrokerServer : IAsyncDisposable
         var accepted = await LengthPrefixedJson.ReadAsync<ProtocolMessage>(control, token).ConfigureAwait(false);
         if (accepted.Version != ProtocolLimits.Version || accepted.Kind != MessageKind.Welcome ||
             accepted.ApplicationId != "" || accepted.SessionId != "" || accepted.RequestId != "" ||
-            accepted.Ticket != "" || accepted.StartRequestId != "" || accepted.Declaration is not null || accepted.State is not null || accepted.Result is not null || accepted.BrokerLoad is not null || accepted.Flyout is not null || accepted.Action is not null || accepted.ActionCompletion is not null || accepted.Heartbeat is not null)
+            accepted.Ticket != "" || accepted.StartRequestId != "" || accepted.Declaration is not null || accepted.State is not null || accepted.Result is not null || accepted.BrokerLoad is not null || accepted.Flyout is not null || accepted.Action is not null || accepted.ActionCompletion is not null || accepted.Heartbeat is not null || accepted.Registration is not null)
             throw new ProtocolException("HostHandshakeRejected");
 
         var listeners = new List<NamedPipeServerStream>();
@@ -64,6 +70,7 @@ public sealed class BrokerServer : IAsyncDisposable
         {
             // Create the listeners before ready, so Host cannot race pipe creation.
             for (var i = 0; i < ProtocolLimits.MaximumApplications; i++) listeners.Add(CreateListener());
+            workers.Add(SendRegistrationRepliesAsync(token));
             receiver = ReceiveHostAsync(token);
             await WriteHostAsync(new ProtocolMessage { Kind = MessageKind.Welcome, RequestId = "broker-ready" }, token).ConfigureAwait(false);
             foreach (var listener in listeners) workers.Add(ServeSlotAsync(listener, token));
@@ -75,6 +82,7 @@ public sealed class BrokerServer : IAsyncDisposable
         finally
         {
             linked.Cancel();
+            registrationReplies.Writer.TryComplete();
             CancelPending();
             foreach (var listener in listeners) await listener.DisposeAsync().ConfigureAwait(false);
             if (receiver is not null) workers.Add(receiver);
@@ -131,7 +139,7 @@ public sealed class BrokerServer : IAsyncDisposable
             using var handshake = CancellationTokenSource.CreateLinkedTokenSource(token);
             handshake.CancelAfter(TimeSpan.FromSeconds(5));
             var hello = await LengthPrefixedJson.ReadAsync<ProtocolMessage>(pipe, handshake.Token).ConfigureAwait(false);
-            var rejection = ValidateHello(hello);
+            var rejection = ValidateHello(hello, out session);
             if (rejection is not null)
             {
                 await ReplyAsync(pipe, hello, rejection, handshake.Token).ConfigureAwait(false);
@@ -139,25 +147,18 @@ public sealed class BrokerServer : IAsyncDisposable
             }
 
             application = hello.ApplicationId;
-            session = Guid.NewGuid().ToString("N");
-            if (!sessions.TryAdd(application, session))
-            {
-                await ReplyAsync(pipe, hello, ProtocolResult.Reject("AlreadyConnected", "应用已有当前连接"), handshake.Token).ConfigureAwait(false);
-                session = null;
-                return;
-            }
-            var welcome = hello with { Kind = MessageKind.Welcome, SessionId = session, Ticket = "", StartRequestId = "" };
+            var welcome = hello with { Kind = MessageKind.Welcome, SessionId = session!, Ticket = "", StartRequestId = "" };
             var confirmation = await ForwardAsync(welcome, handshake.Token).ConfigureAwait(false);
             if (confirmation.Result?.Accepted != true)
             {
                 await ReplyAsync(pipe, hello, confirmation.Result ?? ProtocolResult.Reject("HostUnavailable", "平台暂不可用"), handshake.Token).ConfigureAwait(false);
                 return;
             }
-            connection = new ServiceConnection(application, session, pipe, token);
+            connection = new ServiceConnection(application, session!, pipe, token);
             lock (gate)
             {
                 connections.Add(application, connection);
-                if (!heartbeats.StartSession(application, session).Accepted) throw new ProtocolException("InvalidHeartbeatSession");
+                if (!heartbeats.StartSession(application, session!).Accepted) throw new ProtocolException("InvalidHeartbeatSession");
             }
             connection.OrdinaryWorker = ProcessOrdinaryRequestsAsync(connection);
             await connection.WriteAsync(welcome, handshake.Token).ConfigureAwait(false);
@@ -180,7 +181,11 @@ public sealed class BrokerServer : IAsyncDisposable
                     if (!ValidServicePayload(message)) throw new ProtocolException("InvalidHeartbeat");
                     var pulse = message.Heartbeat!;
                     // Duplicate pulses and ordinary business traffic never refresh liveness.
-                    heartbeats.Receive(application, session, pulse.Sequence, pulse.SentAt);
+                    if (heartbeats.Receive(application, session!, pulse.Sequence, pulse.SentAt).Accepted)
+                    {
+                        lock (gate) connection.HasHeartbeat = true;
+                        await NotifySessionReadyAsync(connection).ConfigureAwait(false);
+                    }
                     continue;
                 }
                 if (message.Kind == MessageKind.ActionCompleted)
@@ -270,9 +275,27 @@ public sealed class BrokerServer : IAsyncDisposable
                 lock (gate)
                     if (IsCurrent(connection)) connection.Declaration = result.Result?.Accepted == true ? message.Declaration : null;
             }
+            if (message.Kind == MessageKind.Declare && result.Result?.Accepted == true)
+                await NotifySessionReadyAsync(connection).ConfigureAwait(false);
             await connection.WriteAsync(result, connection.Token, releaseOrdinary: true).ConfigureAwait(false);
         }
         catch (Exception exception) when (exception is IOException or OperationCanceledException or ObjectDisposedException) { connection.Stop(); }
+    }
+
+    private async Task NotifySessionReadyAsync(ServiceConnection connection)
+    {
+        lock (gate)
+        {
+            if (!IsCurrent(connection) || connection.ReadySent || connection.Declaration is null || !connection.HasHeartbeat) return;
+            connection.ReadySent = true;
+        }
+        await WriteHostAsync(new ProtocolMessage
+        {
+            Kind = MessageKind.SessionReady,
+            ApplicationId = connection.ApplicationId,
+            SessionId = connection.SessionId,
+            RequestId = Guid.NewGuid().ToString("N")
+        }, connection.Token).ConfigureAwait(false);
     }
 
     private bool IsCurrent(ServiceConnection connection) => connections.TryGetValue(connection.ApplicationId, out var current) && ReferenceEquals(current, connection);
@@ -281,7 +304,7 @@ public sealed class BrokerServer : IAsyncDisposable
     {
         if (message.Version != ProtocolLimits.Version || !ValidIdentity(message.RequestId) ||
             message.Ticket != "" || message.StartRequestId != "" || message.Result is not null || message.Declaration is not null ||
-            message.State is not null || message.BrokerLoad is not null || message.Flyout is not null || message.ActionCompletion is not null || message.Heartbeat is not null ||
+            message.State is not null || message.BrokerLoad is not null || message.Flyout is not null || message.ActionCompletion is not null || message.Heartbeat is not null || message.Registration is not null ||
             message.Action is not { } action || action.RequestId != message.RequestId || action.Sequence <= 0)
             throw new ProtocolException("InvalidHostAction");
         ProtocolResult? rejection = null;
@@ -378,6 +401,8 @@ public sealed class BrokerServer : IAsyncDisposable
         public string SessionId { get; } = sessionId;
         public CancellationToken Token => lifetime.Token;
         public ApplicationDeclaration? Declaration { get; set; }
+        public bool HasHeartbeat { get; set; }
+        public bool ReadySent { get; set; }
         public long LastSequence { get; set; }
         public ActionCompletion? LastCompletion { get; set; }
         public Dictionary<string, ActionInvocation> Outstanding { get; } = new(StringComparer.Ordinal);
@@ -425,12 +450,13 @@ public sealed class BrokerServer : IAsyncDisposable
         public void DisposeLifetime() => lifetime.Dispose();
     }
 
-    private ProtocolResult? ValidateHello(ProtocolMessage hello)
+    private ProtocolResult? ValidateHello(ProtocolMessage hello, out string? session)
     {
+        session = null;
         if (hello.Version != ProtocolLimits.Version) return ProtocolResult.Reject("UnsupportedVersion", "协议版本不支持");
         if (hello.Kind != MessageKind.Hello || !ValidIdentity(hello.ApplicationId) || !ValidIdentity(hello.StartRequestId) || !ValidIdentity(hello.RequestId) ||
             string.IsNullOrWhiteSpace(hello.Ticket) || hello.Ticket.Length > 256 || hello.SessionId != "" ||
-            hello.Declaration is not null || hello.State is not null || hello.Result is not null || hello.BrokerLoad is not null || hello.Flyout is not null || hello.Action is not null || hello.ActionCompletion is not null || hello.Heartbeat is not null)
+            hello.Declaration is not null || hello.State is not null || hello.Result is not null || hello.BrokerLoad is not null || hello.Flyout is not null || hello.Action is not null || hello.ActionCompletion is not null || hello.Heartbeat is not null || hello.Registration is not null)
             return ProtocolResult.Reject("InvalidHandshake", "连接声明无效");
         lock (gate)
         {
@@ -441,6 +467,10 @@ public sealed class BrokerServer : IAsyncDisposable
             if (registration.StartRequestId != hello.StartRequestId ||
                 !CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(registration.Ticket), Encoding.UTF8.GetBytes(hello.Ticket)))
                 return ProtocolResult.Reject("InvalidTicket", "启动身份或票据无效");
+            var issuedSession = Guid.NewGuid().ToString("N");
+            if (!sessions.TryAdd(hello.ApplicationId, issuedSession))
+                return ProtocolResult.Reject("AlreadyConnected", "应用已有当前连接");
+            session = issuedSession;
             registrations.Remove(hello.ApplicationId);
         }
         return null;
@@ -497,20 +527,79 @@ public sealed class BrokerServer : IAsyncDisposable
             while (!token.IsCancellationRequested)
             {
                 var message = await LengthPrefixedJson.ReadAsync<ProtocolMessage>(control, token, Timeout.InfiniteTimeSpan).ConfigureAwait(false);
+                if (message.Kind == MessageKind.RegisterLaunch)
+                {
+                    // Keep the sole control reader available for forwarded service results.
+                    // Awaiting an ACK write here can deadlock with Host's response writer.
+                    if (!registrationReplies.Writer.TryWrite(RegisterLaunch(message)))
+                        throw new ProtocolException("RegistrationReplyQueueFull");
+                    continue;
+                }
                 if (message.Kind == MessageKind.ActionRequest)
                 {
                     await DispatchActionAsync(message, token).ConfigureAwait(false);
                     continue;
                 }
                 if (message.Version != ProtocolLimits.Version || message.Kind != MessageKind.Result || message.Result is null || !ValidIdentity(message.RequestId) ||
-                    message.Ticket != "" || message.StartRequestId != "" || message.Declaration is not null || message.State is not null || message.BrokerLoad is not null || message.Flyout is not null || message.Action is not null || message.ActionCompletion is not null || message.Heartbeat is not null)
+                    message.Ticket != "" || message.StartRequestId != "" || message.Declaration is not null || message.State is not null || message.BrokerLoad is not null || message.Flyout is not null || message.Action is not null || message.ActionCompletion is not null || message.Heartbeat is not null || message.Registration is not null)
                     throw new ProtocolException("InvalidHostResponse");
                 TaskCompletionSource<ProtocolMessage>? completion;
                 lock (gate) pending.TryGetValue(message.RequestId, out completion);
                 completion?.TrySetResult(message);
             }
         }
-        finally { CancelPending(); }
+        finally { registrationReplies.Writer.TryComplete(); CancelPending(); }
+    }
+
+    private async Task SendRegistrationRepliesAsync(CancellationToken token)
+    {
+        try
+        {
+            await foreach (var response in registrationReplies.Reader.ReadAllAsync(token).ConfigureAwait(false))
+                await WriteHostAsync(response, token).ConfigureAwait(false);
+        }
+        finally { while (registrationReplies.Reader.TryRead(out _)) { } }
+    }
+
+    private ProtocolMessage RegisterLaunch(ProtocolMessage message)
+    {
+        ProtocolResult result;
+        var now = DateTimeOffset.UtcNow;
+        var registration = message.Registration;
+        if (message.Version != ProtocolLimits.Version || !ValidIdentity(message.RequestId) || !ValidIdentity(message.ApplicationId) ||
+            message.SessionId != "" || message.Ticket != "" || message.StartRequestId != "" || message.Declaration is not null ||
+            message.State is not null || message.Result is not null || message.BrokerLoad is not null || message.Flyout is not null ||
+            message.Action is not null || message.ActionCompletion is not null || message.Heartbeat is not null || registration is null ||
+            registration.ApplicationId != message.ApplicationId || !ValidIdentity(registration.StartRequestId) || !ValidIdentity(registration.Ticket))
+            result = ProtocolResult.Reject("InvalidRegistration", "恢复登记字段无效");
+        else if (registration.ExpiresAt <= now || registration.ExpiresAt > now.AddSeconds(ProtocolLimits.TicketLifetimeSeconds))
+            result = ProtocolResult.Reject("TicketExpired", "恢复票据有效期无效");
+        else
+        {
+            lock (gate)
+            {
+                if (!allowedApplications.Contains(message.ApplicationId))
+                    result = ProtocolResult.Reject("UnknownApplication", "应用不在启动白名单内");
+                else if (sessions.ContainsKey(message.ApplicationId))
+                    result = ProtocolResult.Reject("AlreadyConnected", "应用仍有当前会话");
+                else if (lastLaunchIds.GetValueOrDefault(message.ApplicationId) == registration.StartRequestId)
+                    result = ProtocolResult.Reject("InvalidTicket", "启动请求不可重复登记");
+                else
+                {
+                    registrations[message.ApplicationId] = registration;
+                    lastLaunchIds[message.ApplicationId] = registration.StartRequestId;
+                    result = ProtocolResult.Success();
+                }
+            }
+        }
+        return new ProtocolMessage
+        {
+            Kind = MessageKind.Result,
+            ApplicationId = message.ApplicationId,
+            SessionId = "",
+            RequestId = message.RequestId,
+            Result = result
+        };
     }
 
     private void CancelPending()
@@ -525,16 +614,16 @@ public sealed class BrokerServer : IAsyncDisposable
     private static bool ValidIdentity(string? value) => !string.IsNullOrWhiteSpace(value) && value.Length <= 256 && value == value.Trim();
     private static bool ValidServicePayload(ProtocolMessage message)
     {
-        if (!ValidIdentity(message.RequestId) || message.Ticket != "" || message.StartRequestId != "" || message.Result is not null || message.BrokerLoad is not null)
+        if (!ValidIdentity(message.RequestId) || message.Ticket != "" || message.StartRequestId != "" || message.Result is not null || message.BrokerLoad is not null || message.Registration is not null)
             return false;
         if (message.Kind == MessageKind.Heartbeat)
             return message.Declaration is null && message.State is null && message.Flyout is null && message.Action is null && message.ActionCompletion is null &&
                 message.Heartbeat is { Sequence: > 0 } pulse && pulse.SentAt != default;
-        if (message.Heartbeat is not null) return false;
+        if (message.Heartbeat is not null || message.Registration is not null) return false;
         if (message.Kind == MessageKind.ActionCompleted)
             return message.Action is null && message.Declaration is null && message.State is null && message.Flyout is null &&
                 message.ActionCompletion is { } completion && completion.RequestId == message.RequestId && completion.Sequence > 0 && ValidResult(completion.Result);
-        if (message.Action is not null || message.ActionCompletion is not null || message.Heartbeat is not null) return false;
+        if (message.Action is not null || message.ActionCompletion is not null || message.Heartbeat is not null || message.Registration is not null) return false;
         return message.Kind switch
         {
             MessageKind.Declare => message.Declaration is not null && message.State is not null && message.Flyout is null,

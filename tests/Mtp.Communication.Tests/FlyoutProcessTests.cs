@@ -127,6 +127,21 @@ public sealed class FlyoutProcessTests(ITestOutputHelper output)
             output.WriteLine("healthyComplete=" + healthyComplete.RootElement.GetRawText());
             output.WriteLine($"mode={mode}; finalFlyoutRevision=123; finalHealthyRevision=500; queuePeak={host.PeakPendingRequests}; processProtocolOnly=true");
         }
+        catch
+        {
+            if (host is not null)
+            {
+                output.WriteLine($"failureBrokerPid={host.BrokerProcessId}; hostError={host.LastError ?? "none"}; brokerRecovery={JsonSerializer.Serialize(host.BrokerRecovery)}");
+                output.WriteLine("failureBrokerFault=" + JsonSerializer.Serialize(host.LastBrokerFault));
+                foreach (string app in new[] { "flyout", "healthy" })
+                {
+                    var snapshot = host.States.GetSnapshot(app);
+                    output.WriteLine($"failureApplication={app}; session={snapshot?.SessionId}; connected={snapshot?.IsConnected}; interactive={snapshot?.IsInteractive}; revision={snapshot?.State?.Revision}; error={snapshot?.LastError?.Code ?? "none"}; recovery={JsonSerializer.Serialize(host.GetRecovery(app))}");
+                }
+                output.WriteLine("failureProcessExits=" + JsonSerializer.Serialize(host.ServiceProcessExits));
+            }
+            throw;
+        }
         finally
         {
             if (host is not null) { await host.DisposeAsync(); await host.DisposeAsync(); Assert.Empty(host.ServiceProcessIds); }

@@ -105,10 +105,46 @@ internal static class BrokerCounterRegression
                 "Action confirmation was not rendered in the native label.");
             log($"PASS: real WinUI Button Invoke -> SDK handler -> confirmed reading {controller.Component.Text}; sameHwnd={handle}.");
 
-            processes[1].Kill(entireProcessTree: true);
-            await processes[1].WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            var retryCommunication = Field<Button>(window, "RetryCommunicationButton");
+            for (var failure = 0; failure < 4; failure++)
+            {
+                var oldSession = communication.States.GetSnapshot("counter")!.SessionId;
+                var currentBroker = processes.Last(process => process.Id == communication.BrokerProcessId);
+                currentBroker.Kill(entireProcessTree: true);
+                await currentBroker.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
+                if (failure == 3) break;
+                await WaitUntilAsync(() => communication.States.GetSnapshot("counter") is { IsInteractive: true } recovered &&
+                    recovered.SessionId != oldSession && actionButton!.IsEnabled, TimeSpan.FromSeconds(10),
+                    () => "Broker replacement did not restore the existing native action.");
+                var replacement = Process.GetProcessById(communication.BrokerProcessId);
+                _ = replacement.Handle;
+                processes.Add(replacement);
+                Check(!processes[1].HasExited && communication.ServiceProcessIds.Single() == pids[1], "Broker recovery restarted the healthy service.");
+                Check(island.Handle == handle && island.Bridge == bridge, "Recovery recreated native content.");
+            }
+            await WaitUntilAsync(() => retryCommunication.IsEnabled && !actionButton!.IsEnabled &&
+                communication.BrokerRecovery.State == RecoveryState.Exhausted, TimeSpan.FromSeconds(5),
+                () => "Exhausted recovery did not expose the actual communication retry button.");
+            var retryPeer = new Microsoft.UI.Xaml.Automation.Peers.ButtonAutomationPeer(retryCommunication);
+            ((Microsoft.UI.Xaml.Automation.Provider.IInvokeProvider)retryPeer.GetPattern(
+                Microsoft.UI.Xaml.Automation.Peers.PatternInterface.Invoke)).Invoke();
+            await WaitUntilAsync(() => communication.States.GetSnapshot("counter")?.IsInteractive == true &&
+                actionButton!.IsEnabled && !retryCommunication.IsEnabled, TimeSpan.FromSeconds(30),
+                () => "Actual retry button did not restore communication.");
+            var manualBroker = Process.GetProcessById(communication.BrokerProcessId);
+            _ = manualBroker.Handle;
+            processes.Add(manualBroker);
+            Check(island.Handle == handle && island.Bridge == bridge, "Manual recovery recreated the view.");
+            var recoveredService = Process.GetProcessById(communication.ServiceProcessIds.Single());
+            _ = recoveredService.Handle;
+            processes.Add(recoveredService);
+            Check(communication.GetRecovery("counter")!.Restarts == 1, "Service recovery exceeded its separate restart budget.");
+            log($"PASS: three Broker replacements preserve servicePid={pids[1]}; exhaustion and actual retry Button Invoke recover Broker; depleted application ticket budget uses one bounded restart to pid={recoveredService.Id}; sameHwnd={handle}.");
+
+            recoveredService.Kill(entireProcessTree: true);
+            await recoveredService.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
             await WaitUntilAsync(() => controller.Component?.Status == CapabilityStatus.Unavailable && !actionButton!.IsEnabled &&
-                communication.ServiceProcessExits.Any(exit => exit.ProcessId == pids[1]), TimeSpan.FromSeconds(5),
+                communication.ServiceProcessExits.Any(exit => exit.ProcessId == recoveredService.Id), TimeSpan.FromSeconds(5),
                 () => "Owned service exit did not disable the native action or record its process identity.");
             var unavailable = communication.States.GetSnapshot("counter")!;
             Check(unavailable.State is not null && controller.Component!.Text == unavailable.State.Components.Single().Text,
