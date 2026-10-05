@@ -3,7 +3,7 @@ using Mtp.Contracts;
 using Mtp.Sdk;
 using Mtp.Transport;
 
-if (args.Length != 2 || args[0] is not ("phases" or "invalid-template")) return 2;
+if (args.Length != 2 || args[0] is not ("phases" or "invalid-template" or "combined")) return 2;
 string mode = args[0];
 string directory = Path.GetFullPath(args[1]);
 using var lifetime = new CancellationTokenSource(TimeSpan.FromSeconds(30));
@@ -75,8 +75,16 @@ try
 
     await PublishAcceptedAsync(DynamicProvider.CreateState(4));
     Require(client.SessionId == session, "SessionChangedDuringRemoval");
-    await MarkerAsync("complete", new { mode, pid = Environment.ProcessId, sessionId = session, revision = 4, rejections = errors.Count });
-    Console.WriteLine("ProbeComplete:phases:revision=4:rejections=10:sameSession=true");
+    string? flyoutResult = null;
+    if (mode == "combined")
+    {
+        var receipt = await client.RequestFlyoutAsync(new FlyoutRequest("caller-ignored", 777,
+            "main", "details", FlyoutKind.TaskbarGroup, 4), lifetime.Token);
+        Require(receipt.Accepted && receipt.Code == "Received", "CombinedFlyoutRejected:" + receipt.Code);
+        flyoutResult = receipt.Code;
+    }
+    await MarkerAsync("complete", new { mode, pid = Environment.ProcessId, sessionId = session, revision = 4, rejections = errors.Count, flyoutResult });
+    Console.WriteLine($"ProbeComplete:{mode}:revision=4:rejections=10:sameSession=true");
     await Task.Delay(TimeSpan.FromSeconds(8), lifetime.Token);
     return 0;
 

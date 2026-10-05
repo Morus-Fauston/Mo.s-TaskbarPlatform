@@ -19,6 +19,16 @@ dotnet test tests/Mtp.Communication.Tests/Mtp.Communication.Tests.csproj -c Rele
 
 通信测试构建并复制本配置的 Broker 和 CounterService，不依赖先前 Release 输出。每个用例使用随机当前用户管道与自有独立进程，验证初始声明/确认状态、票据拒绝、坏帧、取消及清理；不修改用户偏好。MultiApplicationTests 使用专用 ProcessProbe 验证双应用高频、坏状态、旧会话与慢读隔离，TRX记录最终revision、实际队列峰值及PID退出。传输测试覆盖严格 JSON/UTF-8、1 MiB 边界和分段读取。当前切片不包含自动重连或业务动作。
 
+动态内容由 `DynamicContentProcessTests` 验证活动与重复项同会话增减、预置模板、计时/进度/计数字段和拒绝后旧快照保留。受控请求由 `FlyoutProcessTests` 验证 SDK 四类请求、Host 许可、旧会话/序号及混载拒绝；`Received` 仅表示协议接收，不代表已经创建窗口。两者均使用专用独立进程，未扩大计数器业务。
+
+三期跨票组合入口（同一 Host 和两个独立服务）：
+
+```powershell
+dotnet test tests/Mtp.Communication.Tests/Mtp.Communication.Tests.csproj -c Release --filter FullyQualifiedName~PhaseThreeCombinationTests
+```
+
+长期证据按各期保存至 `.scratch/<期次>/evidence/<票号>/`，TRX必须使用不同文件名或不同目录，避免多项目结果覆盖。三期验收不等于完整实况岛视觉、动作/心跳/恢复或浮窗动画交付。
+
 开发期计数器入口：构建 Host 后以 `Mtp.Host.exe --counter-demo` 启动；控制台出现 `counter / main / counter` 后开启该组件显示。默认显示仍关闭，确认读数来自独立服务。退出 Host 清理本次自有进程；嵌入失败保留错误，不建立独立贴靠回退。独立服务不应手工拼接命令行票据。
 
 ## Windows 适配器
