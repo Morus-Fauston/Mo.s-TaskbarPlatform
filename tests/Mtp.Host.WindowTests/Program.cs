@@ -11,6 +11,15 @@ internal static class Program
     private static void Main()
     {
         Environment.ExitCode = 1;
+        var arguments = Environment.GetCommandLineArgs();
+        if (arguments.Length == 3 && arguments[1] == "--settings-readback")
+        {
+            var loaded = new LocalHostSettingsPreferenceStore(arguments[2]).Load();
+            if (!loaded.IsSuccess) return;
+            File.WriteAllText(arguments[2] + ".readback.json", System.Text.Json.JsonSerializer.Serialize(loaded.Value));
+            Environment.ExitCode = 0;
+            return;
+        }
         WinRT.ComWrappersSupport.InitializeComWrappers();
         Application.Start(_ =>
         {
@@ -52,6 +61,12 @@ public sealed partial class WindowTestApplication : Application
         {
             // Keep the application alive while the last dock is closed and recreated.
             lifetimeWindow = new Window();
+            if (Environment.GetCommandLineArgs().Contains("--settings-only", StringComparer.Ordinal))
+            {
+                await SettingsNativeRegression.RunAsync(message => File.AppendAllText(LogPath, message + "\n"));
+                Finish(null);
+                return;
+            }
             if (Environment.GetCommandLineArgs().Contains("--template-only", StringComparer.Ordinal))
             {
                 await TemplateNativeRegression.RunAsync(message => File.AppendAllText(LogPath, message + "\n"));

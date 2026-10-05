@@ -130,6 +130,36 @@ internal sealed class ContentIslandHost
             record("material-failed", MaterialStatus);
         }
     }
+    public void ApplyAppearance(HostAppearancePreferences appearance)
+    {
+        if (!IsAlive) return;
+        var request = new MaterialSpec(appearance.Material, appearance.Opacity);
+        bool highContrast = content?.HighContrast == true;
+        var resolution = MaterialResolver.Resolve(request, new(content is not null && source?.Content == content && !highContrast,
+            Microsoft.UI.Composition.SystemBackdrops.DesktopAcrylicController.IsSupported(),
+            Microsoft.UI.Composition.SystemBackdrops.MicaController.IsSupported()));
+        var effective = highContrast ? new MaterialSpec(MaterialKind.None, 1) : resolution.Effective;
+        var config = new HostTestConfiguration(effective.Kind is MaterialKind.None or MaterialKind.Solid ? "none" : effective.Kind.ToString().ToLowerInvariant(),
+            effective.Kind == MaterialKind.None ? 1 : effective.Opacity, appearance.Theme.ToString().ToLowerInvariant());
+        Configuration = config;
+        content?.ApplyAppearance(config);
+        try
+        {
+            source!.SystemBackdrop = effective.Kind switch
+            {
+                MaterialKind.Acrylic => new ConfiguredMaterialBackdrop(MaterialKind.Acrylic, effective.Opacity, record),
+                MaterialKind.Mica => new ConfiguredMaterialBackdrop(MaterialKind.Mica, effective.Opacity, record),
+                _ => null,
+            };
+            MaterialStatus = $"请求：{MaterialResolver.Describe(request.Kind)}；实际API：{MaterialResolver.Describe(effective.Kind)}。{(highContrast ? "高对比使用系统不透明背景。" : resolution.DowngradeReason)} 外观待人工确认。";
+        }
+        catch (Exception error)
+        {
+            source!.SystemBackdrop = null;
+            content?.ApplyAppearance(config with { Material = "none", Alpha = 1 });
+            MaterialStatus = $"请求：{MaterialResolver.Describe(request.Kind)}；实际：不透明回退。{error.Message}";
+        }
+    }
     public void Move(PixelRect screenBounds)
     {
         var origin = NativeWindows.ClientOrigin(parent);

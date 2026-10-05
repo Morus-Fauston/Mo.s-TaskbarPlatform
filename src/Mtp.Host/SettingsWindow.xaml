@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Window
+    x:Class="Mtp.Host.SettingsWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Title="MTP 设置">
+    <Grid x:Name="Root" Background="{ThemeResource ApplicationPageBackgroundThemeBrush}">
+        <Border x:Name="SurfacePalette" Visibility="Collapsed" Background="{ThemeResource ApplicationPageBackgroundThemeBrush}" />
+        <NavigationView x:Name="Navigation" PaneDisplayMode="LeftCompact" IsPaneOpen="False"
+                        IsBackButtonVisible="Visible" IsSettingsVisible="False" CompactPaneLength="48"
+                        OpenPaneLength="240" SelectionChanged="NavigationChanged" BackRequested="BackRequested"
+                        AutomationProperties.AutomationId="mtp-settings-navigation" AutomationProperties.Name="设置导航">
+            <NavigationView.MenuItems>
+                <NavigationViewItem x:Name="ApplicationsNav" Content="接入应用" Tag="Applications" Icon="AllApps"
+                                    ToolTipService.ToolTip="接入应用" AutomationProperties.AutomationId="mtp-settings-nav-applications" />
+                <NavigationViewItem x:Name="LayoutNav" Content="小组件排布" Tag="Layout" Icon="List"
+                                    ToolTipService.ToolTip="小组件排布" AutomationProperties.AutomationId="mtp-settings-nav-layout" />
+                <NavigationViewItem x:Name="FlyoutsNav" Content="浮窗显示" Tag="Flyouts" Icon="Message"
+                                    ToolTipService.ToolTip="浮窗显示" AutomationProperties.AutomationId="mtp-settings-nav-flyouts" />
+                <NavigationViewItem x:Name="OfficialNav" Content="官方功能" Tag="Official" Icon="Home"
+                                    ToolTipService.ToolTip="官方功能" AutomationProperties.AutomationId="mtp-settings-nav-official" />
+            </NavigationView.MenuItems>
+            <NavigationView.FooterMenuItems>
+                <NavigationViewItem x:Name="AboutNav" Content="关于" Tag="About" Icon="Help"
+                                    ToolTipService.ToolTip="关于" AutomationProperties.AutomationId="mtp-settings-nav-about" />
+                <NavigationViewItem x:Name="GlobalNav" Content="全局设置" Tag="Global" Icon="Setting"
+                                    ToolTipService.ToolTip="全局设置" AutomationProperties.AutomationId="mtp-settings-nav-global" />
+            </NavigationView.FooterMenuItems>
+            <Grid Padding="24,16,24,24" RowSpacing="16">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+                <TextBlock x:Name="PageTitle" Text="接入应用" Style="{ThemeResource TitleTextBlockStyle}"
+                           AutomationProperties.AutomationId="mtp-settings-title" />
+                <InfoBar x:Name="ErrorBar" Grid.Row="1" IsOpen="False" IsClosable="False" Severity="Error"
+                         Title="设置未能生效" AutomationProperties.AutomationId="mtp-settings-error" />
+                <ScrollViewer Grid.Row="2" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
+                    <Grid>
+                        <StackPanel x:Name="ApplicationsPanel" Spacing="12">
+                            <TextBlock Text="查看接入身份、连接状态和恢复原因。显示小组件不会启用或停用应用。" TextWrapping="Wrap" />
+                            <TextBlock x:Name="ConnectionStatus" TextWrapping="Wrap" AutomationProperties.AutomationId="mtp-settings-connection-status" />
+                            <Button x:Name="RetryBrokerButton" Content="重试平台连接" Click="RetryBrokerClicked"
+                                    AutomationProperties.AutomationId="mtp-settings-retry-broker" AutomationProperties.Name="重试平台连接" />
+                            <TextBlock x:Name="ApplicationsEmpty" Text="尚未收到接入应用的有效声明。连接建立后会在此显示。" TextWrapping="Wrap"
+                                       AutomationProperties.AutomationId="mtp-settings-applications-empty" />
+                            <StackPanel x:Name="ApplicationRows" Spacing="16" />
+                            <TextBlock Text="当前版本不提供安装、更新、删除或第三方业务设置。" TextWrapping="Wrap" />
+                        </StackPanel>
+                        <StackPanel x:Name="LayoutPanel" Spacing="12" Visibility="Collapsed">
+                            <TextBlock Text="显示开关只控制任务栏入口；顺序按稳定身份保存，临时活动不会新增设置项。" TextWrapping="Wrap" />
+                            <ComboBox x:Name="TargetDisplayCombo" Header="目标显示器" MinWidth="240" HorizontalAlignment="Stretch"
+                                      SelectionChanged="DisplayChanged" AutomationProperties.AutomationId="mtp-settings-display" AutomationProperties.Name="目标显示器" />
+                            <NumberBox x:Name="RightGapInput" Header="与通知区域的间距（DIP）" Minimum="0" Maximum="64" SmallChange="1" LargeChange="4"
+                                       SpinButtonPlacementMode="Compact" ValueChanged="GapChanged" HorizontalAlignment="Left" Width="240"
+                                       AutomationProperties.AutomationId="mtp-settings-gap" AutomationProperties.Name="与通知区域的间距" />
+                            <TextBlock x:Name="DisplayStatus" TextWrapping="Wrap" AutomationProperties.AutomationId="mtp-settings-display-status" />
+                            <TextBlock x:Name="ComponentsEmpty" Text="当前没有可排布的小组件。接入应用声明稳定入口后会在此显示。" TextWrapping="Wrap"
+                                       AutomationProperties.AutomationId="mtp-settings-components-empty" />
+                            <StackPanel x:Name="ComponentRows" Spacing="8" />
+                        </StackPanel>
+                        <StackPanel x:Name="FlyoutsPanel" Spacing="12" Visibility="Collapsed">
+                            <TextBlock Text="浮窗显示偏好" Style="{ThemeResource SubtitleTextBlockStyle}" />
+                            <TextBlock Text="事件浮窗和短提示的显示开关、默认位置及每屏上限将在相应浮窗功能交付时提供。当前小组件显示开关不会改变浮窗偏好。" TextWrapping="Wrap" />
+                        </StackPanel>
+                        <StackPanel x:Name="OfficialPanel" Spacing="12" Visibility="Collapsed">
+                            <TextBlock Text="官方功能尚未交付" Style="{ThemeResource SubtitleTextBlockStyle}" />
+                            <TextBlock Text="媒体、音量、亮度及键盘锁定键功能将在后续阶段接入。当前 Host 已支持受控声明、状态确认、动作和连接恢复。" TextWrapping="Wrap" />
+                        </StackPanel>
+                        <StackPanel x:Name="AboutPanel" Spacing="12" Visibility="Collapsed">
+                            <TextBlock Text="Mo.s Taskbar Platform" Style="{ThemeResource SubtitleTextBlockStyle}" />
+                            <TextBlock x:Name="VersionText" AutomationProperties.AutomationId="mtp-settings-version" />
+                            <TextBlock Text="MTP 统一承载接入应用的小组件和浮窗。接入应用提供声明、状态与动作，Host 管理呈现和窗口生命周期。" TextWrapping="Wrap" />
+                        </StackPanel>
+                        <StackPanel x:Name="GlobalPanel" Spacing="12" Visibility="Collapsed">
+                            <ComboBox x:Name="ThemeCombo" Header="主题" HorizontalAlignment="Stretch" SelectionChanged="AppearanceChanged"
+                                      AutomationProperties.AutomationId="mtp-settings-theme" AutomationProperties.Name="主题">
+                                <ComboBoxItem Content="跟随系统" Tag="System" />
+                                <ComboBoxItem Content="浅色" Tag="Light" />
+                                <ComboBoxItem Content="深色" Tag="Dark" />
+                            </ComboBox>
+                            <ComboBox x:Name="MaterialCombo" Header="默认材质" HorizontalAlignment="Stretch" SelectionChanged="AppearanceChanged"
+                                      AutomationProperties.AutomationId="mtp-settings-material" AutomationProperties.Name="默认材质" />
+                            <NumberBox x:Name="OpacityInput" Header="材质强度（0–1）" Minimum="0" Maximum="1" SmallChange="0.1" LargeChange="0.1"
+                                       SpinButtonPlacementMode="Compact" Width="240" HorizontalAlignment="Left" ValueChanged="OpacityChanged"
+                                       AutomationProperties.AutomationId="mtp-settings-opacity" AutomationProperties.Name="材质强度" />
+                            <TextBlock x:Name="OpacityMeaning" TextWrapping="Wrap" AutomationProperties.AutomationId="mtp-settings-opacity-meaning" />
+                            <TextBlock Text="材质请求与当前状态" Style="{ThemeResource BodyStrongTextBlockStyle}" />
+                            <TextBlock x:Name="MaterialStatusText" TextWrapping="Wrap" AutomationProperties.AutomationId="mtp-settings-material-status" />
+                            <TextBlock Text="系统材质可能因设备或系统设置降级；当前 API 状态不代表已确认实际视觉效果。" TextWrapping="Wrap" />
+                        </StackPanel>
+                    </Grid>
+                </ScrollViewer>
+            </Grid>
+        </NavigationView>
+    </Grid>
+</Window>

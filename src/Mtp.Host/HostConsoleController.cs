@@ -13,6 +13,8 @@ internal sealed class HostConsoleController
     private readonly ITaskbarDockPreferenceStore store;
     private readonly IslandDisplayAdapter adapter;
     private readonly DispatcherTimer timer = new() { Interval = TimeSpan.FromSeconds(1) };
+    private readonly Microsoft.UI.Dispatching.DispatcherQueue dispatcher = Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread();
+    private int refreshQueued;
     private readonly TaskbarEnvironmentMonitor? monitor;
     private readonly List<string> errors = [];
     private bool closing;
@@ -22,12 +24,47 @@ internal sealed class HostConsoleController
     private readonly CancellationTokenSource communicationLifetime = new();
     private Task? communicationStartup;
     private readonly RegisteredImageCache images = new();
+    private HostSettingsController? settings;
+    public HostAppearancePreferences Appearance { get; private set; } = new();
+    private HostTestConfiguration DisplayConfiguration => Tests.IsRunning ? Tests.Configuration : settings is null ? new() :
+        new(Appearance.Material is MaterialKind.None or MaterialKind.Solid ? "none" : Appearance.Material.ToString().ToLowerInvariant(),
+            Appearance.Material == MaterialKind.None ? 1 : Appearance.Opacity, Appearance.Theme.ToString().ToLowerInvariant());
+    public IReadOnlyList<BrokerApplicationSnapshot> Applications => communication?.States.Snapshots ?? [];
+    public RecoverySnapshot? GetRecovery(string? applicationId) => applicationId is null ? communication?.BrokerRecovery : communication?.GetRecovery(applicationId);
+    public void AttachSettings(HostSettingsController value)
+    {
+        settings = value;
+        ApplyAppearance(value.GetSnapshot().Preferences.Appearance);
+    }
+    public void RequestRefresh()
+    {
+        if (Interlocked.Exchange(ref refreshQueued, 1) != 0) return;
+        if (!dispatcher.TryEnqueue(() => { Interlocked.Exchange(ref refreshQueued, 0); if (!closing) Refresh(); }))
+            Interlocked.Exchange(ref refreshQueued, 0);
+    }
+    public void ApplyAppearance(HostAppearancePreferences value)
+    {
+        if (closing) return;
+        Appearance = value;
+        if (!Tests.IsRunning) adapter.ApplyAppearance(value);
+        Refresh();
+    }
+    public async Task<ProtocolResult> RetryAsync(string? applicationId, CancellationToken token = default)
+    {
+        if (closing || communication is null) return ProtocolResult.Reject("ActionNotAvailable", "通信尚未启动");
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(token, communicationLifetime.Token);
+        var result = applicationId is null ? await communication.RetryBrokerAsync(linked.Token) :
+            await communication.RetryApplicationAsync(applicationId, linked.Token);
+        Refresh();
+        return result;
+    }
     public HostComponentDisplayModel? Component
     {
         get
         {
-            var model = display.CurrentComponents.FirstOrDefault(value => value.Identity.Segments[0].Value == "counter")
-                ?? display.CurrentComponents.FirstOrDefault();
+            var model = settings?.GetSnapshot().Components.FirstOrDefault(value => value.IsVisible) ??
+                settings?.GetSnapshot().Components.FirstOrDefault() ??
+                display.CurrentComponents.FirstOrDefault(value => value.Identity.Segments[0].Value == "counter") ?? display.CurrentComponents.FirstOrDefault();
             if (model is null || communication is null) return model;
             var id = model.Identity.Segments;
             var snapshot = communication.States.GetSnapshot(id[0].Value);
@@ -44,6 +81,7 @@ internal sealed class HostConsoleController
     public IslandPreviewWindow Preview { get; } = new();
     public bool SimulateUnavailable { get; private set; }
     public IReadOnlyList<string> Errors => errors;
+    public string? CurrentError => PreferenceError?.Message ?? Session.Error?.Message ?? communication?.LastError;
     public string Target => adapter.TargetDescription;
     public string TargetSummary => adapter.TargetSummary;
     public string MaterialStatus => adapter.MaterialStatus;
@@ -97,7 +135,6 @@ internal sealed class HostConsoleController
         Tests.Changed += Notify;
         Preview.Changed += Notify;
         adapter.Lost += Refresh;
-        var dispatcher = Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread();
         if (environment is not null)
             monitor = new(action => dispatcher.TryEnqueue(() => action()), Refresh, () => environment.ObservedTaskbar);
         timer.Tick += (_, _) => Refresh();
@@ -140,7 +177,7 @@ internal sealed class HostConsoleController
                 display.ApplyBrokerSnapshots(communication.States.Snapshots);
             }
             if (communication?.LastError is { } connectionError) AddError(new(connectionError, "平台通信不可用，已保留最后确认读数。"));
-            var prepared = adapter.Prepare(Preferences, Component, Tests.Configuration, SimulateUnavailable);
+            var prepared = adapter.Prepare(Preferences, Component, DisplayConfiguration, SimulateUnavailable);
             Session.SetIntent(Component?.IsVisible == true);
             if (!prepared.IsSuccess && Component?.IsVisible == true) AddError(prepared.Error!);
             Session.Refresh(prepared.Value);
@@ -155,9 +192,9 @@ internal sealed class HostConsoleController
     {
         if (closing) return;
         if (!Tests.IsRunning) SimulateUnavailable = false;
-        if (force || applied != Tests.Configuration)
+        if (force || applied != DisplayConfiguration)
         {
-            applied = Tests.Configuration;
+            applied = DisplayConfiguration;
             var stopped = adapter.Close();
             if (!stopped.IsSuccess) AddError(stopped.Error!);
             adapter.Prepare(Preferences, Component, applied, SimulateUnavailable);

@@ -11,6 +11,18 @@ namespace Mtp.Host.Islands;
 internal sealed class IslandContent : UserControl
 {
     private readonly Grid surface = new();
+    private HostTestConfiguration appearance = new();
+    private readonly Windows.UI.ViewManagement.AccessibilitySettings accessibility = new();
+    private bool highContrast;
+    internal bool HighContrast
+    {
+        get
+        {
+            try { highContrast = accessibility.HighContrast; }
+            catch (System.Runtime.InteropServices.COMException) { }
+            return highContrast;
+        }
+    }
     private readonly TextBlock label = new() { VerticalAlignment = VerticalAlignment.Center };
     private readonly Popup popup;
     private readonly Button button = new() { Content = "+1", Padding = new Thickness(8, 0, 8, 0), MinHeight = 28, VerticalAlignment = VerticalAlignment.Center };
@@ -28,6 +40,7 @@ internal sealed class IslandContent : UserControl
         Func<HostComponentDisplayModel, Templates.TemplateRenderer?>? createTemplate = null)
     {
         this.record = record;
+        appearance = config;
         this.createTemplate = config.Controls ? null : createTemplate;
         RequestedTheme = config.Theme switch { "light" => ElementTheme.Light, "dark" => ElementTheme.Dark, _ => ElementTheme.Default };
         AutomationProperties.SetAutomationId(this, "MtpHostIslandContent");
@@ -38,7 +51,7 @@ internal sealed class IslandContent : UserControl
         Content = surface;
         Loaded += (_, _) => record("content-loaded", new { ActualWidth, ActualHeight, config.Controls });
         ApplySurface(config);
-        ActualThemeChanged += (_, _) => { ApplySurface(config); record("content-theme", ActualTheme.ToString()); };
+        ActualThemeChanged += (_, _) => { ApplySurface(appearance); record("content-theme", ActualTheme.ToString()); };
         var close = new Button { Content = "关闭 Popup" };
         var panel = new StackPanel { Spacing = 8 };
         panel.Children.Add(new TextBlock { Text = "Host 本地 Popup 与焦点测试" });
@@ -96,8 +109,20 @@ internal sealed class IslandContent : UserControl
 
     private void ApplySurface(HostTestConfiguration config)
     {
+        if (HighContrast)
+        {
+            try { surface.Background = new SolidColorBrush(new Windows.UI.ViewManagement.UISettings().GetColorValue(Windows.UI.ViewManagement.UIColorType.Background)); }
+            catch (System.Runtime.InteropServices.COMException) { record("surface-state-unavailable", "保留最后高对比背景"); }
+            return;
+        }
         var shade = ActualTheme == ElementTheme.Dark ? (byte)32 : (byte)243;
         surface.Background = new SolidColorBrush(Color.FromArgb(config.Material == "none" ? (byte)(255 * config.Alpha) : (byte)0, shade, shade, shade));
+    }
+    public void ApplyAppearance(HostTestConfiguration config)
+    {
+        appearance = config;
+        RequestedTheme = config.Theme switch { "light" => ElementTheme.Light, "dark" => ElementTheme.Dark, _ => ElementTheme.Default };
+        ApplySurface(config);
     }
     public void Update(long value) => label.Text = (value + clicks).ToString(System.Globalization.CultureInfo.InvariantCulture);
     public void UpdateConfirmed(HostComponentDisplayModel component)

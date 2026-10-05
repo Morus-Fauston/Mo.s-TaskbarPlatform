@@ -6,7 +6,7 @@ namespace Mtp.Host;
 
 public partial class App : Application
 {
-    private MainWindow? window;
+    private Window? window;
     public App() => InitializeComponent();
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
@@ -17,7 +17,15 @@ public partial class App : Application
         var evidence = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MTP", "HostEvidence");
         var console = new HostConsoleController(display, loaded, preferences.DockStore,
             preferences => IslandDisplayAdapter.CaptureExplorer(environment, preferences), evidence, environment);
-        window = new MainWindow(console, environment.GetDisplays);
+        if (Environment.GetCommandLineArgs().Contains("--diagnostics", StringComparer.Ordinal))
+            window = new MainWindow(console, environment.GetDisplays);
+        else
+        {
+            var settings = new HostSettingsController(display, preferences.SettingsStore, () => console.Applications,
+                console.RetryAsync, () => console.MaterialStatus, console.ApplyAppearance, console.RequestRefresh);
+            console.AttachSettings(settings);
+            window = new SettingsWindow(settings, console, environment.GetDisplays);
+        }
         window.Activate();
         console.Refresh();
         var templates = Environment.GetCommandLineArgs().Contains("--template-demo", StringComparer.Ordinal);

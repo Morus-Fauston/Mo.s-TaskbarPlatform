@@ -16,6 +16,7 @@ internal sealed class IslandDisplayAdapter : IIslandSessionAdapter
     private bool placementCurrent;
     private HostComponentDisplayModel? component;
     private HostTestConfiguration config = new();
+    private HostAppearancePreferences? appearance;
     public IslandDisplayAdapter(Func<TaskbarDockPreferences, CoreResult<IslandTarget>> capture, Action<string, object?> record,
         Func<Mtp.Contracts.ActionSlotReference, Task>? invokeAction = null,
         Func<HostComponentDisplayModel, Templates.TemplateRenderer?>? createTemplate = null)
@@ -70,6 +71,7 @@ internal sealed class IslandDisplayAdapter : IIslandSessionAdapter
         {
             if (!target.OwnedFixture) NativeWindows.ValidateExplorerTarget(target.Parent, target.Geometry.DisplayId);
             host.Start(target.Parent, bounds, component, config, FailAfter);
+            if (appearance is not null) host.ApplyAppearance(appearance);
             return CoreResult<bool>.Success(true);
         }
         catch (Exception error) { return CoreResult<bool>.Failure(new("island_embed_failed", "内容岛嵌入失败：" + error.Message)); }
@@ -84,6 +86,7 @@ internal sealed class IslandDisplayAdapter : IIslandSessionAdapter
         if (!config.Controls && component is not null) host.UpdateConfirmed(component);
     }
     public void Update(long value) => host?.Update(value);
+    public void ApplyAppearance(HostAppearancePreferences value) { appearance = value; host?.ApplyAppearance(value); }
     public void Observe() => host?.Observe();
     public void SetPopup(bool open) => host?.SetPopup(open);
     public CoreResult<bool> Close()

@@ -14,6 +14,7 @@ public sealed class HostPreferenceStorage
         DockPath = Path.Combine(directory, "taskbar-dock-preferences.json");
         DisplayStore = new LocalComponentDisplayPreferenceStore(DisplayPath);
         DockStore = new LocalTaskbarDockPreferenceStore(DockPath);
+        SettingsStore = new LocalHostSettingsPreferenceStore(Path.Combine(directory, "host-settings.json"));
     }
 
     private HostPreferenceStorage(StructuredError error)
@@ -21,6 +22,7 @@ public sealed class HostPreferenceStorage
         DirectoryPath = DisplayPath = DockPath = string.Empty;
         DisplayStore = new UnavailableDisplayStore(error);
         DockStore = new UnavailableDockStore(error);
+        SettingsStore = new UnavailableSettingsStore(error);
         Errors = Array.AsReadOnly(new[] { error, error });
     }
 
@@ -29,6 +31,7 @@ public sealed class HostPreferenceStorage
     public string DockPath { get; }
     public IComponentDisplayPreferenceStore DisplayStore { get; private set; }
     public ITaskbarDockPreferenceStore DockStore { get; private set; }
+    public IHostSettingsPreferenceStore SettingsStore { get; private set; }
     public IReadOnlyList<StructuredError> Errors { get; private set; } = [];
 
     public static HostPreferenceStorage Initialize(string applicationDirectory, string? localDataDirectory = null)
@@ -111,6 +114,13 @@ public sealed class HostPreferenceStorage
     }
 
     private static StructuredError Error(string path, string message) => new("preference_storage_unavailable", message, path);
+
+    private sealed class UnavailableSettingsStore(StructuredError error) : IHostSettingsPreferenceStore
+    {
+        public CoreResult<HostSettingsPreferences> Load() => CoreResult<HostSettingsPreferences>.Failure(error);
+        public CoreResult<HostSettingsPreferences> CommitAppearance(HostAppearancePreferences appearance) => Load();
+        public CoreResult<HostSettingsPreferences> CommitOrder(IReadOnlyList<string> order) => Load();
+    }
 
     private sealed class UnavailableDisplayStore(StructuredError error) : IComponentDisplayPreferenceStore
     {

@@ -33,6 +33,14 @@ dotnet test tests/Mtp.Communication.Tests/Mtp.Communication.Tests.csproj -c Rele
 
 ## Windows 适配器
 
+五期基础设置壳是默认 Host 入口；原二期测试平台通过 `Mtp.Host.exe --diagnostics` 打开。`--template-demo`/`--counter-demo` 可与设置壳或诊断入口组合，组件新入口默认隐藏。正式外观与排序保存至当前用户目录 `host-settings.json`，不写业务值；显示开关沿用原显示偏好文件。
+
+~~~powershell
+powershell -ExecutionPolicy Bypass -File tests/Mtp.Host.WindowTests/Run.ps1 -Scenario settings -EvidenceDirectory .scratch/五期开发/evidence/02/<新批次>
+~~~
+
+设置回归使用独立临时目录、真实导航/返回/显示/排序/主题控件，检查同内容岛、锁定文件保存失败回退、独立进程读取完整偏好和损坏设置不覆盖。高对比事件不可用时沿既有 Host 刷新读取状态；实际高对比配色、读屏和桌面体验仍待人工确认。
+
 五期受控模板入口：构建后运行 `Mtp.Host.exe --template-demo`，开启计数器组件显示。模板使用受控 PNG、文本、按钮、图标按钮、开关与滑块，普通值变化保留原控件；滑块 0–80 可确认，95 用于演示失败回退。此示例不接入系统音量或其他六期能力。
 
 ~~~powershell
