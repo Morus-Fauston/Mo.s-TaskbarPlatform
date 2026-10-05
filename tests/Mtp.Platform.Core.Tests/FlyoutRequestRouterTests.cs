@@ -7,6 +7,20 @@ namespace Mtp.Platform.Core.Tests;
 public sealed class FlyoutRequestRouterTests
 {
     [Fact]
+    public void Presentation_receipts_ignore_stale_sessions_sequences_and_late_queue_ack()
+    {
+        var fixture = CreateFixture();
+        var router = new FlyoutRequestRouter();
+        var request = Request();
+        Assert.True(router.Handle("app", "session", request, fixture.Snapshot, fixture.Entries).Accepted);
+        Assert.False(router.RecordPresentationResult("app", "old", request, ProtocolResult.Success("Displayed")));
+        Assert.False(router.RecordPresentationResult("app", "session", Request(2), ProtocolResult.Success("Displayed")));
+        Assert.True(router.RecordPresentationResult("app", "session", request, ProtocolResult.Success("Displayed")));
+        Assert.False(router.RecordPresentationResult("app", "session", request, ProtocolResult.Success("Queued"), "Received"));
+        Assert.Equal("Displayed", router.GetLastResult("app")!.Result.Code);
+    }
+
+    [Fact]
     public void Registered_current_request_is_received_without_claiming_display()
     {
         var fixture = CreateFixture();

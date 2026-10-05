@@ -240,8 +240,13 @@ public sealed class BrokerStateStore
                 return ProtocolResult.Reject("InvalidEnvelope", "就绪通知包含不允许的载荷");
             if (!validDeclarations.Contains(message.ApplicationId))
                 return ProtocolResult.Reject("DeclarationRequired", "当前会话完整声明尚未确认");
+            var ready = previous with { IsInteractive = true, LastError = null };
+            // Declare cannot register a policy while readiness is pending. Publish the current
+            // session policy before exposing interactivity, including local item-open paths.
+            var synchronized = FlyoutRequests.SynchronizeDeclaration(ready, ready.Declaration!.FlyoutEntries);
+            if (!synchronized.Accepted) return synchronized;
             awaitingReady.Remove(message.ApplicationId);
-            snapshots[message.ApplicationId] = previous with { IsInteractive = true, LastError = null };
+            snapshots[message.ApplicationId] = ready;
             return ProtocolResult.Success();
         }
         if (message.Kind == MessageKind.FlyoutRequest)

@@ -1,6 +1,7 @@
 using Microsoft.UI.Xaml;
 using Mtp.Contracts;
 using Mtp.Host.Islands;
+using Mtp.Host.Flyouts;
 using Mtp.Host.Templates;
 using Mtp.Platform.Core;
 
@@ -25,6 +26,10 @@ internal sealed class HostConsoleController
     private Task? communicationStartup;
     private bool dynamicDemo;
     private readonly RegisteredImageCache images = new();
+    private readonly HostFlyoutRequestQueue flyoutRequests = new();
+    private readonly Func<IReadOnlyList<TaskbarDockDisplay>> getDisplays;
+    private TaskbarFlyoutCoordinator? flyouts;
+    internal Action<string, object?>? FlyoutDiagnostics { get; set; }
     private HostSettingsController? settings;
     public HostAppearancePreferences Appearance { get; private set; } = new();
     private HostTestConfiguration DisplayConfiguration => Tests.IsRunning ? Tests.Configuration : settings is null ? new() :
@@ -49,6 +54,7 @@ internal sealed class HostConsoleController
         if (closing) return;
         Appearance = value;
         if (!Tests.IsRunning) adapter.ApplyAppearance(value);
+        flyouts?.Manager.ApplyAppearance(value);
         Refresh();
     }
     public async Task<ProtocolResult> RetryAsync(string? applicationId, CancellationToken token = default)
@@ -144,6 +150,7 @@ internal sealed class HostConsoleController
         Func<TaskbarDockPreferences, CoreResult<IslandTarget>> capture, string evidenceRoot, Win32TaskbarDockEnvironment? environment = null)
     {
         this.display = display; this.store = store;
+        getDisplays = environment is null ? () => [] : environment.GetDisplays;
         var preferences = store.Load();
         Preferences = preferences.Value ?? new(); PreferenceError = preferences.Error;
         foreach (var error in loaded.Errors) AddError(error);
@@ -164,10 +171,40 @@ internal sealed class HostConsoleController
         var session = communication;
         if (closing || session is null || !component.HasTemplate) return null;
         var ids = component.Identity.Segments;
+        TemplateRenderer? renderer = null;
         var controller = new TemplateInteractionController(session.States, ids[0].Value,
             new(ids[1].Value, TemplateEntryKind.Component, ids[2].Value),
-            (slot, parameter, expected, token) => session.SendActionAsync(slot, parameter, token, expected));
-        return new TemplateRenderer(controller, images);
+            (slot, parameter, expected, token) => session.SendActionAsync(slot, parameter, token, expected),
+            navigate: intent => renderer is not null && !closing && ReferenceEquals(session, communication)
+                ? EnsureFlyouts().Navigate(renderer, intent) : ProtocolResult.Reject("StaleSession", "入口已失效"));
+        return renderer = new TemplateRenderer(controller, images);
+    }
+    private TaskbarFlyoutCoordinator EnsureFlyouts()
+    {
+        if (flyouts is not null) return flyouts;
+        flyouts = new(communication!, adapter, getDisplays, images, RecordFlyout);
+        flyouts.Manager.ApplyAppearance(Appearance);
+        return flyouts;
+    }
+    private void RecordFlyout(string kind, object? value)
+    {
+        Tests.Observe(kind, value);
+        try { FlyoutDiagnostics?.Invoke(kind, value); } catch (Exception) { }
+    }
+    private void DrainFlyouts()
+    {
+        if (communication is not { } current) return;
+        foreach (var queued in flyoutRequests.Drain())
+        {
+            ProtocolResult result;
+            try { result = EnsureFlyouts().Present(queued); }
+            catch (Exception) { result = ProtocolResult.Reject("FlyoutUnavailable", "该显示请求未能完成"); }
+            var message = queued.Message;
+            current.States.FlyoutRequests.RecordPresentationResult(message.ApplicationId, message.SessionId, message.Flyout!, result);
+            RecordFlyout("flyout-presentation-result", new { message.ApplicationId, message.SessionId, message.Flyout!.RequestSequence, result.Code, result.Accepted });
+        }
+        flyouts?.Refresh();
+        if (flyoutRequests.Count > 0) RequestRefresh();
     }
     private async Task InvokeActionAsync(ActionSlotReference slot)
     {
@@ -205,7 +242,10 @@ internal sealed class HostConsoleController
         if (!routed.Result.Accepted) AddError(new(routed.Result.Code, routed.Result.Message));
         else if (routed.Action is not null) await InvokeItemActionAsync(communication, routed);
         else if (routed.TaskbarFlyoutId is not null)
-            AddError(new("FlyoutNotImplemented", "该项声明的关联面板将在任务栏操作组接入后可用。"));
+        {
+            var result = EnsureFlyouts().OpenItem(routed, control);
+            if (!result.Accepted) AddError(new(result.Code, result.Message));
+        }
         Refresh();
     }
     private async Task InvokeItemActionAsync(HostBrokerSession session, HostItemActivationResult routed)
@@ -248,6 +288,7 @@ internal sealed class HostConsoleController
             if (!prepared.IsSuccess && visible) AddError(prepared.Error!);
             Session.Refresh(prepared.Value);
             if (Session.State == IslandDisplayState.Embedded) adapter.RefreshPlacement();
+            DrainFlyouts();
             if (Session.Error is not null) AddError(Session.Error);
             if (monitor?.Error is not null) AddError(monitor.Error);
         }
@@ -296,29 +337,35 @@ internal sealed class HostConsoleController
         Refresh();
     }
     public void Retry() { Refresh(); Session.Retry(); Refresh(); }
-    public Task StartCounterAsync(string brokerPath, string counterPath, bool templates = false, bool dynamic = false, bool timers = false, bool presets = false, bool organization = false)
+    public Task StartCounterAsync(string brokerPath, string counterPath, bool templates = false, bool dynamic = false, bool timers = false, bool presets = false, bool flyouts = false, bool organization = false)
     {
-        if ((templates ? 1 : 0) + (dynamic ? 1 : 0) + (timers ? 1 : 0) + (presets ? 1 : 0) + (organization ? 1 : 0) > 1) throw new ArgumentException("一次只能启动一种演示。");
+        if ((templates ? 1 : 0) + (dynamic ? 1 : 0) + (timers ? 1 : 0) + (presets ? 1 : 0) + (flyouts ? 1 : 0) + (organization ? 1 : 0) > 1) throw new ArgumentException("一次只能启动一种演示。");
         if (communicationStartup is not null) return communicationStartup;
-        dynamicDemo = dynamic || timers || presets || organization;
+        dynamicDemo = dynamic || timers || presets || flyouts || organization;
         if (templates)
         {
             var registration = images.Register("counter", "status", ImageResourceFormat.Png,
                 Path.Combine(AppContext.BaseDirectory, "Assets", "template-status.png"));
             if (!registration.Accepted) AddError(new(registration.Code, registration.Message));
         }
-        communicationStartup = StartCounterCoreAsync(brokerPath, counterPath, templates, dynamic, timers, presets, organization);
+        communicationStartup = StartCounterCoreAsync(brokerPath, counterPath, templates, dynamic, timers, presets, flyouts, organization);
         return communicationStartup;
     }
-    private async Task StartCounterCoreAsync(string brokerPath, string counterPath, bool templates, bool dynamic, bool timers, bool presets, bool organization)
+    private async Task StartCounterCoreAsync(string brokerPath, string counterPath, bool templates, bool dynamic, bool timers, bool presets, bool flyouts, bool organization)
     {
         HostBrokerSession? started = null;
         try
         {
             started = await HostBrokerSession.StartAsync(brokerPath, ["counter"], communicationLifetime.Token).ConfigureAwait(false);
             communication = started;
+            started.QueueFlyoutPresentation = message =>
+            {
+                var queued = flyoutRequests.Enqueue(message);
+                if (queued.Accepted) RequestRefresh();
+                return queued;
+            };
             await started.StartServiceAsync("counter", counterPath, communicationLifetime.Token,
-                dynamic ? ["--dynamic"] : templates ? ["--templates"] : timers ? ["--timers"] : presets ? ["--presets"] : organization ? ["--organization"] : null).ConfigureAwait(false);
+                dynamic ? ["--dynamic"] : templates ? ["--templates"] : timers ? ["--timers"] : presets ? ["--presets"] : flyouts ? ["--flyouts"] : organization ? ["--organization"] : null).ConfigureAwait(false);
             if (communicationLifetime.IsCancellationRequested)
             {
                 await started.DisposeAsync().ConfigureAwait(false);
@@ -359,8 +406,15 @@ internal sealed class HostConsoleController
     {
         closing = true;
         timer.Stop();
+        flyoutRequests.Close();
         display.Dispose();
         var testStopped = true;
+        if (flyouts is not null)
+        {
+            var result = flyouts.TryClose();
+            if (result.IsSuccess) flyouts = null;
+            else { testStopped = false; AddError(result.Error!); }
+        }
         communicationLifetime.Cancel();
         try
         {
@@ -379,14 +433,19 @@ internal sealed class HostConsoleController
         catch (Exception error) { testStopped = false; AddError(new("test_shutdown_failed", error.Message)); }
         if (monitor?.TryStop() == false) { AddError(monitor.Error!); return false; }
         var closed = Session.Shutdown();
-        if (closed) images.Dispose();
+        if (closed && flyouts is null) images.Dispose();
         if (!closed && Session.Error is not null) AddError(Session.Error);
         return closed && testStopped;
     }
     private void AddError(StructuredError error)
     {
         var text = $"{error.Code}: {error.Message}";
-        if (!errors.Contains(text)) { errors.Add(text); Tests?.Observe("host-error", text); }
+        if (text.Length > 2048) text = text[..2048];
+        if (!errors.Contains(text))
+        {
+            if (errors.Count >= 64) errors.RemoveAt(0);
+            errors.Add(text); Tests?.Observe("host-error", text);
+        }
     }
     private void Notify() => Changed?.Invoke();
 }

@@ -57,6 +57,8 @@ public sealed class HostBrokerSession : IAsyncDisposable
     public BrokerFaultSnapshot? LastBrokerFault { get { lock (gate) return lastBrokerFault; } }
     public long ReceivedStateMessages { get { lock (gate) return receivedStateMessages; } }
     public long ReceivedHeartbeatMessages { get { lock (gate) return receivedHeartbeatMessages; } }
+    /// <summary>Optional nonblocking handoff after admission; UI work must remain outside the control reader.</summary>
+    public Func<ProtocolMessage, ProtocolResult>? QueueFlyoutPresentation { get; set; }
     public int PeakPendingRequests { get { lock (gate) return peakPendingRequests; } }
     public RecoverySnapshot BrokerRecovery { get { lock (gate) return brokerRecovery.Snapshot; } }
     public RecoverySnapshot? GetRecovery(string applicationId) { lock (gate) return recovery.GetValueOrDefault(applicationId)?.Snapshot; }
@@ -290,6 +292,15 @@ public sealed class HostBrokerSession : IAsyncDisposable
                         if (message.Kind == MessageKind.Declare) QueueDisplayPermissions(current, message.ApplicationId);
                     }
                     if (message.Kind is MessageKind.Disconnected or MessageKind.SessionReady) response = null;
+                }
+                if (response?.Result?.Accepted == true && message.Kind == MessageKind.FlyoutRequest &&
+                    QueueFlyoutPresentation is { } present)
+                {
+                    ProtocolResult result;
+                    try { result = present(message); }
+                    catch (Exception) { result = ProtocolResult.Reject("FlyoutUnavailable", "Host未能接收显示请求"); }
+                    response = response with { Result = result };
+                    States.FlyoutRequests.RecordPresentationResult(message.ApplicationId, message.SessionId, message.Flyout!, result, "Received");
                 }
                 if (response is not null) await WriteControlAsync(current, response, current.Lifetime.Token).ConfigureAwait(false);
             }

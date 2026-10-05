@@ -20,6 +20,7 @@ internal sealed class TemplateRenderer : UserControl, IDisposable
     private long epoch;
     private bool refreshing;
     private bool disposed;
+    private bool inputStopped;
     private string applicationId = "";
 
     public TemplateRenderer(TemplateInteractionController controller, RegisteredImageCache images)
@@ -34,7 +35,7 @@ internal sealed class TemplateRenderer : UserControl, IDisposable
 
     public void Refresh()
     {
-        if (disposed) return;
+        if (disposed || inputStopped) return;
         var snapshot = controller.GetSnapshot();
         if (snapshot is null) { ClearTree(); return; }
         refreshing = true;
@@ -82,6 +83,31 @@ internal sealed class TemplateRenderer : UserControl, IDisposable
             }
         }
         finally { refreshing = false; }
+    }
+
+    public bool IsCurrentNavigation(TemplateNavigationIntent intent) => !disposed && !inputStopped && controller.IsCurrentNavigation(intent);
+
+    public FrameworkElement? GetNodeElement(string nodeId)
+    {
+        if (disposed || inputStopped) return null;
+        Refresh();
+        if (!views.TryGetValue(nodeId, out var view) || view.Element.Visibility != Visibility.Visible ||
+            !view.Element.IsHitTestVisible || view.Element is Control { IsEnabled: false }) return null;
+        return view.Element;
+    }
+    public bool FocusNode(string nodeId)
+    {
+        if (disposed || inputStopped || !views.TryGetValue(nodeId, out var view) || view.Element is not Control control ||
+            !control.IsEnabled || control.Visibility != Visibility.Visible || !control.IsTabStop) return false;
+        return control.Focus(FocusState.Keyboard);
+    }
+    public bool FocusFirst()
+    {
+        if (disposed || inputStopped) return false;
+        foreach (var view in views.Values)
+            if (view.Element is Control { IsEnabled: true, IsTabStop: true, Visibility: Visibility.Visible } control &&
+                control.Focus(FocusState.Keyboard)) return true;
+        return false;
     }
 
     private FrameworkElement Build(TemplateNode node, string[] ancestors, IReadOnlyDictionary<string, TemplateNodeSnapshot> values)
@@ -198,7 +224,7 @@ internal sealed class TemplateRenderer : UserControl, IDisposable
 
     private async void Activate(string nodeId, TemplateValue? value, long inputGeneration, long inputEpoch)
     {
-        if (disposed || refreshing || epoch != inputEpoch) return;
+        if (disposed || inputStopped || refreshing || epoch != inputEpoch) return;
         try
         {
             var operation = controller.ActivateAsync(nodeId, value, generationLifetime.Token, inputGeneration);
@@ -284,6 +310,17 @@ internal sealed class TemplateRenderer : UserControl, IDisposable
         views.Clear();
         Content = null;
         generation = -1;
+    }
+
+    /// <summary>Retire interaction immediately while keeping the last visual tree for its exit animation.</summary>
+    internal void StopInteraction()
+    {
+        if (disposed || inputStopped) return;
+        inputStopped = true;
+        IsEnabled = false;
+        IsHitTestVisible = false;
+        generationLifetime.Cancel();
+        controller.Dispose();
     }
 
     public void Dispose()

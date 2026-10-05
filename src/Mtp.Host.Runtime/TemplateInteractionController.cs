@@ -10,6 +10,8 @@ public sealed class TemplateInteractionController : IDisposable
     private readonly string applicationId;
     private readonly TemplateEntryReference entry;
     private readonly TemplateActionSender sender;
+    private readonly string? fixedTemplateId;
+    private readonly Func<TemplateNavigationIntent, ProtocolResult>? navigate;
     private readonly Dictionary<string, ControlState> controls = new(StringComparer.Ordinal);
     private readonly List<string> panels = [];
     private BrokerApplicationSnapshot? current;
@@ -20,12 +22,15 @@ public sealed class TemplateInteractionController : IDisposable
     private long generation;
     private bool disposed;
 
-    public TemplateInteractionController(BrokerStateStore states, string applicationId, TemplateEntryReference entry, TemplateActionSender sender)
+    public TemplateInteractionController(BrokerStateStore states, string applicationId, TemplateEntryReference entry, TemplateActionSender sender,
+        string? fixedTemplateId = null, Func<TemplateNavigationIntent, ProtocolResult>? navigate = null)
     {
         this.states = states ?? throw new ArgumentNullException(nameof(states));
         this.applicationId = applicationId ?? throw new ArgumentNullException(nameof(applicationId));
         this.entry = entry ?? throw new ArgumentNullException(nameof(entry));
         this.sender = sender ?? throw new ArgumentNullException(nameof(sender));
+        this.fixedTemplateId = fixedTemplateId;
+        this.navigate = navigate;
     }
 
     public TemplateSurfaceSnapshot? GetSnapshot()
@@ -55,6 +60,50 @@ public sealed class TemplateInteractionController : IDisposable
 
     public Task<ProtocolResult> ActivateAsync(string nodeId, TemplateValue? value = null,
         CancellationToken cancellationToken = default, long? expectedGeneration = null)
+    {
+        TemplateNavigationIntent? intent = null;
+        if (navigate is not null)
+        {
+            lock (gate)
+            {
+                Synchronize();
+                if (cancellationToken.IsCancellationRequested) return Completed("ActionCancelled", "操作已取消");
+                var source = Find(nodeId, expectedGeneration);
+                if (source is null) return Completed("StaleTemplate", "模板或控件已失效");
+                if (!source.Available) return Completed("ControlUnavailable", "控件当前不可操作");
+                if (source.Node.Action is { Kind: not TemplateActionKind.Business } action)
+                {
+                    if (value is not null) return Completed("InvalidControlValue", "导航不接受额外值");
+                    if (action.Kind == TemplateActionKind.OpenPanel && declaration!.Panels?.Any(x => x.TemplateId == action.TargetId) != true)
+                        return Completed("UnknownPanel", "面板未声明");
+                    if (action.Kind is not (TemplateActionKind.OpenPanel or TemplateActionKind.Back))
+                        return Completed("InvalidAction", "动作种类无效");
+                    intent = new(applicationId, entry, current!.SessionId, generation, template!.TemplateId, nodeId, action);
+                }
+            }
+        }
+        if (intent is not null)
+        {
+            // The group may synchronously measure another controller or close this view. Never call it under gate.
+            try { return Task.FromResult(navigate!(intent) ?? Rejected("NavigationFailed", "导航未返回结果")); }
+            catch (Exception) { return Completed("NavigationFailed", "浮窗导航未完成"); }
+        }
+        return ActivateLocalAsync(nodeId, value, cancellationToken, expectedGeneration);
+    }
+
+    public bool IsCurrentNavigation(TemplateNavigationIntent intent)
+    {
+        lock (gate)
+        {
+            Synchronize();
+            return !disposed && intent.ApplicationId == applicationId && intent.Entry == entry &&
+                intent.SessionId == current?.SessionId && intent.SourceTemplateId == template?.TemplateId &&
+                Find(intent.SourceNodeId, intent.ControllerGeneration) is { Available: true } source && source.Node.Action == intent.Action;
+        }
+    }
+
+    private Task<ProtocolResult> ActivateLocalAsync(string nodeId, TemplateValue? value,
+        CancellationToken cancellationToken, long? expectedGeneration)
     {
         Request request; ControlState control;
         lock (gate)
@@ -168,6 +217,7 @@ public sealed class TemplateInteractionController : IDisposable
 
     private ProtocolResult Navigate(TemplateAction action)
     {
+        if (fixedTemplateId is not null) return Rejected("NavigationUnavailable", "固定面板的导航须由浮窗组处理");
         if (action.Kind == TemplateActionKind.Back)
         {
             if (panels.Count == 0) return Rejected("NoPreviousPanel", "已处于主面板");
@@ -214,7 +264,7 @@ public sealed class TemplateInteractionController : IDisposable
         }
         current = next; declaration = schema; confirmed = values;
         template = schema is null || values is null ? null : schema.Templates.FirstOrDefault(value =>
-            value.TemplateId == (panels.Count == 0 ? schema.MainTemplateId : panels[^1]));
+            value.TemplateId == (fixedTemplateId ?? (panels.Count == 0 ? schema.MainTemplateId : panels[^1])));
     }
 
     private void ResetView()

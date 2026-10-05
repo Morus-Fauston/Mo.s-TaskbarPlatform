@@ -158,6 +158,29 @@ public sealed class FlyoutRequestRouter
         lock (gate) return applications.GetValueOrDefault(applicationId)?.Last;
     }
 
+    public bool IsEntryEnabled(string applicationId, string sessionId, string groupId, string entryId)
+    {
+        lock (gate)
+        {
+            if (!applications.TryGetValue(applicationId, out var state) || state.SessionId != sessionId) return false;
+            return state.Entries.Any(pair => pair.Key.Segments[1].Value == groupId && pair.Key.Segments[2].Value == entryId && pair.Value.Enabled);
+        }
+    }
+
+    /// <summary>A late UI result cannot overwrite a newer request or a replacement session.</summary>
+    public bool RecordPresentationResult(string applicationId, string sessionId, FlyoutRequest request, ProtocolResult result, string? expectedCode = null)
+    {
+        lock (gate)
+        {
+            if (!applications.TryGetValue(applicationId, out var state) || state.SessionId != sessionId ||
+                state.Last is not { } last || last.RequestId != request.RequestId || last.RequestSequence != request.RequestSequence ||
+                (expectedCode is not null && last.Result.Code != expectedCode))
+                return false;
+            state.Last = last with { Result = result };
+            return true;
+        }
+    }
+
     private static ProtocolResult Reject(string code, string message) => ProtocolResult.Reject(code, message);
     private static bool ValidId(string? value) => !string.IsNullOrWhiteSpace(value) && value.Length <= DeclarationValidator.MaximumIdLength && value == value.Trim();
     private sealed record EntryPolicy(ValidatedFlyoutEntry Entry, bool Enabled);

@@ -32,6 +32,8 @@ internal static class Program
 
 public sealed partial class WindowTestApplication : Application
 {
+    private static readonly object LogGate = new();
+    private static void AppendLog(string value) { lock (LogGate) File.AppendAllText(LogPath, value); }
     private static readonly string LogPath = Path.Combine(AppContext.BaseDirectory, "window-tests.log");
     private readonly Type dockType = typeof(WinUiIndependentDockWindowAdapter).Assembly.GetType("Mtp.Host.WinUiTaskbarDockWindow", throwOnError: true)!;
     private readonly HostComponentDisplayModel component = HostComponentDisplayModel.From(
@@ -52,7 +54,7 @@ public sealed partial class WindowTestApplication : Application
     {
         InitializeComponent();
         File.WriteAllText(LogPath, "Starting real WinUI dock frame regression.\n");
-        UnhandledException += (_, e) => File.AppendAllText(LogPath, e.Exception + "\n");
+        UnhandledException += (_, e) => AppendLog(e.Exception + "\n");
     }
 
     protected override async void OnLaunched(LaunchActivatedEventArgs args)
@@ -61,45 +63,69 @@ public sealed partial class WindowTestApplication : Application
         {
             // Keep the application alive while the last dock is closed and recreated.
             lifetimeWindow = new Window();
+            if (Environment.GetCommandLineArgs().Contains("--flyout-scheduling-only", StringComparer.Ordinal))
+            {
+                await TaskbarFlyoutNativeRegression.RunAnimationSchedulingRegressionAsync(message => AppendLog(message + "\n"));
+                Finish(null);
+                return;
+            }
+            if (Environment.GetCommandLineArgs().Contains("--flyout-create-only", StringComparer.Ordinal))
+            {
+                await TaskbarFlyoutNativeRegression.RunCreateDiagnosisAsync(message => AppendLog(message + "\n"));
+                Finish(null);
+                return;
+            }
             if (Environment.GetCommandLineArgs().Contains("--organization-only", StringComparer.Ordinal))
             {
-                await IslandOrganizationNativeRegression.RunAsync(message => File.AppendAllText(LogPath, message + "\n"));
+                await IslandOrganizationNativeRegression.RunAsync(message => AppendLog(message + "\n"));
+                Finish(null);
+                return;
+            }
+            if (Environment.GetCommandLineArgs().Contains("--flyout-production-only", StringComparer.Ordinal))
+            {
+                await TaskbarFlyoutProductionRegression.RunAsync(message => AppendLog(message + "\n"));
                 Finish(null);
                 return;
             }
             if (Environment.GetCommandLineArgs().Contains("--preset-only", StringComparer.Ordinal))
             {
-                await PresetNativeRegression.RunAsync(message => File.AppendAllText(LogPath, message + "\n"));
+                await PresetNativeRegression.RunAsync(message => AppendLog(message + "\n"));
+                Finish(null);
+                return;
+            }
+            if (Environment.GetCommandLineArgs().Contains("--flyout-only", StringComparer.Ordinal))
+            {
+                await TaskbarFlyoutNativeRegression.RunAsync(message => AppendLog(message + "\n"));
                 Finish(null);
                 return;
             }
             if (Environment.GetCommandLineArgs().Contains("--timer-only", StringComparer.Ordinal))
             {
-                await TimerNativeRegression.RunAsync(message => File.AppendAllText(LogPath, message + "\n"));
+                await TimerNativeRegression.RunAsync(message => AppendLog(message + "\n"));
                 Finish(null);
                 return;
             }
             if (Environment.GetCommandLineArgs().Contains("--dynamic-only", StringComparer.Ordinal))
             {
-                await DynamicWidthNativeRegression.RunAsync(message => File.AppendAllText(LogPath, message + "\n"));
+                await DynamicWidthNativeRegression.RunAsync(message => AppendLog(message + "\n"));
                 Finish(null);
                 return;
             }
             if (Environment.GetCommandLineArgs().Contains("--settings-only", StringComparer.Ordinal))
             {
-                await SettingsNativeRegression.RunAsync(message => File.AppendAllText(LogPath, message + "\n"));
+                await SettingsNativeRegression.RunAsync(message => AppendLog(message + "\n"));
                 Finish(null);
                 return;
             }
             if (Environment.GetCommandLineArgs().Contains("--template-only", StringComparer.Ordinal))
             {
-                await TemplateNativeRegression.RunAsync(message => File.AppendAllText(LogPath, message + "\n"));
+                await TemplateNativeRegression.RunAsync(message => AppendLog(message + "\n"));
                 Finish(null);
                 return;
             }
             if (Environment.GetCommandLineArgs().Contains("--broker-only", StringComparer.Ordinal))
             {
-                await BrokerCounterRegression.RunAsync(message => File.AppendAllText(LogPath, message + "\n"));
+                await BrokerCounterRegression.RunAsync(message => AppendLog(message + "\n"));
                 Finish(null);
                 return;
             }
@@ -145,13 +171,13 @@ public sealed partial class WindowTestApplication : Application
                 default:
                     if (eventCount != stoppedEventCount) throw new InvalidOperationException("Stopped monitor delivered late refresh.");
                     timer!.Stop();
-                    await MonitorDragRegression.RunAsync(message => File.AppendAllText(LogPath, message + "\n"));
-                    await PreviewStartupRegression.RunAsync(message => File.AppendAllText(LogPath, message + "\n"));
-                    await ExplorerProbeCleanupRegression.RunAsync(message => File.AppendAllText(LogPath, message + "\n"));
-                    await MainWindowDisplayRegression.RunAsync(message => File.AppendAllText(LogPath, message + "\n"));
-                    await HostConsoleRegression.RunLifetimeAsync(message => File.AppendAllText(LogPath, message + "\n"));
-                    await HostConsoleRegression.RunAsync(message => File.AppendAllText(LogPath, message + "\n"));
-                    await BrokerCounterRegression.RunAsync(message => File.AppendAllText(LogPath, message + "\n"));
+                    await MonitorDragRegression.RunAsync(message => AppendLog(message + "\n"));
+                    await PreviewStartupRegression.RunAsync(message => AppendLog(message + "\n"));
+                    await ExplorerProbeCleanupRegression.RunAsync(message => AppendLog(message + "\n"));
+                    await MainWindowDisplayRegression.RunAsync(message => AppendLog(message + "\n"));
+                    await HostConsoleRegression.RunLifetimeAsync(message => AppendLog(message + "\n"));
+                    await HostConsoleRegression.RunAsync(message => AppendLog(message + "\n"));
+                    await BrokerCounterRegression.RunAsync(message => AppendLog(message + "\n"));
                     Finish(null);
                     break;
             }
@@ -176,10 +202,10 @@ public sealed partial class WindowTestApplication : Application
                 throw new InvalidOperationException("Could not position native sentinel.");
             var handle = (nint)(long)dockType.GetProperty("Identity")!.GetValue(dock)!;
             var previous = Native.GetWindow(handle, 3);
-            File.AppendAllText(LogPath, $"sentinel={sentinel:X}, dock={handle:X}, previous={previous:X}\n");
+            AppendLog($"sentinel={sentinel:X}, dock={handle:X}, previous={previous:X}\n");
             if (!IsAbove(sentinel, handle)) throw new InvalidOperationException("Sentinel setup did not place it above the dock.");
             dockType.GetMethod("Show")!.Invoke(dock, [component, new PixelRect(-30000, -30000, 360, 48)]);
-            File.AppendAllText(LogPath, $"refresh z-order: previous={previous:X}, after={Native.GetWindow(handle, 3):X}\n");
+            AppendLog($"refresh z-order: previous={previous:X}, after={Native.GetWindow(handle, 3):X}\n");
             if (!IsAbove(sentinel, handle))
                 throw new InvalidOperationException("Repeated layout raised the dock above another topmost window.");
         }
@@ -208,7 +234,7 @@ public sealed partial class WindowTestApplication : Application
         ShowAndAssert(new PixelRect(-30000, -30000, 400, 48), "restored after hide");
         if (!Native.IsWindowVisible(handle)) throw new InvalidOperationException("Dock did not reappear.");
         if (Native.GetForegroundWindow() != foreground) throw new InvalidOperationException("Visibility transition stole foreground focus.");
-        File.AppendAllText(LogPath, "PASS: hide/restore preserves identity, foreground, and borderless client area.\n");
+        AppendLog("PASS: hide/restore preserves identity, foreground, and borderless client area.\n");
     }
 
     private void StartEventTest()
@@ -220,7 +246,7 @@ public sealed partial class WindowTestApplication : Application
             new Action(() =>
             {
                 eventCount++;
-                File.AppendAllText(LogPath, $"native event delivered: {eventClock.Elapsed.TotalMilliseconds:F1} ms\n");
+                AppendLog($"native event delivered: {eventClock.Elapsed.TotalMilliseconds:F1} ms\n");
             }),
             new Func<nint>(() => eventWindow));
         if (monitorType.GetProperty("Error")!.GetValue(monitor) is not null)
@@ -236,7 +262,7 @@ public sealed partial class WindowTestApplication : Application
         var clock = System.Diagnostics.Stopwatch.StartNew();
         var result = environmentType.GetMethod("Capture")!.Invoke(environment, new object?[] { null })!;
         var snapshot = result.GetType().GetProperty("Value")!.GetValue(result);
-        File.AppendAllText(LogPath, $"environment read: {clock.Elapsed.TotalMilliseconds:F1} ms, " + System.Text.Json.JsonSerializer.Serialize(snapshot) + "\n");
+        AppendLog($"environment read: {clock.Elapsed.TotalMilliseconds:F1} ms, " + System.Text.Json.JsonSerializer.Serialize(snapshot) + "\n");
     }
 
     private void AssertFrame(int width, int height, string label)
@@ -246,7 +272,7 @@ public sealed partial class WindowTestApplication : Application
             throw new System.ComponentModel.Win32Exception(Marshal.GetLastPInvokeError());
         var style = (long)Native.GetWindowLongPtrW(handle, -16);
         var extendedStyle = (long)Native.GetWindowLongPtrW(handle, -20);
-        File.AppendAllText(LogPath, $"{label}: style=0x{style:X8} ex=0x{extendedStyle:X8} client={client.Right}x{client.Bottom}\n");
+        AppendLog($"{label}: style=0x{style:X8} ex=0x{extendedStyle:X8} client={client.Right}x{client.Bottom}\n");
         if ((style & 0x00CF0000) != 0 || (extendedStyle & 0x00020301) != 0 || client.Right != width || client.Bottom != height)
             throw new InvalidOperationException($"Native frame returned at {label}; expected full client area {width}x{height}.");
         if ((extendedStyle & 0x08000080) != 0x08000080)
@@ -262,7 +288,7 @@ public sealed partial class WindowTestApplication : Application
         try { (monitor as IDisposable)?.Dispose(); }
         catch (Exception cleanupError) { error ??= cleanupError; }
         if (eventWindow != 0) Native.DestroyWindow(eventWindow);
-        File.AppendAllText(LogPath, error is null ? $"PASS: {samples} native frame samples.\n" : $"FAIL: {error}\n");
+        AppendLog(error is null ? $"PASS: {samples} native frame samples.\n" : $"FAIL: {error}\n");
         Environment.ExitCode = error is null ? 0 : 1;
         lifetimeWindow?.Close();
         Exit();

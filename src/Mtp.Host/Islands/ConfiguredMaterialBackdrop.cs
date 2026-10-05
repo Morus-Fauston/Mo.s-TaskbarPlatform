@@ -48,8 +48,12 @@ internal sealed class ConfiguredMaterialBackdrop(MaterialKind kind, double opaci
         acrylic?.SetSystemBackdropConfiguration(configuration);
         mica?.SetSystemBackdropConfiguration(configuration);
     }
-    private void StateChanged(ISystemBackdropController sender, object args) =>
-        record("production-material-state", new { requested = kind.ToString(), state = acrylic?.State.ToString() ?? mica?.State.ToString() ?? "Closed" });
+    private void StateChanged(ISystemBackdropController sender, object args)
+    {
+        // A late notification may race controller disposal; diagnostic reads and sinks are best effort.
+        try { record("production-material-state", new { requested = kind.ToString(), state = acrylic?.State.ToString() ?? mica?.State.ToString() ?? "Closed" }); }
+        catch (Exception) { }
+    }
     protected override void OnTargetDisconnected(ICompositionSupportsSystemBackdrop target)
     {
         try { acrylic?.RemoveSystemBackdropTarget(target); mica?.RemoveSystemBackdropTarget(target); }

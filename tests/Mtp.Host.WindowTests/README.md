@@ -54,6 +54,14 @@ powershell -ExecutionPolicy Bypass -File tests/Mtp.Host.WindowTests/Verify-HostE
 
 独立脚本核对报告与原始样本、CPU 两种口径、二进制哈希及缺失指标原因。测试不运行完整 30 分钟，不替维护者处置 05K/05L。
 
-## 五期实况岛组织
+## 五期实况岛组织与任务栏浮窗
 
-使用 `-Scenario organization -EvidenceDirectory .scratch/五期开发/evidence/06/<新批次>` 串行执行真实 SDK、生产设置和自有内容岛组织回归。Host 的 `--organization-demo` 提供合并/分别显示、共享活动、展开、混排及许可演示。脚本归档 `organization-*` 日志与截图；每次使用新证据目录。自有离屏内容岛不代替真实任务栏和多屏人工确认。
+实况岛组织通过生产设置页与独立 SDK 样例验证，使用 `-Scenario organization`。任务栏浮窗使用 `-Scenario flyout` 验证自有多窗口、前台与原始输入，`-Scenario flyout-production` 验证真实 SDK 请求、动作确认和会话恢复。`-Scenario flyout-scheduling` 对窗口应用跨越动画截止时刻、原生关闭异常重试、退场键盘禁用和待发请求取消做有界回归；它使用自有窗口焦点，须与其他桌面回归串行。
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tests/Mtp.Host.WindowTests/Run.ps1 -Scenario organization -EvidenceDirectory .scratch/五期开发/evidence/06/<新批次>
+powershell -ExecutionPolicy Bypass -File tests/Mtp.Host.WindowTests/Run.ps1 -Scenario flyout -EvidenceDirectory .scratch/五期开发/evidence/07/<新批次>
+powershell -ExecutionPolicy Bypass -File tests/Mtp.Host.WindowTests/Run.ps1 -Scenario flyout-production -EvidenceDirectory .scratch/五期开发/evidence/07/<另一新批次>
+```
+
+共用桌面与构建输出必须串行。证据目录不得复用；原始失败保留，只有实际完成标记和全部断言成功才通过。普通 WinUI 自有窗口与离屏内容岛证据不代替真实 Explorer 任务栏、实际多屏或人工体验确认。Host 演示入口分别为 `--organization-demo`、`--flyout-demo`，各自启动受控模拟业务，不接管系统音量或其他应用窗口。

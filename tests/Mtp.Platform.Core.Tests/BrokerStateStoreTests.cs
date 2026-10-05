@@ -6,6 +6,52 @@ namespace Mtp.Platform.Core.Tests;
 public sealed class BrokerStateStoreTests
 {
     [Fact]
+    public void Initial_session_readiness_registers_flyout_policy_without_an_sdk_request()
+    {
+        var store = new BrokerStateStore(["counter"]);
+        Assert.True(store.RequireSessionReady("counter").Accepted);
+        Assert.True(store.Handle(Message(MessageKind.Welcome)).Result!.Accepted);
+        Assert.False(store.Handle(Message(MessageKind.SessionReady)).Result!.Accepted);
+        Assert.False(store.FlyoutRequests.IsEntryEnabled("counter", "session-1", "controls", "panel"));
+        Assert.True(store.Handle(Message(MessageKind.Declare) with { Declaration = Declaration(), State = State(0) }).Result!.Accepted);
+        Assert.False(store.GetSnapshot("counter")!.IsInteractive);
+        Assert.False(store.FlyoutRequests.IsEntryEnabled("counter", "session-1", "controls", "panel"));
+
+        Assert.True(store.Handle(Message(MessageKind.SessionReady)).Result!.Accepted);
+        Assert.True(store.GetSnapshot("counter")!.IsInteractive);
+        Assert.True(store.FlyoutRequests.IsEntryEnabled("counter", "session-1", "controls", "panel"));
+        Assert.Null(store.FlyoutRequests.GetLastResult("counter"));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Recovered_session_readiness_synchronizes_flyout_policy_and_preserves_visibility(bool enabled)
+    {
+        var store = Ready();
+        var entry = Assert.Single(store.GetSnapshot("counter")!.Declaration!.FlyoutEntries);
+        Assert.True(store.FlyoutRequests.SetEntryEnabled(entry, enabled).Accepted);
+        Assert.True(store.RequireSessionReady("counter").Accepted);
+        Assert.True(store.Handle(Message(MessageKind.Welcome, "recovered")).Result!.Accepted);
+        Assert.True(store.Handle(Message(MessageKind.Declare, "recovered") with { Declaration = Declaration(), State = State(0) }).Result!.Accepted);
+        Assert.False(store.GetSnapshot("counter")!.IsInteractive);
+        Assert.False(store.FlyoutRequests.IsEntryEnabled("counter", "recovered", "controls", "panel"));
+        Assert.Equal("StaleSession", store.Handle(Message(MessageKind.SessionReady)).Result!.Code);
+        Assert.False(store.GetSnapshot("counter")!.IsInteractive);
+
+        Assert.True(store.Handle(Message(MessageKind.SessionReady, "recovered")).Result!.Accepted);
+        Assert.True(store.GetSnapshot("counter")!.IsInteractive);
+        Assert.Equal(enabled, store.FlyoutRequests.IsEntryEnabled("counter", "recovered", "controls", "panel"));
+        Assert.False(store.FlyoutRequests.IsEntryEnabled("counter", "session-1", "controls", "panel"));
+        Assert.Null(store.FlyoutRequests.GetLastResult("counter"));
+
+        var request = Message(MessageKind.FlyoutRequest) with
+        { Flyout = new("flyout-request", 1, "controls", "panel", FlyoutKind.TaskbarGroup, 0) };
+        Assert.Equal("StaleSession", store.Handle(request).Result!.Code);
+        Assert.Equal(enabled ? "Received" : "EntryDisabled", store.Handle(request with { SessionId = "recovered" }).Result!.Code);
+    }
+
+    [Fact]
     public void Recovery_readiness_cannot_revive_a_rejected_or_payload_mixed_declaration()
     {
         var store = Ready();
