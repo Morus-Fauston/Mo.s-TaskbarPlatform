@@ -132,3 +132,6 @@ dotnet test tests/Mtp.Communication.Tests/Mtp.Communication.Tests.csproj -c Debu
 同一Host三个服务运行两轮：各轮业务20秒、清理5秒，成功总计50秒以内；Broker恢复步骤8秒。失败时独立5秒安全收尾，不延长通过阈值。覆盖项展开、真实动作超时/晚到、健康服务动作、许可关闭/恢复、Broker新会话、活动到期和旧句柄隔离。
 
 HostBrokerSession.GetLifecycleSnapshot和SdkClient.GetLifecycleSnapshot读取实际拥有任务与队列，最多保存当前及最后清理代次。测试在Host仍保持凭据stdin时显式释放SDK，核对心跳/许可/恢复任务和队列，然后重复释放Host并确认全部自有PID退出、关闭后动作拒绝。保留的业务快照不算活连接；不把非合作提供方任务或未读取的Broker内部计数伪称归零。
+
+
+五期共享宽度原生回归：`powershell -ExecutionPolicy Bypass -File tests/Mtp.Host.WindowTests/Run.ps1 -Scenario dynamic -EvidenceDirectory <独立证据目录>`。真实SDK重复项驱动同一内容岛，验证中间帧/GetWindowRect/右邻居/输入禁用/减少动画/模式切换及清理；使用独立`dynamic-pass: frames=...`结束证据，不以旧框架0 frame标记证明动画。产品演示入口`Mtp.Host.exe --dynamic-demo`，在设置中允许left/items/right并按该顺序排列。

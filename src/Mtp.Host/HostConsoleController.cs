@@ -23,12 +23,14 @@ internal sealed class HostConsoleController
     private HostBrokerSession? communication;
     private readonly CancellationTokenSource communicationLifetime = new();
     private Task? communicationStartup;
+    private bool dynamicDemo;
     private readonly RegisteredImageCache images = new();
     private HostSettingsController? settings;
     public HostAppearancePreferences Appearance { get; private set; } = new();
     private HostTestConfiguration DisplayConfiguration => Tests.IsRunning ? Tests.Configuration : settings is null ? new() :
         new(Appearance.Material is MaterialKind.None or MaterialKind.Solid ? "none" : Appearance.Material.ToString().ToLowerInvariant(),
             Appearance.Material == MaterialKind.None ? 1 : Appearance.Opacity, Appearance.Theme.ToString().ToLowerInvariant());
+    private bool UseGroupDisplay => (settings is not null || dynamicDemo) && !Tests.IsRunning;
     public IReadOnlyList<BrokerApplicationSnapshot> Applications => communication?.States.Snapshots ?? [];
     public RecoverySnapshot? GetRecovery(string? applicationId) => applicationId is null ? communication?.BrokerRecovery : communication?.GetRecovery(applicationId);
     public void AttachSettings(HostSettingsController value)
@@ -58,21 +60,38 @@ internal sealed class HostConsoleController
         Refresh();
         return result;
     }
+    public IReadOnlyList<HostComponentDisplayModel> Components
+    {
+        get
+        {
+            var models = settings?.GetSnapshot().Components ?? display.CurrentComponents;
+            var session = communication;
+            if (session is null) return models;
+            var snapshots = session.States.Snapshots.ToDictionary(value => value.ApplicationId, StringComparer.Ordinal);
+            var actions = snapshots.Values.Where(value => value.Declaration is not null)
+                .SelectMany(value => value.Declaration!.ActionSlots)
+                .Where(value => value.Reference.EntryKind == ActionEntryKind.Component && value.ParameterKind == ActionParameterKind.None)
+                .GroupBy(value => (value.Reference.ApplicationId, value.Reference.FeatureGroupId, value.Reference.EntryId))
+                .ToDictionary(group => group.Key, group => group.First().Reference);
+            var pending = snapshots.Keys.SelectMany(id => session.Actions.GetPending(id)).Where(value => value.IsBusy)
+                .Select(value => value.Slot).ToHashSet();
+            return Array.AsReadOnly(models.Select(model =>
+            {
+                var id = model.Identity.Segments;
+                snapshots.TryGetValue(id[0].Value, out var snapshot);
+                actions.TryGetValue((id[0].Value, id[1].Value, id[2].Value), out var action);
+                bool busy = action is not null && pending.Contains(action);
+                return model with { Action = action, CanInvokeAction = snapshot?.IsInteractive == true && action is not null && !busy, ActionBusy = busy };
+            }).ToArray());
+        }
+    }
     public HostComponentDisplayModel? Component
     {
         get
         {
-            var model = settings?.GetSnapshot().Components.FirstOrDefault(value => value.IsVisible) ??
-                settings?.GetSnapshot().Components.FirstOrDefault() ??
-                display.CurrentComponents.FirstOrDefault(value => value.Identity.Segments[0].Value == "counter") ?? display.CurrentComponents.FirstOrDefault();
-            if (model is null || communication is null) return model;
-            var id = model.Identity.Segments;
-            var snapshot = communication.States.GetSnapshot(id[0].Value);
-            var action = snapshot?.Declaration?.ActionSlots.FirstOrDefault(slot =>
-                slot.Reference.EntryKind == ActionEntryKind.Component && slot.Reference.FeatureGroupId == id[1].Value &&
-                slot.Reference.EntryId == id[2].Value && slot.ParameterKind == ActionParameterKind.None)?.Reference;
-            var busy = action is not null && communication.Actions.GetPending(id[0].Value).Any(item => item.Slot == action && item.IsBusy);
-            return model with { Action = action, CanInvokeAction = snapshot?.IsInteractive == true && action is not null && !busy, ActionBusy = busy };
+            var components = Components;
+            return settings is not null ? components.FirstOrDefault(value => value.IsVisible) ?? components.FirstOrDefault() :
+                components.FirstOrDefault(value => value.Identity.Segments[0].Value == "counter") ?? components.FirstOrDefault();
         }
     }
     public TaskbarDockPreferences Preferences { get; private set; }
@@ -129,7 +148,7 @@ internal sealed class HostConsoleController
         Preferences = preferences.Value ?? new(); PreferenceError = preferences.Error;
         foreach (var error in loaded.Errors) AddError(error);
         if (PreferenceError is not null) AddError(PreferenceError);
-        adapter = new IslandDisplayAdapter(capture, (kind, value) => Tests?.Observe(kind, value), InvokeActionAsync, CreateTemplate);
+        adapter = new IslandDisplayAdapter(capture, (kind, value) => Tests?.Observe(kind, value), InvokeActionAsync, CreateTemplate, ActivateItem);
         Session = new IslandDisplaySession(adapter);
         Tests = new HostTestController(adapter, Reconfigure, () => new { Component, Preferences, State = Session.State.ToString(), Target }, evidenceRoot, () => !Preview.IsOpen);
         Tests.Changed += Notify;
@@ -152,18 +171,63 @@ internal sealed class HostConsoleController
     }
     private async Task InvokeActionAsync(ActionSlotReference slot)
     {
-        if (closing || communication is null) return;
+        var session = communication;
+        if (closing || session is null) return;
+        var expectedSession = session.States.GetSnapshot(slot.ApplicationId)?.SessionId;
+        if (expectedSession is null) return;
+        bool IsCurrent() => !closing && ReferenceEquals(communication, session) &&
+            session.States.GetSnapshot(slot.ApplicationId)?.SessionId == expectedSession;
         try
         {
-            var pending = communication.SendActionAsync(slot, new ActionParameter(), communicationLifetime.Token);
+            var pending = session.SendActionAsync(slot, new ActionParameter(), communicationLifetime.Token, expectedSession);
             Refresh();
             var result = await pending;
+            if (!IsCurrent()) return;
             if (!result.Accepted) AddError(new(result.Code, result.Message));
             Tests.Observe("declared-action-result", new { slot, result.Code, result.Accepted });
         }
         catch (Exception error) when (error is IOException or OperationCanceledException or ObjectDisposedException)
-        { if (!closing) AddError(new("ActionNotAvailable", "动作通道不可用，保留最后确认值。")); }
-        finally { Refresh(); }
+        { if (IsCurrent()) AddError(new("ActionNotAvailable", "动作通道不可用，保留最后确认值。")); }
+        finally { if (IsCurrent()) Refresh(); }
+    }
+    private void ActivateItem(ItemInteractionHandle handle, string? control)
+    {
+        if (closing || communication is null || display.ItemActivations is null) return;
+        ItemActivationSource? source = control switch
+        {
+            null => ItemActivationSource.BlankPrimary,
+            "PrimaryButton" => ItemActivationSource.PrimaryButton,
+            "SecondaryButton" => ItemActivationSource.SecondaryButton,
+            _ => null
+        };
+        if (source is null) { AddError(new("InvalidActivationSource", "项控件来源无效。")); Refresh(); return; }
+        var routed = display.ItemActivations.Activate(handle, source.Value);
+        if (!routed.Result.Accepted) AddError(new(routed.Result.Code, routed.Result.Message));
+        else if (routed.Action is not null) _ = InvokeItemActionAsync(communication, routed);
+        else if (routed.TaskbarFlyoutId is not null)
+            AddError(new("FlyoutNotImplemented", "该项声明的关联面板将在任务栏操作组接入后可用。"));
+        Refresh();
+    }
+    private async Task InvokeItemActionAsync(HostBrokerSession session, HostItemActivationResult routed)
+    {
+        if (closing || !ReferenceEquals(communication, session) || routed.Origin is null || routed.SessionId is null ||
+            display.ItemPresentations?.Resolve(routed.Origin) is not { } current || current.SessionId != routed.SessionId)
+            return;
+        bool IsCurrent() => !closing && ReferenceEquals(communication, session) &&
+            session.States.GetSnapshot(routed.Origin.Item.ApplicationId)?.SessionId == routed.SessionId &&
+            display.ItemPresentations?.Resolve(routed.Origin)?.SessionId == routed.SessionId;
+        try
+        {
+            var pending = session.SendActionAsync(routed.Action!, new(), communicationLifetime.Token, routed.SessionId);
+            Refresh();
+            var result = await pending;
+            if (!IsCurrent()) return;
+            if (!result.Accepted) AddError(new(result.Code, result.Message));
+            Tests.Observe("item-action-result", new { routed.Action, result.Code, result.Accepted });
+        }
+        catch (Exception error) when (error is IOException or OperationCanceledException or ObjectDisposedException)
+        { if (IsCurrent()) AddError(new("ActionNotAvailable", "项动作通道不可用，保留最后确认值。")); }
+        finally { if (IsCurrent()) Refresh(); }
     }
     public void Refresh()
     {
@@ -177,9 +241,11 @@ internal sealed class HostConsoleController
                 display.ApplyBrokerSnapshots(communication.States.Snapshots);
             }
             if (communication?.LastError is { } connectionError) AddError(new(connectionError, "平台通信不可用，已保留最后确认读数。"));
-            var prepared = adapter.Prepare(Preferences, Component, DisplayConfiguration, SimulateUnavailable);
-            Session.SetIntent(Component?.IsVisible == true);
-            if (!prepared.IsSuccess && Component?.IsVisible == true) AddError(prepared.Error!);
+            var components = Components;
+            bool visible = UseGroupDisplay ? components.Any(value => value.IsVisible) : Component?.IsVisible == true;
+            var prepared = PrepareDisplay(components, DisplayConfiguration);
+            Session.SetIntent(visible);
+            if (!prepared.IsSuccess && visible) AddError(prepared.Error!);
             Session.Refresh(prepared.Value);
             if (Session.State == IslandDisplayState.Embedded) adapter.RefreshPlacement();
             if (Session.Error is not null) AddError(Session.Error);
@@ -188,6 +254,9 @@ internal sealed class HostConsoleController
         catch (Exception error) { AddError(new("island_refresh_failed", error.Message)); }
         finally { refreshing = false; Notify(); }
     }
+    private CoreResult<string> PrepareDisplay(IReadOnlyList<HostComponentDisplayModel> components, HostTestConfiguration configuration) =>
+        UseGroupDisplay ? adapter.PrepareGroup(Preferences, components, configuration, SimulateUnavailable, communication?.States, display.ItemPresentations) :
+        adapter.Prepare(Preferences, Component, configuration, SimulateUnavailable);
     private void Reconfigure(bool force)
     {
         if (closing) return;
@@ -197,7 +266,7 @@ internal sealed class HostConsoleController
             applied = DisplayConfiguration;
             var stopped = adapter.Close();
             if (!stopped.IsSuccess) AddError(stopped.Error!);
-            adapter.Prepare(Preferences, Component, applied, SimulateUnavailable);
+            PrepareDisplay(Components, applied);
             Session.Retry();
         }
         Refresh();
@@ -227,19 +296,21 @@ internal sealed class HostConsoleController
         Refresh();
     }
     public void Retry() { Refresh(); Session.Retry(); Refresh(); }
-    public Task StartCounterAsync(string brokerPath, string counterPath, bool templates = false)
+    public Task StartCounterAsync(string brokerPath, string counterPath, bool templates = false, bool dynamic = false)
     {
+        if (templates && dynamic) throw new ArgumentException("模板和动态项演示不能同时启动。");
         if (communicationStartup is not null) return communicationStartup;
+        dynamicDemo = dynamic;
         if (templates)
         {
             var registration = images.Register("counter", "status", ImageResourceFormat.Png,
                 Path.Combine(AppContext.BaseDirectory, "Assets", "template-status.png"));
             if (!registration.Accepted) AddError(new(registration.Code, registration.Message));
         }
-        communicationStartup = StartCounterCoreAsync(brokerPath, counterPath, templates);
+        communicationStartup = StartCounterCoreAsync(brokerPath, counterPath, templates, dynamic);
         return communicationStartup;
     }
-    private async Task StartCounterCoreAsync(string brokerPath, string counterPath, bool templates)
+    private async Task StartCounterCoreAsync(string brokerPath, string counterPath, bool templates, bool dynamic)
     {
         HostBrokerSession? started = null;
         try
@@ -247,7 +318,7 @@ internal sealed class HostConsoleController
             started = await HostBrokerSession.StartAsync(brokerPath, ["counter"], communicationLifetime.Token).ConfigureAwait(false);
             communication = started;
             await started.StartServiceAsync("counter", counterPath, communicationLifetime.Token,
-                templates ? ["--templates"] : null).ConfigureAwait(false);
+                dynamic ? ["--dynamic"] : templates ? ["--templates"] : null).ConfigureAwait(false);
             if (communicationLifetime.IsCancellationRequested)
             {
                 await started.DisposeAsync().ConfigureAwait(false);

@@ -29,15 +29,16 @@ public partial class App : Application
         window.Activate();
         console.Refresh();
         var templates = Environment.GetCommandLineArgs().Contains("--template-demo", StringComparer.Ordinal);
-        if (templates || Environment.GetCommandLineArgs().Contains("--counter-demo", StringComparer.Ordinal))
-            _ = StartCounterAsync(console, templates);
+        var dynamic = Environment.GetCommandLineArgs().Contains("--dynamic-demo", StringComparer.Ordinal);
+        if (templates || dynamic || Environment.GetCommandLineArgs().Contains("--counter-demo", StringComparer.Ordinal))
+            _ = StartCounterAsync(console, templates, dynamic);
     }
-    private static async Task StartCounterAsync(HostConsoleController console, bool templates)
+    private static async Task StartCounterAsync(HostConsoleController console, bool templates, bool dynamic)
     {
         try
         {
             await console.StartCounterAsync(Path.Combine(AppContext.BaseDirectory, "Broker", "Mtp.Broker.dll"),
-                Path.Combine(AppContext.BaseDirectory, "CounterService", "Mtp.CounterService.dll"), templates);
+                Path.Combine(AppContext.BaseDirectory, "CounterService", "Mtp.CounterService.dll"), templates, dynamic);
         }
         catch (Exception error) { console.Execute(() => throw new InvalidOperationException("计数器启动失败：" + error.Message, error)); }
     }

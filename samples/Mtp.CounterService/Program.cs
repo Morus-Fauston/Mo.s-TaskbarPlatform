@@ -7,13 +7,26 @@ try
     Console.CancelKeyPress += (_, e) => { e.Cancel = true; shutdown.Cancel(); };
     var iterations = GetOption("--iterations", 10000, 0, 100000);
     var interval = GetOption("--interval-ms", 100, 1, 60000);
-    CounterProvider? provider = null;
-    await using var client = await SdkClient.ConnectFromStandardInputAsync(applicationId => provider = new CounterProvider(applicationId,
-        args.Contains("--templates", StringComparer.Ordinal)), shutdown.Token);
+    bool dynamic = args.Contains("--dynamic", StringComparer.Ordinal);
+    bool templates = args.Contains("--templates", StringComparer.Ordinal);
+    if (dynamic && templates) throw new ArgumentException("ConflictingDemoModes");
+    Func<ApplicationState>? readTick = null;
+    await using var client = await SdkClient.ConnectFromStandardInputAsync(applicationId =>
+    {
+        if (dynamic)
+        {
+            var provider = new DynamicDemoProvider(applicationId);
+            readTick = provider.Tick;
+            return provider;
+        }
+        var counter = new CounterProvider(applicationId, templates);
+        readTick = counter.Tick;
+        return (IDeclarationProvider)counter;
+    }, shutdown.Token);
     for (var tick = 1; tick <= iterations; tick++)
     {
         await Task.Delay(interval, shutdown.Token);
-        var result = await client.PublishAsync(provider!.Tick(), shutdown.Token);
+        var result = await client.PublishAsync(readTick!(), shutdown.Token);
         // A newer action confirmation can overtake an already captured automatic tick.
         if (!result.Accepted && result.Code is not ("StaleRevision" or "Reconnecting" or "Unavailable")) { Console.Error.WriteLine("CounterRejected:" + result.Code); return 2; }
     }

@@ -15,6 +15,7 @@ internal sealed class ContentIslandHost
     private readonly Action<string, object?> record;
     private readonly Func<Mtp.Contracts.ActionSlotReference, Task>? invokeAction;
     private readonly Func<HostComponentDisplayModel, Templates.TemplateRenderer?>? createTemplate;
+    private readonly Action<ItemInteractionHandle, string?>? activate;
     private DesktopWindowXamlSource? source;
     private IslandContent? content;
     private nint host, bridge, parent, threadDpi;
@@ -24,8 +25,9 @@ internal sealed class ContentIslandHost
     private bool closing;
     private PixelRect? lastLocalBounds;
     public ContentIslandHost(Action<string, object?> record, Func<Mtp.Contracts.ActionSlotReference, Task>? invokeAction = null,
-        Func<HostComponentDisplayModel, Templates.TemplateRenderer?>? createTemplate = null)
-    { this.record = record; this.invokeAction = invokeAction; this.createTemplate = createTemplate; }
+        Func<HostComponentDisplayModel, Templates.TemplateRenderer?>? createTemplate = null,
+        Action<ItemInteractionHandle, string?>? activate = null)
+    { this.record = record; this.invokeAction = invokeAction; this.createTemplate = createTemplate; this.activate = activate; }
     public event Action? Lost;
     public nint Handle => host;
     public nint Bridge => bridge;
@@ -163,11 +165,23 @@ internal sealed class ContentIslandHost
     public void Move(PixelRect screenBounds)
     {
         var origin = NativeWindows.ClientOrigin(parent);
-        var local = new PixelRect(screenBounds.X - origin.X, screenBounds.Y - origin.Y, screenBounds.Width, screenBounds.Height);
+        long localX = (long)screenBounds.X - origin.X, localY = (long)screenBounds.Y - origin.Y;
+        if (localX < int.MinValue || localX > int.MaxValue || localY < int.MinValue || localY > int.MaxValue ||
+            localX + screenBounds.Width > int.MaxValue || localY + screenBounds.Height > int.MaxValue)
+            throw new InvalidOperationException("内容岛相对父窗口的坐标超出原生整数范围。");
+        var local = new PixelRect((int)localX, (int)localY, screenBounds.Width, screenBounds.Height);
         if (local == lastLocalBounds) return;
         NativeWindows.Place(host, local.X, local.Y, local.Width, local.Height);
         source!.SiteBridge.MoveAndResize(new RectInt32(0, 0, screenBounds.Width, screenBounds.Height));
         lastLocalBounds = local;
+    }
+    public void UpdateGroup(HostGroupPresentationSnapshot snapshot, TaskbarGroupAnimationFrame frame)
+    {
+        if (!IsAlive) return;
+        content?.ApplyGroup(snapshot, frame, invokeAction, createTemplate, activate);
+        // Commit the Canvas positions with the same native size update, before observers/input use this frame.
+        content?.UpdateLayout();
+        NativeWindows.Show(host, frame.WidthDip > 0);
     }
     public void Update(long value) { if (IsAlive) content?.Update(value); }
     public void UpdateConfirmed(HostComponentDisplayModel component) { if (IsAlive) content?.UpdateConfirmed(component); }
