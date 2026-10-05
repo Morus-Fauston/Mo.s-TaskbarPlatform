@@ -45,6 +45,16 @@ public sealed class DeclarationValidator
         }
 
         var remainingNodes = MaximumNodes - 1;
+        var images = declaration.Images ?? [];
+        if (!ConsumeNodes(images.Count, TemplateLimits.ImagesPerApplication, ref remainingNodes)) return BudgetFailure("images");
+        var imageIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var image in images)
+        {
+            if (image is null || !Enum.IsDefined(image.Format)) return Failure("template_resource_invalid", "Image registration is invalid.", "images");
+            if (!TryCreateId(image.ResourceId, "images.resourceId", "image resource", out _, out idError))
+                return CoreResult<ValidatedApplicationDeclaration>.Failure(idError!);
+            if (!imageIds.Add(image.ResourceId)) return Failure("duplicate_id", "Image resource IDs must be unique.", "images");
+        }
         if (!ConsumeNodes(declaration.FeatureGroups.Count, MaximumFeatureGroups, ref remainingNodes))
         {
             return BudgetFailure("featureGroups");
@@ -58,6 +68,8 @@ public sealed class DeclarationValidator
         var flyoutEntries = new List<ValidatedFlyoutEntry>();
         var declaredActions = new List<ValidatedActionSlot>();
         var liveIslandEntries = 0;
+        var templates = new List<ValidatedEntryTemplate>();
+        var templateValidator = new TemplateValidator();
 
         for (var featureIndex = 0; featureIndex < declaration.FeatureGroups.Count; featureIndex++)
         {
@@ -134,6 +146,15 @@ public sealed class DeclarationValidator
                 foreach (var slot in component.ActionSlots!)
                     declaredActions.Add(new ValidatedActionSlot(new(declaration.ApplicationId!, feature.FeatureGroupId!,
                         ActionEntryKind.Component, component.ComponentId!, slot.ActionSlotId!), slot.ParameterKind));
+                if (component.Template is not null)
+                {
+                    if (component.DynamicContent is not null)
+                        return Failure("template_structure_invalid", "Component cannot declare both a template and dynamic content.", componentPath);
+                    var templateResult = templateValidator.Validate(new(feature.FeatureGroupId!, TemplateEntryKind.Component, component.ComponentId!),
+                        component.Template, component.ActionSlots!, declaration.Images ?? [], ref remainingNodes);
+                    if (!templateResult.IsSuccess) return CoreResult<ValidatedApplicationDeclaration>.Failure(templateResult.Error!);
+                    templates.Add(templateResult.Value!);
+                }
                 if (component.DynamicContent is not null)
                 {
                     if (component.DynamicContent.Kind == DynamicContentKind.LiveIsland && ++liveIslandEntries > DisplayPermissionLimits.MaximumEntriesPerApplication)
@@ -196,6 +217,13 @@ public sealed class DeclarationValidator
                     declaredActions.Add(new ValidatedActionSlot(new(declaration.ApplicationId!, feature.FeatureGroupId!,
                         ActionEntryKind.TaskbarFlyout, flyout.TaskbarFlyoutId!, slot.ActionSlotId!), slot.ParameterKind));
                 flyoutEntries.Add(new ValidatedFlyoutEntry(flyoutIdentity, FlyoutKind.TaskbarGroup));
+                if (flyout.Template is not null)
+                {
+                    var templateResult = templateValidator.Validate(new(feature.FeatureGroupId!, TemplateEntryKind.TaskbarFlyout, flyout.TaskbarFlyoutId!),
+                        flyout.Template, flyout.ActionSlots!, images, ref remainingNodes);
+                    if (!templateResult.IsSuccess) return CoreResult<ValidatedApplicationDeclaration>.Failure(templateResult.Error!);
+                    templates.Add(templateResult.Value!);
+                }
             }
 
             var hints = feature.Hints ?? [];
@@ -212,6 +240,13 @@ public sealed class DeclarationValidator
                 if (!entryIds.Add(hintId))
                     return Failure("hierarchy_conflict", "Entry identities must be unique within the feature group.", featurePath + ".hints");
                 flyoutEntries.Add(new ValidatedFlyoutEntry(featureIdentity.CreateChild(hintId), hint.Kind));
+                if (hint.Template is not null)
+                {
+                    var templateResult = templateValidator.Validate(new(feature.FeatureGroupId!, TemplateEntryKind.Hint, hint.EntryId!),
+                        hint.Template, [], images, ref remainingNodes);
+                    if (!templateResult.IsSuccess) return CoreResult<ValidatedApplicationDeclaration>.Failure(templateResult.Error!);
+                    templates.Add(templateResult.Value!);
+                }
             }
             foreach (var channel in events)
             {
@@ -222,13 +257,20 @@ public sealed class DeclarationValidator
                 if (!entryIds.Add(channelId))
                     return Failure("hierarchy_conflict", "Entry identities must be unique within the feature group.", featurePath + ".eventChannels");
                 flyoutEntries.Add(new ValidatedFlyoutEntry(featureIdentity.CreateChild(channelId), FlyoutKind.EventGroup, channel.ClosePolicy));
+                if (channel.Template is not null)
+                {
+                    var templateResult = templateValidator.Validate(new(feature.FeatureGroupId!, TemplateEntryKind.EventChannel, channel.ChannelId!),
+                        channel.Template, [], images, ref remainingNodes);
+                    if (!templateResult.IsSuccess) return CoreResult<ValidatedApplicationDeclaration>.Failure(templateResult.Error!);
+                    templates.Add(templateResult.Value!);
+                }
             }
 
             featureGroups.Add(new ValidatedFeatureGroup(featureIdentity, components, taskbarFlyouts));
         }
 
         return CoreResult<ValidatedApplicationDeclaration>.Success(
-            new ValidatedApplicationDeclaration(applicationIdentity, featureGroups, dynamicContents, flyoutEntries, declaredActions));
+            new ValidatedApplicationDeclaration(applicationIdentity, featureGroups, dynamicContents, flyoutEntries, declaredActions, templates, declaration.Images));
     }
 
     public CoreResult<ValidatedApplicationDeclaration> ValidateJson(string json)

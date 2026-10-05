@@ -15,7 +15,8 @@ public sealed record HostComponentDisplayModel(
     bool IsVisible,
     Mtp.Contracts.ActionSlotReference? Action = null,
     bool CanInvokeAction = false,
-    bool ActionBusy = false)
+    bool ActionBusy = false,
+    bool HasTemplate = false)
 {
     public static HostComponentDisplayModel From(Component component)
         => From(component, true);

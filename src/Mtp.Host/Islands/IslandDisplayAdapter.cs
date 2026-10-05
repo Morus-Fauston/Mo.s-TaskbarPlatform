@@ -9,6 +9,7 @@ internal sealed class IslandDisplayAdapter : IIslandSessionAdapter
     private readonly Func<TaskbarDockPreferences, CoreResult<IslandTarget>> capture;
     private readonly Action<string, object?> record;
     private readonly Func<Mtp.Contracts.ActionSlotReference, Task>? invokeAction;
+    private readonly Func<HostComponentDisplayModel, Templates.TemplateRenderer?>? createTemplate;
     private ContentIslandHost? host;
     private IslandTarget? target;
     private PixelRect bounds;
@@ -16,8 +17,9 @@ internal sealed class IslandDisplayAdapter : IIslandSessionAdapter
     private HostComponentDisplayModel? component;
     private HostTestConfiguration config = new();
     public IslandDisplayAdapter(Func<TaskbarDockPreferences, CoreResult<IslandTarget>> capture, Action<string, object?> record,
-        Func<Mtp.Contracts.ActionSlotReference, Task>? invokeAction = null)
-    { this.capture = capture; this.record = record; this.invokeAction = invokeAction; }
+        Func<Mtp.Contracts.ActionSlotReference, Task>? invokeAction = null,
+        Func<HostComponentDisplayModel, Templates.TemplateRenderer?>? createTemplate = null)
+    { this.capture = capture; this.record = record; this.invokeAction = invokeAction; this.createTemplate = createTemplate; }
     public bool IsAlive => host?.IsAlive == true;
     public string MaterialStatus => host?.MaterialStatus ?? "未创建内容岛";
     public bool PopupOpen => host?.PopupOpen == true;
@@ -38,7 +40,7 @@ internal sealed class IslandDisplayAdapter : IIslandSessionAdapter
         var next = result.Value!;
         TargetSummary = $"{next.Geometry.DisplayId} · DPI {next.Geometry.Dpi}";
         TargetDescription = $"{next.Geometry.DisplayId} · DPI {next.Geometry.Dpi} · 右侧间距 {preferences.RightGapDip} DIP · 通知区锚点 {next.Geometry.NotificationBounds?.X.ToString() ?? "不可用"} px · {next.Warning}";
-        var placement = TaskbarDockPlacement.Calculate(next.Geometry, new DipSize(configuration.Controls ? 320 : 240, 32), preferences.RightGapDip);
+        var placement = TaskbarDockPlacement.Calculate(next.Geometry, new DipSize(configuration.Controls ? 320 : value?.HasTemplate == true ? 480 : 240, 32), preferences.RightGapDip);
         if (!placement.IsSuccess)
         {
             // During real auto-hide, keep an already healthy child attached to the same
@@ -62,7 +64,7 @@ internal sealed class IslandDisplayAdapter : IIslandSessionAdapter
     {
         if (target is null || component is null) return CoreResult<bool>.Failure(new("island_target_missing", "声明或任务栏定位条件不可用。"));
         if (host is not null) return CoreResult<bool>.Failure(new("island_cleanup_pending", "旧内容岛尚未释放。"));
-        host = new ContentIslandHost(record, invokeAction);
+        host = new ContentIslandHost(record, invokeAction, createTemplate);
         host.Lost += OnLost;
         try
         {

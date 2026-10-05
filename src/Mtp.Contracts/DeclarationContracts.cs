@@ -7,7 +7,8 @@ namespace Mtp.Contracts;
 /// </summary>
 public sealed record ApplicationDeclaration(
     string? ApplicationId,
-    IReadOnlyList<FeatureGroupDeclaration>? FeatureGroups);
+    IReadOnlyList<FeatureGroupDeclaration>? FeatureGroups,
+    IReadOnlyList<ImageResourceDeclaration>? Images = null);
 
 /// <summary>
 /// A functional group and its Host-owned entry points.
@@ -25,14 +26,16 @@ public sealed record FeatureGroupDeclaration(
 public sealed record ComponentDeclaration(
     string? ComponentId,
     IReadOnlyList<ActionSlotDeclaration>? ActionSlots,
-    DynamicContentDeclaration? DynamicContent = null);
+    DynamicContentDeclaration? DynamicContent = null,
+    EntryTemplateDeclaration? Template = null);
 
 /// <summary>
 /// A taskbar-operation flyout declaration with action bindings.
 /// </summary>
 public sealed record TaskbarFlyoutDeclaration(
     string? TaskbarFlyoutId,
-    IReadOnlyList<ActionSlotDeclaration>? ActionSlots);
+    IReadOnlyList<ActionSlotDeclaration>? ActionSlots,
+    EntryTemplateDeclaration? Template = null);
 
 /// <summary>
 /// A named action slot under a component or taskbar-operation flyout.

@@ -52,6 +52,12 @@ public sealed partial class WindowTestApplication : Application
         {
             // Keep the application alive while the last dock is closed and recreated.
             lifetimeWindow = new Window();
+            if (Environment.GetCommandLineArgs().Contains("--template-only", StringComparer.Ordinal))
+            {
+                await TemplateNativeRegression.RunAsync(message => File.AppendAllText(LogPath, message + "\n"));
+                Finish(null);
+                return;
+            }
             if (Environment.GetCommandLineArgs().Contains("--broker-only", StringComparer.Ordinal))
             {
                 await BrokerCounterRegression.RunAsync(message => File.AppendAllText(LogPath, message + "\n"));

@@ -198,6 +198,9 @@ public sealed class HostDisplayController : IDisposable
             value.FeatureGroupId == component.Identity.Segments[1].Value && value.ComponentId == component.Identity.LocalId.Value);
         return model with
         {
+            HasTemplate = brokerSnapshot.Declaration?.Templates.Any(template =>
+                template.Entry.Kind == TemplateEntryKind.Component && template.Entry.FeatureGroupId == component.Identity.Segments[1].Value &&
+                template.Entry.EntryId == component.Identity.LocalId.Value) == true,
             Text = reading?.Text ?? "等待服务状态",
             Status = brokerSnapshot.IsInteractive ? CapabilityStatus.Available : CapabilityStatus.Unavailable,
             StatusLabel = brokerSnapshot.IsInteractive ? "可用" : "服务未连接" +

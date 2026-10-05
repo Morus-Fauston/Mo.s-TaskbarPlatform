@@ -15,6 +15,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <None Update="Assets/template-status.png" CopyToOutputDirectory="PreserveNewest" />
     <None Update="declaration.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>

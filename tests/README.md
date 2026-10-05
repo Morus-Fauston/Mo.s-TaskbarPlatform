@@ -33,6 +33,14 @@ dotnet test tests/Mtp.Communication.Tests/Mtp.Communication.Tests.csproj -c Rele
 
 ## Windows 适配器
 
+五期受控模板入口：构建后运行 `Mtp.Host.exe --template-demo`，开启计数器组件显示。模板使用受控 PNG、文本、按钮、图标按钮、开关与滑块，普通值变化保留原控件；滑块 0–80 可确认，95 用于演示失败回退。此示例不接入系统音量或其他六期能力。
+
+~~~powershell
+powershell -ExecutionPolicy Bypass -File tests/Mtp.Host.WindowTests/Run.ps1 -Scenario template -EvidenceDirectory .scratch/五期开发/evidence/01/<新批次>
+~~~
+
+该场景运行真实自有内容岛、独立 Broker 与服务，验证图像解码预算、原生控件动作确认/回退、同 HWND 与控件刷新、深浅主题背景、旧会话拒绝及隐藏/退出清理。`template-light.png`/`template-dark.png` 是 RenderTargetBitmap 呈现证据，场景显式使用不透明 Host 背景，避免透明 PNG 查看器误合成；不代替任务栏、实际焦点与读屏人工验收。
+
 ~~~powershell
 dotnet test tests/Mtp.Host.Windows.Tests/Mtp.Host.Windows.Tests.csproj -c Release
 ~~~

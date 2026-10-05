@@ -1,5 +1,5 @@
 ﻿param(
-    [ValidateSet('all', 'broker')][string]$Scenario = 'all',
+    [ValidateSet('all', 'broker', 'template')][string]$Scenario = 'all',
     [string]$OutputDirectory = "$PSScriptRoot/bin/window-regression",
     [string]$EvidenceDirectory = "$PSScriptRoot/../../.scratch/二期开发/evidence/HostWindowRegression/run-$(Get-Date -Format 'yyyyMMdd-HHmmss-fff')-$([Guid]::NewGuid().ToString('N').Substring(0, 8))"
 )
@@ -10,7 +10,8 @@ if ($evidencePath.TrimEnd('\', '/') -eq $outputPath.TrimEnd('\', '/') -or $evide
     throw 'EvidenceDirectory must be separate from the build output directory.'
 }
 if (Test-Path -LiteralPath $evidencePath) { throw 'EvidenceDirectory already exists; select a new run directory.' }
-dotnet build "$PSScriptRoot/Mtp.Host.WindowTests.csproj" --configuration Release "-p:OutDir=$outputPath/"
+$env:MSBUILDDISABLENODEREUSE='1'
+dotnet build "$PSScriptRoot/Mtp.Host.WindowTests.csproj" --configuration Release -nr:false "-p:OutDir=$outputPath/"
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 $startedAt = [DateTime]::UtcNow
 $previousDirectories = @(Get-ChildItem -LiteralPath $outputPath -Directory | Select-Object -ExpandProperty Name)
@@ -21,6 +22,7 @@ $run.StartInfo = [Diagnostics.ProcessStartInfo]::new("$outputPath/Mtp.Host.Windo
 $run.StartInfo.UseShellExecute = $false
 $run.StartInfo.WindowStyle = 'Hidden'
 if ($Scenario -eq 'broker') { $run.StartInfo.Arguments = '--broker-only' }
+if ($Scenario -eq 'template') { $run.StartInfo.Arguments = '--template-only' }
 try {
     if (-not $run.Start()) { throw 'Could not start the WinUI regression process.' }
     if (-not $run.WaitForExit(60000)) {
@@ -49,7 +51,7 @@ finally {
         }
     }
     foreach ($directory in Get-ChildItem -LiteralPath $outputPath -Directory) {
-        if ($directory.Name -notin $previousDirectories -and ($directory.Name -like 'console-*' -or $directory.Name -like 'display-selection-*' -or $directory.Name -like 'broker-*')) {
+        if ($directory.Name -notin $previousDirectories -and ($directory.Name -like 'console-*' -or $directory.Name -like 'display-selection-*' -or $directory.Name -like 'broker-*' -or $directory.Name -like 'template-*')) {
             Copy-Item -LiteralPath $directory.FullName -Destination $evidencePath -Recurse
         }
     }

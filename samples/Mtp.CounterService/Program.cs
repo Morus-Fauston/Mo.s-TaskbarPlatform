@@ -8,7 +8,8 @@ try
     var iterations = GetOption("--iterations", 10000, 0, 100000);
     var interval = GetOption("--interval-ms", 100, 1, 60000);
     CounterProvider? provider = null;
-    await using var client = await SdkClient.ConnectFromStandardInputAsync(applicationId => provider = new CounterProvider(applicationId), shutdown.Token);
+    await using var client = await SdkClient.ConnectFromStandardInputAsync(applicationId => provider = new CounterProvider(applicationId,
+        args.Contains("--templates", StringComparer.Ordinal)), shutdown.Token);
     for (var tick = 1; tick <= iterations; tick++)
     {
         await Task.Delay(interval, shutdown.Token);
@@ -34,18 +35,23 @@ int GetOption(string name, int fallback, int minimum, int maximum)
     return value;
 }
 
-sealed class CounterProvider(string applicationId) : IDeclarationProvider, IActionHandler
+sealed class CounterProvider(string applicationId, bool templates = false) : IDeclarationProvider, IActionHandler
 {
     private readonly object gate = new();
     private long count;
     private long revision;
+    private bool enabled = true;
+    private double level = 25;
 
     public Task<ApplicationSnapshot> GetSnapshotAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        ActionSlotDeclaration[] actions = [new("activate")];
+        ActionSlotDeclaration[] actions = templates
+            ? [new("activate"), new("enabled", ActionParameterKind.Boolean), new("level", ActionParameterKind.Number)] : [new("activate")];
         var declaration = new ApplicationDeclaration(applicationId,
-            [new FeatureGroupDeclaration("main", [new ComponentDeclaration("counter", actions)], [new TaskbarFlyoutDeclaration("details", actions)])]);
+            [new FeatureGroupDeclaration("main", [new ComponentDeclaration("counter", actions, Template: templates ? TemplateCounterDeclaration.Create() : null)],
+                [new TaskbarFlyoutDeclaration("details", actions)])],
+            templates ? [new ImageResourceDeclaration("status", ImageResourceFormat.Png)] : null);
         lock (gate) return Task.FromResult(new ApplicationSnapshot(declaration, CreateState()));
     }
 
@@ -59,17 +65,34 @@ sealed class CounterProvider(string applicationId) : IDeclarationProvider, IActi
         }
     }
 
-    public Task<ActionCompletion> HandleAsync(ActionInvocation invocation, CancellationToken cancellationToken)
+    public async Task<ActionCompletion> HandleAsync(ActionInvocation invocation, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (templates && invocation.Slot.ApplicationId == applicationId && invocation.Slot.FeatureGroupId == "main" &&
+            invocation.Slot.EntryKind == ActionEntryKind.Component && invocation.Slot.EntryId == "counter" &&
+            invocation.Slot.ActionSlotId is "enabled" or "level")
+        {
+            await Task.Delay(100, cancellationToken);
+            lock (gate)
+            {
+                if (invocation.Slot.ActionSlotId == "enabled" && invocation.Parameter is { Kind: ActionParameterKind.Boolean, Boolean: { } flag })
+                    enabled = flag;
+                else if (invocation.Slot.ActionSlotId == "level" && invocation.Parameter is { Kind: ActionParameterKind.Number, Number: { } value } &&
+                    double.IsFinite(value) && value >= 0 && value <= 80)
+                    level = value;
+                else return new(invocation.RequestId, invocation.Sequence, ProtocolResult.Reject("DemoValueRejected", "演示服务只接受0至80的读数"));
+                revision++;
+                return new(invocation.RequestId, invocation.Sequence, ProtocolResult.Success("ActionSucceeded"), CreateState());
+            }
+        }
         if (invocation.Slot.ApplicationId != applicationId || invocation.Slot.FeatureGroupId != "main" ||
             invocation.Slot.ActionSlotId != "activate" ||
             (invocation.Slot.EntryKind == ActionEntryKind.Component ? invocation.Slot.EntryId != "counter" :
              invocation.Slot.EntryKind != ActionEntryKind.TaskbarFlyout || invocation.Slot.EntryId != "details") ||
             invocation.Parameter.Kind != ActionParameterKind.None || invocation.Parameter.Boolean is not null ||
             invocation.Parameter.Number is not null || invocation.Parameter.Text is not null)
-            return Task.FromResult(new ActionCompletion(invocation.RequestId, invocation.Sequence,
-                ProtocolResult.Reject("ActionNotAvailable", "计数器动作不可用")));
+            return new ActionCompletion(invocation.RequestId, invocation.Sequence,
+                ProtocolResult.Reject("ActionNotAvailable", "计数器动作不可用"));
         ApplicationState state;
         lock (gate)
         {
@@ -78,10 +101,13 @@ sealed class CounterProvider(string applicationId) : IDeclarationProvider, IActi
             state = CreateState();
         }
         Console.WriteLine($"CounterActionConfirmed:increment=10:revision={state.Revision}");
-        return Task.FromResult(new ActionCompletion(invocation.RequestId, invocation.Sequence,
-            ProtocolResult.Success("ActionSucceeded"), state));
+        return new ActionCompletion(invocation.RequestId, invocation.Sequence,
+            ProtocolResult.Success("ActionSucceeded"), state);
     }
 
     private ApplicationState CreateState() => new(revision,
-        [new ComponentReading("main", "counter", count.ToString(System.Globalization.CultureInfo.InvariantCulture), count)]);
+        [new ComponentReading("main", "counter", count.ToString(System.Globalization.CultureInfo.InvariantCulture), count)],
+        TemplateEntries: templates ? [new TemplateEntryState(new("main", TemplateEntryKind.Component, "counter"),
+            [new("count", new(TemplateValueKind.Text, Text: count.ToString(System.Globalization.CultureInfo.InvariantCulture))),
+                new("enabled", new(TemplateValueKind.Boolean, Boolean: enabled)), new("level", new(TemplateValueKind.Number, Number: level))])] : null);
 }

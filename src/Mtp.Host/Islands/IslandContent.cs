@@ -15,15 +15,20 @@ internal sealed class IslandContent : UserControl
     private readonly Popup popup;
     private readonly Button button = new() { Content = "+1", Padding = new Thickness(8, 0, 8, 0), MinHeight = 28, VerticalAlignment = VerticalAlignment.Center };
     private readonly Action<string, object?> record;
+    private readonly Func<HostComponentDisplayModel, Templates.TemplateRenderer?>? createTemplate;
+    private Templates.TemplateRenderer? template;
+    private Mtp.Platform.Core.StableIdentity? templateIdentity;
     private long clicks;
     private Mtp.Contracts.ActionSlotReference? action;
     private readonly Button actionButton = new() { Content = "执行", Padding = new Thickness(8, 0, 8, 0), MinHeight = 28, VerticalAlignment = VerticalAlignment.Center };
     public bool PopupOpen => popup.IsOpen;
 
     public IslandContent(HostComponentDisplayModel component, HostTestConfiguration config, Action<string, object?> record,
-        Func<Mtp.Contracts.ActionSlotReference, Task>? invokeAction = null)
+        Func<Mtp.Contracts.ActionSlotReference, Task>? invokeAction = null,
+        Func<HostComponentDisplayModel, Templates.TemplateRenderer?>? createTemplate = null)
     {
         this.record = record;
+        this.createTemplate = config.Controls ? null : createTemplate;
         RequestedTheme = config.Theme switch { "light" => ElementTheme.Light, "dark" => ElementTheme.Dark, _ => ElementTheme.Default };
         AutomationProperties.SetAutomationId(this, "MtpHostIslandContent");
         label.Text = config.Controls ? "0" : component.Text + " · " + component.StatusLabel;
@@ -86,6 +91,7 @@ internal sealed class IslandContent : UserControl
             UpdateConfirmed(component);
         }
         GotFocus += (_, _) => record("content-focus", new { automatic = true, human = "pending" });
+        if (!config.Controls) UpdateConfirmed(component);
     }
 
     private void ApplySurface(HostTestConfiguration config)
@@ -96,12 +102,29 @@ internal sealed class IslandContent : UserControl
     public void Update(long value) => label.Text = (value + clicks).ToString(System.Globalization.CultureInfo.InvariantCulture);
     public void UpdateConfirmed(HostComponentDisplayModel component)
     {
+        if (template is not null && (!component.HasTemplate || templateIdentity != component.Identity))
+        {
+            surface.Children.Remove(template);
+            template.Dispose(); template = null; templateIdentity = null;
+        }
+        if (component.HasTemplate && template is null)
+        {
+            template = createTemplate?.Invoke(component);
+            if (template is not null)
+            {
+                templateIdentity = component.Identity;
+                Grid.SetColumnSpan(template, Math.Max(1, surface.ColumnDefinitions.Count));
+                surface.Children.Add(template);
+            }
+        }
+        label.Visibility = template is null ? Visibility.Visible : Visibility.Collapsed;
+        template?.Refresh();
         label.Text = component.Text + " · " + component.StatusLabel;
         action = component.Action;
-        actionButton.Visibility = action is null ? Visibility.Collapsed : Visibility.Visible;
+        actionButton.Visibility = template is not null || action is null ? Visibility.Collapsed : Visibility.Visible;
         actionButton.IsEnabled = component.CanInvokeAction;
         actionButton.Content = component.ActionBusy ? "等待确认" : "执行";
     }
     public void SetPopup(bool open) { popup.IsOpen = open; record("popup-request", open); }
-    public void Release() => popup.IsOpen = false;
+    public void Release() { popup.IsOpen = false; template?.Dispose(); template = null; templateIdentity = null; }
 }

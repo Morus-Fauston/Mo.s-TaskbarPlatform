@@ -147,7 +147,8 @@ public sealed class HostBrokerSession : IAsyncDisposable
         }
         finally { lifecycle.Release(); }
     }
-    public async Task<ProtocolResult> SendActionAsync(ActionSlotReference slot, ActionParameter parameter, CancellationToken cancellationToken = default)
+    public async Task<ProtocolResult> SendActionAsync(ActionSlotReference slot, ActionParameter parameter, CancellationToken cancellationToken = default,
+        string? expectedSessionId = null)
     {
         ArgumentNullException.ThrowIfNull(slot); ArgumentNullException.ThrowIfNull(parameter);
         if (cancellationToken.IsCancellationRequested) return ProtocolResult.Reject("ActionCancelled", "操作已取消");
@@ -158,6 +159,8 @@ public sealed class HostBrokerSession : IAsyncDisposable
             if (generation is not { Ready: true, Faulted: false } connection) return ProtocolResult.Reject("ActionNotAvailable", "Broker尚未恢复");
             current = States.GetSnapshot(slot.ApplicationId)!;
             if (current is null) return ProtocolResult.Reject("ActionNotAvailable", "应用未连接");
+            if (expectedSessionId is not null && current.SessionId != expectedSessionId)
+                return ProtocolResult.Reject("StaleSession", "界面所属会话已失效");
             reserved = Actions.Begin(current, slot, parameter, parameter);
             if (!reserved.Accepted) return reserved.Result;
             var action = reserved.Invocation!;

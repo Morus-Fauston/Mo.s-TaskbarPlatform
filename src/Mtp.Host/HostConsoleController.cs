@@ -1,6 +1,7 @@
 using Microsoft.UI.Xaml;
 using Mtp.Contracts;
 using Mtp.Host.Islands;
+using Mtp.Host.Templates;
 using Mtp.Platform.Core;
 
 namespace Mtp.Host;
@@ -20,6 +21,7 @@ internal sealed class HostConsoleController
     private HostBrokerSession? communication;
     private readonly CancellationTokenSource communicationLifetime = new();
     private Task? communicationStartup;
+    private readonly RegisteredImageCache images = new();
     public HostComponentDisplayModel? Component
     {
         get
@@ -89,7 +91,7 @@ internal sealed class HostConsoleController
         Preferences = preferences.Value ?? new(); PreferenceError = preferences.Error;
         foreach (var error in loaded.Errors) AddError(error);
         if (PreferenceError is not null) AddError(PreferenceError);
-        adapter = new IslandDisplayAdapter(capture, (kind, value) => Tests?.Observe(kind, value), InvokeActionAsync);
+        adapter = new IslandDisplayAdapter(capture, (kind, value) => Tests?.Observe(kind, value), InvokeActionAsync, CreateTemplate);
         Session = new IslandDisplaySession(adapter);
         Tests = new HostTestController(adapter, Reconfigure, () => new { Component, Preferences, State = Session.State.ToString(), Target }, evidenceRoot, () => !Preview.IsOpen);
         Tests.Changed += Notify;
@@ -100,6 +102,16 @@ internal sealed class HostConsoleController
             monitor = new(action => dispatcher.TryEnqueue(() => action()), Refresh, () => environment.ObservedTaskbar);
         timer.Tick += (_, _) => Refresh();
         timer.Start();
+    }
+    private TemplateRenderer? CreateTemplate(HostComponentDisplayModel component)
+    {
+        var session = communication;
+        if (closing || session is null || !component.HasTemplate) return null;
+        var ids = component.Identity.Segments;
+        var controller = new TemplateInteractionController(session.States, ids[0].Value,
+            new(ids[1].Value, TemplateEntryKind.Component, ids[2].Value),
+            (slot, parameter, expected, token) => session.SendActionAsync(slot, parameter, token, expected));
+        return new TemplateRenderer(controller, images);
     }
     private async Task InvokeActionAsync(ActionSlotReference slot)
     {
@@ -178,20 +190,27 @@ internal sealed class HostConsoleController
         Refresh();
     }
     public void Retry() { Refresh(); Session.Retry(); Refresh(); }
-    public Task StartCounterAsync(string brokerPath, string counterPath)
+    public Task StartCounterAsync(string brokerPath, string counterPath, bool templates = false)
     {
         if (communicationStartup is not null) return communicationStartup;
-        communicationStartup = StartCounterCoreAsync(brokerPath, counterPath);
+        if (templates)
+        {
+            var registration = images.Register("counter", "status", ImageResourceFormat.Png,
+                Path.Combine(AppContext.BaseDirectory, "Assets", "template-status.png"));
+            if (!registration.Accepted) AddError(new(registration.Code, registration.Message));
+        }
+        communicationStartup = StartCounterCoreAsync(brokerPath, counterPath, templates);
         return communicationStartup;
     }
-    private async Task StartCounterCoreAsync(string brokerPath, string counterPath)
+    private async Task StartCounterCoreAsync(string brokerPath, string counterPath, bool templates)
     {
         HostBrokerSession? started = null;
         try
         {
             started = await HostBrokerSession.StartAsync(brokerPath, ["counter"], communicationLifetime.Token).ConfigureAwait(false);
             communication = started;
-            await started.StartServiceAsync("counter", counterPath, communicationLifetime.Token).ConfigureAwait(false);
+            await started.StartServiceAsync("counter", counterPath, communicationLifetime.Token,
+                templates ? ["--templates"] : null).ConfigureAwait(false);
             if (communicationLifetime.IsCancellationRequested)
             {
                 await started.DisposeAsync().ConfigureAwait(false);
@@ -252,6 +271,7 @@ internal sealed class HostConsoleController
         catch (Exception error) { testStopped = false; AddError(new("test_shutdown_failed", error.Message)); }
         if (monitor?.TryStop() == false) { AddError(monitor.Error!); return false; }
         var closed = Session.Shutdown();
+        if (closed) images.Dispose();
         if (!closed && Session.Error is not null) AddError(Session.Error);
         return closed && testStopped;
     }

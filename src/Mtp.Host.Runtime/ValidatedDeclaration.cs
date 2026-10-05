@@ -15,7 +15,9 @@ public sealed class ValidatedApplicationDeclaration
         IEnumerable<ValidatedFeatureGroup> featureGroups,
         IEnumerable<ValidatedDynamicContentDeclaration>? dynamicContents = null,
         IEnumerable<ValidatedFlyoutEntry>? flyoutEntries = null,
-        IEnumerable<ValidatedActionSlot>? actionSlots = null)
+        IEnumerable<ValidatedActionSlot>? actionSlots = null,
+        IEnumerable<ValidatedEntryTemplate>? templates = null,
+        IEnumerable<Mtp.Contracts.ImageResourceDeclaration>? images = null)
     {
         Identity = identity ?? throw new ArgumentNullException(nameof(identity));
         if (identity.Parent is not null)
@@ -33,6 +35,8 @@ public sealed class ValidatedApplicationDeclaration
         DynamicContents = Array.AsReadOnly((dynamicContents ?? []).ToArray());
         FlyoutEntries = Array.AsReadOnly((flyoutEntries ?? []).ToArray());
         ActionSlots = Array.AsReadOnly((actionSlots ?? []).ToArray());
+        Templates = Array.AsReadOnly((templates ?? []).ToArray());
+        Images = Array.AsReadOnly((images ?? []).ToArray());
     }
 
     public StableIdentity Identity { get; }
@@ -41,6 +45,8 @@ public sealed class ValidatedApplicationDeclaration
     public IReadOnlyList<ValidatedDynamicContentDeclaration> DynamicContents { get; }
     public IReadOnlyList<ValidatedFlyoutEntry> FlyoutEntries { get; }
     public IReadOnlyList<ValidatedActionSlot> ActionSlots { get; }
+    public IReadOnlyList<ValidatedEntryTemplate> Templates { get; }
+    public IReadOnlyList<Mtp.Contracts.ImageResourceDeclaration> Images { get; }
 }
 
 /// <summary>

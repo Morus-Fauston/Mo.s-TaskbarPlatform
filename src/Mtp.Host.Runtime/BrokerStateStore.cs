@@ -344,7 +344,9 @@ public sealed class BrokerStateStore
                 return ProtocolResult.Reject(checkedContent.Error!.Code, checkedContent.Error.Message, checkedContent.Error.Path);
             frozenEntries.Add(entry with { Content = checkedContent.Value!.Content });
         }
-        frozen = new(state.Revision, Array.AsReadOnly(state.Components.ToArray()), Array.AsReadOnly(frozenEntries.ToArray()));
+        var templateState = new TemplateValidator().ValidateState(declaration, state.TemplateEntries);
+        if (!templateState.IsSuccess) return ProtocolResult.Reject(templateState.Error!.Code, templateState.Error.Message, templateState.Error.Path);
+        frozen = new(state.Revision, Array.AsReadOnly(state.Components.ToArray()), Array.AsReadOnly(frozenEntries.ToArray()), templateState.Value!);
         return null;
     }
 }

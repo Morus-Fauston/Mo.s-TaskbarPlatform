@@ -14,6 +14,7 @@ internal sealed class ContentIslandHost
     private readonly DispatcherQueue dispatcher = DispatcherQueue.GetForCurrentThread();
     private readonly Action<string, object?> record;
     private readonly Func<Mtp.Contracts.ActionSlotReference, Task>? invokeAction;
+    private readonly Func<HostComponentDisplayModel, Templates.TemplateRenderer?>? createTemplate;
     private DesktopWindowXamlSource? source;
     private IslandContent? content;
     private nint host, bridge, parent, threadDpi;
@@ -22,8 +23,9 @@ internal sealed class ContentIslandHost
     private long hostOwnership;
     private bool closing;
     private PixelRect? lastLocalBounds;
-    public ContentIslandHost(Action<string, object?> record, Func<Mtp.Contracts.ActionSlotReference, Task>? invokeAction = null)
-    { this.record = record; this.invokeAction = invokeAction; }
+    public ContentIslandHost(Action<string, object?> record, Func<Mtp.Contracts.ActionSlotReference, Task>? invokeAction = null,
+        Func<HostComponentDisplayModel, Templates.TemplateRenderer?>? createTemplate = null)
+    { this.record = record; this.invokeAction = invokeAction; this.createTemplate = createTemplate; }
     public event Action? Lost;
     public nint Handle => host;
     public nint Bridge => bridge;
@@ -81,7 +83,7 @@ internal sealed class ContentIslandHost
             bridge = Win32Interop.GetWindowFromWindowId(source.SiteBridge.WindowId);
             source.ShouldConstrainPopupsToWorkArea = false;
             source.TakeFocusRequested += TakeFocus;
-            content = new IslandContent(component, config, record, invokeAction);
+            content = new IslandContent(component, config, record, invokeAction, createTemplate);
             lifetime.Own("content", () => { content.Release(); if (NativeWindows.IsWindow(bridge)) source.Content = null; content = null; });
             source.Content = content;
             source.SiteBridge.MoveAndResize(new RectInt32(0, 0, screenBounds.Width, screenBounds.Height));
