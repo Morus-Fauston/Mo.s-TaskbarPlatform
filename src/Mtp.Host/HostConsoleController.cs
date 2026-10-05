@@ -255,7 +255,7 @@ internal sealed class HostConsoleController
         finally { refreshing = false; Notify(); }
     }
     private CoreResult<string> PrepareDisplay(IReadOnlyList<HostComponentDisplayModel> components, HostTestConfiguration configuration) =>
-        UseGroupDisplay ? adapter.PrepareGroup(Preferences, components, configuration, SimulateUnavailable, communication?.States, display.ItemPresentations) :
+        UseGroupDisplay ? adapter.PrepareGroup(Preferences, components, configuration, SimulateUnavailable, communication?.States, display.ItemPresentations, settings?.GetSnapshot().Preferences.IslandGrouping) :
         adapter.Prepare(Preferences, Component, configuration, SimulateUnavailable);
     private void Reconfigure(bool force)
     {
@@ -296,21 +296,21 @@ internal sealed class HostConsoleController
         Refresh();
     }
     public void Retry() { Refresh(); Session.Retry(); Refresh(); }
-    public Task StartCounterAsync(string brokerPath, string counterPath, bool templates = false, bool dynamic = false, bool timers = false, bool presets = false)
+    public Task StartCounterAsync(string brokerPath, string counterPath, bool templates = false, bool dynamic = false, bool timers = false, bool presets = false, bool organization = false)
     {
-        if ((templates ? 1 : 0) + (dynamic ? 1 : 0) + (timers ? 1 : 0) + (presets ? 1 : 0) > 1) throw new ArgumentException("一次只能启动一种演示。");
+        if ((templates ? 1 : 0) + (dynamic ? 1 : 0) + (timers ? 1 : 0) + (presets ? 1 : 0) + (organization ? 1 : 0) > 1) throw new ArgumentException("一次只能启动一种演示。");
         if (communicationStartup is not null) return communicationStartup;
-        dynamicDemo = dynamic || timers || presets;
+        dynamicDemo = dynamic || timers || presets || organization;
         if (templates)
         {
             var registration = images.Register("counter", "status", ImageResourceFormat.Png,
                 Path.Combine(AppContext.BaseDirectory, "Assets", "template-status.png"));
             if (!registration.Accepted) AddError(new(registration.Code, registration.Message));
         }
-        communicationStartup = StartCounterCoreAsync(brokerPath, counterPath, templates, dynamic, timers, presets);
+        communicationStartup = StartCounterCoreAsync(brokerPath, counterPath, templates, dynamic, timers, presets, organization);
         return communicationStartup;
     }
-    private async Task StartCounterCoreAsync(string brokerPath, string counterPath, bool templates, bool dynamic, bool timers, bool presets)
+    private async Task StartCounterCoreAsync(string brokerPath, string counterPath, bool templates, bool dynamic, bool timers, bool presets, bool organization)
     {
         HostBrokerSession? started = null;
         try
@@ -318,7 +318,7 @@ internal sealed class HostConsoleController
             started = await HostBrokerSession.StartAsync(brokerPath, ["counter"], communicationLifetime.Token).ConfigureAwait(false);
             communication = started;
             await started.StartServiceAsync("counter", counterPath, communicationLifetime.Token,
-                dynamic ? ["--dynamic"] : templates ? ["--templates"] : timers ? ["--timers"] : presets ? ["--presets"] : null).ConfigureAwait(false);
+                dynamic ? ["--dynamic"] : templates ? ["--templates"] : timers ? ["--timers"] : presets ? ["--presets"] : organization ? ["--organization"] : null).ConfigureAwait(false);
             if (communicationLifetime.IsCancellationRequested)
             {
                 await started.DisposeAsync().ConfigureAwait(false);

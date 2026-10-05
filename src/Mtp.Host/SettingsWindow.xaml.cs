@@ -3,6 +3,7 @@ using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using Mtp.Platform.Core;
+using Mtp.Contracts;
 using Windows.UI.ViewManagement;
 
 namespace Mtp.Host;
@@ -242,6 +243,21 @@ public sealed partial class SettingsWindow : Window
             row.Visible.IsOn = component.IsVisible;
             row.Up.IsEnabled = index > 0;
             row.Down.IsEnabled = index < snapshot.Components.Count - 1;
+            var organization = snapshot.Groupings.FirstOrDefault(value => value.Identity == component.Identity);
+            row.Grouping.Visibility = Show(organization is not null);
+            if (organization is not null)
+            {
+                row.Grouping.IsEnabled = organization.Capability == DynamicGrouping.UserChoice;
+                var choices = organization.Capability == DynamicGrouping.UserChoice
+                    ? new[] { DynamicGrouping.Together, DynamicGrouping.Separate } : new[] { organization.Capability };
+                if (!row.Grouping.Items.Cast<ComboBoxItem>().Select(value => (DynamicGrouping)value.Tag).SequenceEqual(choices))
+                {
+                    row.Grouping.Items.Clear();
+                    foreach (var choice in choices) row.Grouping.Items.Add(new ComboBoxItem
+                    { Content = choice == DynamicGrouping.Together ? "合并显示" : "分别显示", Tag = choice });
+                }
+                row.Grouping.SelectedItem = row.Grouping.Items.Cast<ComboBoxItem>().Single(value => (DynamicGrouping)value.Tag == organization.Effective);
+            }
         }
         ComponentsEmpty.Visibility = Show(snapshot.Components.Count == 0);
     }
@@ -279,6 +295,10 @@ public sealed partial class SettingsWindow : Window
         var visible = new ToggleSwitch { MinWidth = 0, OnContent = "", OffContent = "", VerticalAlignment = VerticalAlignment.Center };
         var up = new Button { Content = new FontIcon { Glyph = "\uE70E" }, VerticalAlignment = VerticalAlignment.Center };
         var down = new Button { Content = new FontIcon { Glyph = "\uE70D" }, VerticalAlignment = VerticalAlignment.Center };
+        var grouping = new ComboBox { MinWidth = 110, VerticalAlignment = VerticalAlignment.Center, Visibility = Visibility.Collapsed };
+        panel.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+        AutomationProperties.SetAutomationId(grouping, "mtp-settings-grouping-" + key);
+        AutomationProperties.SetName(grouping, "组织 " + key);
         AutomationProperties.SetAutomationId(panel, "mtp-settings-component-" + key);
         AutomationProperties.SetAutomationId(visible, "mtp-settings-visible-" + key);
         AutomationProperties.SetAutomationId(up, "mtp-settings-up-" + key);
@@ -290,10 +310,19 @@ public sealed partial class SettingsWindow : Window
         RoutedEventHandler toggled = (_, _) => { if (!rendering && !disposed) Apply(() => settings.SetVisibility(identity, visible.IsOn)); };
         RoutedEventHandler upward = (_, _) => Apply(() => settings.MoveComponent(identity, -1));
         RoutedEventHandler downward = (_, _) => Apply(() => settings.MoveComponent(identity, 1));
+        SelectionChangedEventHandler grouped = (_, _) =>
+        {
+            if (!rendering && !disposed && grouping.SelectedItem is ComboBoxItem { Tag: DynamicGrouping value })
+                Apply(() => settings.SetGrouping(identity, value));
+        };
+        grouping.SelectionChanged += grouped;
         visible.Toggled += toggled; up.Click += upward; down.Click += downward;
         Grid.SetColumn(visible, 1); Grid.SetColumn(up, 2); Grid.SetColumn(down, 3);
+        Grid.SetColumn(grouping, 4);
         panel.Children.Add(labels); panel.Children.Add(visible); panel.Children.Add(up); panel.Children.Add(down);
-        return new(panel, title, details, visible, up, down, () => { visible.Toggled -= toggled; up.Click -= upward; down.Click -= downward; });
+        panel.Children.Add(grouping);
+        return new(panel, title, details, visible, up, down, grouping, () =>
+        { visible.Toggled -= toggled; up.Click -= upward; down.Click -= downward; grouping.SelectionChanged -= grouped; });
     }
 
     private static void KeepPosition(Panel owner, UIElement child, int index)
@@ -401,6 +430,6 @@ public sealed partial class SettingsWindow : Window
         lifetime.Dispose();
     }
 
-    private sealed record ComponentRow(Grid Panel, TextBlock Title, TextBlock Details, ToggleSwitch Visible, Button Up, Button Down, Action Detach);
+    private sealed record ComponentRow(Grid Panel, TextBlock Title, TextBlock Details, ToggleSwitch Visible, Button Up, Button Down, ComboBox Grouping, Action Detach);
     private sealed record ApplicationRow(StackPanel Panel, TextBlock Title, TextBlock Status, TextBlock Groups, TextBlock Recovery, Button Retry, Action Detach);
 }

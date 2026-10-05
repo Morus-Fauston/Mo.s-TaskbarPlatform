@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using Mtp.Contracts;
 using Mtp.Platform.Core;
 
 namespace Mtp.Host;
@@ -6,14 +7,17 @@ namespace Mtp.Host;
 public sealed record HostGroupPresentationSnapshot(TaskbarGroupLayoutResult Layout,
     IReadOnlyList<HostComponentDisplayModel> Components, IReadOnlyList<HostItemPresentation> Items,
     IReadOnlyDictionary<TaskbarComponentKey, HostComponentDisplayModel> ComponentsByKey,
-    IReadOnlyDictionary<TaskbarItemKey, HostItemPresentation> ItemsByKey);
+    IReadOnlyDictionary<TaskbarItemKey, HostItemPresentation> ItemsByKey)
+{
+    public IReadOnlyList<HostIslandInstance> Instances { get; init; } = Array.Empty<HostIslandInstance>();
+}
 
 /// <summary>Projects stable, visible Host entries into fixed-right-edge layout targets without owning screen state.</summary>
 public static class HostGroupPresentation
 {
     public static HostGroupPresentationSnapshot Build(IReadOnlyList<HostComponentDisplayModel> orderedComponents,
         BrokerStateStore? states, ItemPresentationController? presentations, string screenId, bool compact = false,
-        double availableWidthDip = double.MaxValue)
+        double availableWidthDip = double.MaxValue, IReadOnlyDictionary<string, DynamicGrouping>? grouping = null)
     {
         ArgumentNullException.ThrowIfNull(orderedComponents);
         if (orderedComponents.Count > TaskbarGroupLayout.MaximumComponents)
@@ -25,6 +29,7 @@ public static class HostGroupPresentation
         var componentsByKey = new Dictionary<TaskbarComponentKey, HostComponentDisplayModel>();
         var itemsByKey = new Dictionary<TaskbarItemKey, HostItemPresentation>();
         var allItems = new List<HostItemPresentation>();
+        var instances = new List<HostIslandInstance>();
         var applications = states?.Snapshots.ToDictionary(value => value.ApplicationId, StringComparer.Ordinal)
             ?? new Dictionary<string, BrokerApplicationSnapshot>(StringComparer.Ordinal);
         var declaredIdentities = applications.Values.Where(value => value.Declaration is not null)
@@ -50,13 +55,32 @@ public static class HostGroupPresentation
                 var currentItems = sourceItems[key].Where(value => value.SessionId == application!.SessionId &&
                     application.ItemOccurrences.TryGetValue(value.Handle.Item, out var occurrence) && occurrence == value.PresenceGeneration).ToArray();
                 if (currentItems.Length == 0) continue;
+                // Presentation synchronization can see a newer Broker frame than this captured snapshot.
+                // Keep this projection's fields and activity references on one authoritative frame.
+                var acceptedEntry = application!.State!.DynamicEntries!.Single(value => value.FeatureGroupId == key.FeatureGroupId && value.ComponentId == key.ComponentId);
+                var presentedItems = currentItems.ToDictionary(value => value.Item.ItemId, StringComparer.Ordinal);
+                currentItems = acceptedEntry.Content.Items.Where(value => presentedItems.ContainsKey(value.ItemId))
+                    .Select(value => presentedItems[value.ItemId] with { Item = value, IsInteractive = application.IsInteractive }).ToArray();
+                if (currentItems.Length == 0) continue;
+                var declaration = application!.Declaration!.DynamicContents.Single(value => value.ComponentIdentity == component.Identity).Declaration;
+                IReadOnlyList<HostIslandInstance> entryInstances = [];
+                if (declaration.Kind == DynamicContentKind.LiveIsland)
+                {
+                    var activities = acceptedEntry.Content.Activities;
+                    entryInstances = HostIslandOrganization.Project(key, declaration.Grouping,
+                        grouping?.GetValueOrDefault(HostSettingsController.IdentityKey(component.Identity)), activities, currentItems);
+                    instances.AddRange(entryInstances);
+                    currentItems = entryInstances.SelectMany(value => value.Items).ToArray();
+                }
+                var instanceByItem = entryInstances.SelectMany(instance => instance.Items.Select(item => (item.Item.ItemId, instance.InstanceId)))
+                    .ToDictionary(value => value.ItemId, value => value.InstanceId, StringComparer.Ordinal);
                 var itemMeasurements = new List<TaskbarMeasuredItem>(currentItems.Length);
                 foreach (var item in currentItems)
                 {
                     var itemKey = new TaskbarItemKey(key, item.Item.ItemId, item.PresenceGeneration);
                     itemsByKey.Add(itemKey, item);
                     allItems.Add(item);
-                    itemMeasurements.Add(new(itemKey, DynamicWidthMetrics.Measure(item.Presentation.Width, compact), item.IsInteractive));
+                    itemMeasurements.Add(new(itemKey, DynamicWidthMetrics.Measure(item.Presentation.Width, compact), item.IsInteractive, instanceByItem.GetValueOrDefault(item.Item.ItemId)));
                 }
                 measured.Add(new(key, Items: itemMeasurements));
             }
@@ -66,6 +90,6 @@ public static class HostGroupPresentation
         var layout = TaskbarGroupLayout.Calculate(measured, 32, availableWidthDip);
         return new(layout, visible.AsReadOnly(), allItems.AsReadOnly(),
             new ReadOnlyDictionary<TaskbarComponentKey, HostComponentDisplayModel>(componentsByKey),
-            new ReadOnlyDictionary<TaskbarItemKey, HostItemPresentation>(itemsByKey));
+            new ReadOnlyDictionary<TaskbarItemKey, HostItemPresentation>(itemsByKey)) { Instances = instances.AsReadOnly() };
     }
 }

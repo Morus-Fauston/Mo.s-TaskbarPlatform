@@ -1,6 +1,8 @@
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Collections.ObjectModel;
+using Mtp.Contracts;
 using Mtp.Platform.Core;
 
 namespace Mtp.Host;
@@ -37,6 +39,14 @@ public sealed class LocalHostSettingsPreferenceStore(string path) : IHostSetting
 
     public CoreResult<HostSettingsPreferences> CommitOrder(IReadOnlyList<string> order) =>
         Commit(current => current with { ComponentOrder = order });
+
+    public CoreResult<HostSettingsPreferences> CommitGrouping(StableIdentity identity, DynamicGrouping grouping) =>
+        Commit(current =>
+        {
+            var values = new Dictionary<string, DynamicGrouping>(current.IslandGrouping ?? new Dictionary<string, DynamicGrouping>(), StringComparer.Ordinal)
+            { [HostSettingsController.IdentityKey(identity)] = grouping };
+            return current with { IslandGrouping = values };
+        });
 
     private CoreResult<HostSettingsPreferences> Commit(Func<HostSettingsPreferences, HostSettingsPreferences> change)
     {
@@ -97,7 +107,24 @@ public sealed class LocalHostSettingsPreferenceStore(string path) : IHostSetting
             }
             catch (JsonException) { return Invalid(); }
         }
-        return CoreResult<HostSettingsPreferences>.Success(preferences with { ComponentOrder = keys.AsReadOnly() });
+        if (preferences.IslandGrouping is { Count: > MaximumIdentities }) return Invalid();
+        var grouping = new Dictionary<string, DynamicGrouping>(StringComparer.Ordinal);
+        foreach (var pair in preferences.IslandGrouping ?? new Dictionary<string, DynamicGrouping>())
+        {
+            try
+            {
+                if (pair.Key is null || pair.Key.Length > 8192 || pair.Value is not (DynamicGrouping.Together or DynamicGrouping.Separate)) return Invalid();
+                var segments = JsonSerializer.Deserialize<string[]>(pair.Key);
+                if (segments is not { Length: 3 } || segments.Any(value => string.IsNullOrWhiteSpace(value) || value.Length > 256 || value != value.Trim())) return Invalid();
+                var canonical = JsonSerializer.Serialize(segments);
+                if (!grouping.TryAdd(canonical, pair.Value)) return Invalid();
+                seen.Add(canonical);
+                if (seen.Count > MaximumIdentities) return Invalid();
+            }
+            catch (JsonException) { return Invalid(); }
+        }
+        return CoreResult<HostSettingsPreferences>.Success(preferences with
+        { ComponentOrder = keys.AsReadOnly(), IslandGrouping = new ReadOnlyDictionary<string, DynamicGrouping>(grouping) });
     }
 
     private static CoreResult<HostSettingsPreferences> Invalid() =>

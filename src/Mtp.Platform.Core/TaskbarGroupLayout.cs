@@ -11,7 +11,7 @@ public readonly record struct TaskbarDipRect(double X, double Y, double Width, d
     public double Right => X + Width;
     public double Bottom => Y + Height;
 }
-public sealed record TaskbarMeasuredItem(TaskbarItemKey Key, double WidthDip, bool IsInteractive = true);
+public sealed record TaskbarMeasuredItem(TaskbarItemKey Key, double WidthDip, bool IsInteractive = true, string? InstanceId = null);
 public sealed record TaskbarMeasuredComponent(TaskbarComponentKey Key, double FixedWidthDip = 0,
     IReadOnlyList<TaskbarMeasuredItem>? Items = null);
 public sealed record TaskbarComponentPlacement(TaskbarComponentKey Key, TaskbarDipRect Bounds);
@@ -64,16 +64,27 @@ public static class TaskbarGroupLayout
                 throw new ArgumentOutOfRangeException(nameof(orderedComponents), "Too many current items.");
             var items = component.Items?.ToArray() ?? Array.Empty<TaskbarMeasuredItem>();
             double width = component.FixedWidthDip;
+            var instances = new HashSet<string>(StringComparer.Ordinal);
+            TaskbarMeasuredItem? previous = null;
             foreach (var item in items)
             {
                 if (item is null || item.Key is null || item.Key.Component != component.Key ||
                     !ValidId(item.Key.ItemId) || item.Key.PresenceGeneration < 0 ||
                     !ValidDimension(item.WidthDip) || !itemKeys.Add(item.Key) ||
-                    !stableItems.Add((item.Key.Component, item.Key.ItemId)))
+                    !stableItems.Add((item.Key.Component, item.Key.ItemId)) ||
+                    item.InstanceId is not null && !ValidId(item.InstanceId))
                     throw new ArgumentException("Invalid or duplicate item measurement.", nameof(orderedComponents));
+                if (previous is not null)
+                {
+                    if ((previous.InstanceId is null) != (item.InstanceId is null))
+                        throw new ArgumentException("Instance membership must cover the entire entry.", nameof(orderedComponents));
+                    width += Gap(previous, item);
+                }
+                if (item.InstanceId is not null && (previous is null || previous.InstanceId != item.InstanceId) && !instances.Add(item.InstanceId))
+                    throw new ArgumentException("An instance must be contiguous.", nameof(orderedComponents));
                 width += item.WidthDip;
+                previous = item;
             }
-            if (items.Length > 1) width += ItemGapDip * (items.Length - 1);
             if (width > 0) components.Add((component.Key, width, items));
         }
         if (components.Count == 0)
@@ -92,16 +103,20 @@ public static class TaskbarGroupLayout
         for (var index = 0; index < components.Count; index++)
         {
             double x = componentPlacements[index].Bounds.X;
-            foreach (var item in components[index].Items)
+            var items = components[index].Items;
+            for (int itemIndex = 0; itemIndex < items.Length; itemIndex++)
             {
+                var item = items[itemIndex];
                 itemPlacements.Add(new(item.Key, new(x, 0, item.WidthDip, heightDip), item.IsInteractive));
-                x += item.WidthDip + ItemGapDip;
+                x += item.WidthDip + (itemIndex + 1 < items.Length ? Gap(item, items[itemIndex + 1]) : 0);
             }
         }
         return new(widthDip, heightDip, Array.AsReadOnly(componentPlacements), itemPlacements.AsReadOnly(), widthDip > availableWidthDip);
     }
 
     private static bool ValidDimension(double value) => double.IsFinite(value) && value > 0 && value <= MaximumDimensionDip;
+    private static double Gap(TaskbarMeasuredItem left, TaskbarMeasuredItem right) =>
+        left.InstanceId == right.InstanceId ? ItemGapDip : ComponentGapDip;
     private static bool ValidId(string? value) => !string.IsNullOrWhiteSpace(value) && value.Length <= 256;
     private static bool ValidKey(TaskbarComponentKey? key) => key is not null &&
         ValidId(key.ApplicationId) && ValidId(key.FeatureGroupId) && ValidId(key.ComponentId);

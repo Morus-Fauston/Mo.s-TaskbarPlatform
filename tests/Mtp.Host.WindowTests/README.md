@@ -53,3 +53,7 @@ powershell -ExecutionPolicy Bypass -File tests/Mtp.Host.WindowTests/Verify-HostE
 回读已归档报告时增加 `-CapturedBinaryDirectory '<本轮归档目录>/binary-identity'`，仍严格匹配报告内的 DLL/EXE 哈希，避免后续构建覆盖原路径后失去身份依据。迁移时保存的旧身份副本只对应迁移时当前二进制，不自动匹配更早的报告。
 
 独立脚本核对报告与原始样本、CPU 两种口径、二进制哈希及缺失指标原因。测试不运行完整 30 分钟，不替维护者处置 05K/05L。
+
+## 五期实况岛组织
+
+使用 `-Scenario organization -EvidenceDirectory .scratch/五期开发/evidence/06/<新批次>` 串行执行真实 SDK、生产设置和自有内容岛组织回归。Host 的 `--organization-demo` 提供合并/分别显示、共享活动、展开、混排及许可演示。脚本归档 `organization-*` 日志与截图；每次使用新证据目录。自有离屏内容岛不代替真实任务栏和多屏人工确认。

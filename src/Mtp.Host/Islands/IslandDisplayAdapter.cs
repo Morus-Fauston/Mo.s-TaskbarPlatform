@@ -1,4 +1,5 @@
 using Mtp.Platform.Core;
+using Mtp.Contracts;
 
 namespace Mtp.Host.Islands;
 
@@ -66,7 +67,8 @@ internal sealed class IslandDisplayAdapter : IIslandSessionAdapter
         return PrepareTarget(preferences, value, configuration, unavailable, null);
     }
     public CoreResult<string> PrepareGroup(TaskbarDockPreferences preferences, IReadOnlyList<HostComponentDisplayModel> components,
-        HostTestConfiguration configuration, bool unavailable, BrokerStateStore? states, ItemPresentationController? presentations)
+        HostTestConfiguration configuration, bool unavailable, BrokerStateStore? states, ItemPresentationController? presentations,
+        IReadOnlyDictionary<string, DynamicGrouping>? grouping = null)
     {
         groupMode = true;
         return PrepareTarget(preferences, components.FirstOrDefault(value => value.IsVisible), configuration, unavailable,
@@ -74,7 +76,7 @@ internal sealed class IslandDisplayAdapter : IIslandSessionAdapter
             {
                 presentations?.UpdateScreens([geometry.DisplayId]);
                 double available = Math.Max(0, ((long)(geometry.NotificationBounds?.X ?? geometry.TaskbarBounds.X) - geometry.TaskbarBounds.X) * 96d / Math.Max(1u, geometry.Dpi) - preferences.RightGapDip);
-                return HostGroupPresentation.Build(components, states, presentations, geometry.DisplayId, availableWidthDip: available);
+                return HostGroupPresentation.Build(components, states, presentations, geometry.DisplayId, availableWidthDip: available, grouping: grouping);
             });
     }
     private CoreResult<string> PrepareTarget(TaskbarDockPreferences preferences, HostComponentDisplayModel? value,

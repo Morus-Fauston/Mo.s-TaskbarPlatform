@@ -1,5 +1,6 @@
 using System.IO;
 using System.Text;
+using Mtp.Contracts;
 using Mtp.Platform.Core;
 
 namespace Mtp.Host;
@@ -120,6 +121,7 @@ public sealed class HostPreferenceStorage
         public CoreResult<HostSettingsPreferences> Load() => CoreResult<HostSettingsPreferences>.Failure(error);
         public CoreResult<HostSettingsPreferences> CommitAppearance(HostAppearancePreferences appearance) => Load();
         public CoreResult<HostSettingsPreferences> CommitOrder(IReadOnlyList<string> order) => Load();
+        public CoreResult<HostSettingsPreferences> CommitGrouping(StableIdentity identity, DynamicGrouping grouping) => Load();
     }
 
     private sealed class UnavailableDisplayStore(StructuredError error) : IComponentDisplayPreferenceStore

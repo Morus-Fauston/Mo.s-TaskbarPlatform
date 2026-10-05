@@ -49,7 +49,7 @@ public sealed class HostSettingsController : IDisposable
         {
             if (disposed) return new(navigation.Snapshot, preferences, [], [], "设置已关闭。", new("settings_closed", "设置已关闭。"));
             return new(navigation.Snapshot, preferences, OrderedComponents(),
-                Array.AsReadOnly(snapshots().ToArray()), materialStatus(), error);
+                Array.AsReadOnly(snapshots().ToArray()), materialStatus(), error) { Groupings = IslandGroupings() };
         }
     }
 
@@ -126,7 +126,35 @@ public sealed class HostSettingsController : IDisposable
     private IReadOnlyList<HostComponentDisplayModel> OrderedComponents()
     {
         var rank = preferences.ComponentOrder.Select((key, index) => (key, index)).ToDictionary(value => value.key, value => value.index, StringComparer.Ordinal);
-        return Array.AsReadOnly(display.CurrentComponents.OrderBy(value => rank.GetValueOrDefault(IdentityKey(value.Identity), int.MaxValue)).ToArray());
+        var islands = IslandGroupings().Select(value => value.Identity).ToHashSet();
+        return Array.AsReadOnly(display.CurrentComponents.OrderBy(value => rank.GetValueOrDefault(IdentityKey(value.Identity), int.MaxValue))
+            .ThenBy(value => islands.Contains(value.Identity) ? 0 : 1).ToArray());
+    }
+
+    private IReadOnlyList<HostIslandGrouping> IslandGroupings() => Array.AsReadOnly(snapshots()
+        .Where(value => value.Declaration is not null).SelectMany(value => value.Declaration!.DynamicContents)
+        .Where(value => value.Declaration.Kind == DynamicContentKind.LiveIsland)
+        .Select(value => new HostIslandGrouping(value.ComponentIdentity, value.Declaration.Grouping,
+            HostIslandOrganization.Effective(value.Declaration.Grouping,
+                preferences.IslandGrouping?.GetValueOrDefault(IdentityKey(value.ComponentIdentity)))))
+        .ToArray());
+
+    public CoreResult<HostSettingsSnapshot> SetGrouping(StableIdentity identity, DynamicGrouping grouping)
+    {
+        lock (gate)
+        {
+            if (disposed) return Fail("settings_closed", "设置已关闭。");
+            var current = IslandGroupings().FirstOrDefault(value => value.Identity == identity);
+            if (current is null) return Fail("island_not_declared", "当前没有该实况岛入口。");
+            if (grouping is not (DynamicGrouping.Together or DynamicGrouping.Separate) ||
+                current.Capability != DynamicGrouping.UserChoice && grouping != current.Capability)
+                return Fail("grouping_not_supported", "提供方不支持该组织方式。");
+            var committed = store.CommitGrouping(identity, grouping);
+            error = committed.Error;
+            if (committed.IsSuccess) preferences = committed.Value!;
+            Notify();
+            return committed.IsSuccess ? CoreResult<HostSettingsSnapshot>.Success(GetSnapshot()) : CoreResult<HostSettingsSnapshot>.Failure(error!);
+        }
     }
 
     public CoreResult<HostSettingsSnapshot> SetAppearance(HostAppearancePreferences appearance)
