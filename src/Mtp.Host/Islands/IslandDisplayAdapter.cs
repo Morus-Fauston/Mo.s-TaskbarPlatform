@@ -27,6 +27,10 @@ internal sealed class IslandDisplayAdapter : IIslandSessionAdapter
     private readonly System.Diagnostics.Stopwatch clock = System.Diagnostics.Stopwatch.StartNew();
     private readonly Microsoft.UI.Xaml.DispatcherTimer frameTimer = new() { Interval = TimeSpan.FromMilliseconds(16) };
     private readonly Windows.UI.ViewManagement.UISettings uiSettings = new();
+    private readonly Microsoft.UI.Dispatching.DispatcherQueue dispatcher = Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread();
+    private Windows.Foundation.TypedEventHandler<Windows.UI.ViewManagement.UISettings, object>? textScaleChanged;
+    private long environmentGeneration;
+    private long textScaleRefreshQueued;
     private bool reducedMotion;
     private bool groupMode;
     private bool animationFailed;
@@ -42,6 +46,9 @@ internal sealed class IslandDisplayAdapter : IIslandSessionAdapter
     private HostComponentDisplayModel? component;
     private HostTestConfiguration config = new();
     private HostAppearancePreferences? appearance;
+    private HostPresentationEnvironment environment = new();
+    private double lastTextScale = 1d;
+    internal HostPresentationEnvironment Environment => environment;
     public IslandDisplayAdapter(Func<TaskbarDockPreferences, CoreResult<IslandTarget>> capture, Action<string, object?> record,
         Func<Mtp.Contracts.ActionSlotReference, Task>? invokeAction = null,
         Func<HostComponentDisplayModel, Templates.TemplateRenderer?>? createTemplate = null,
@@ -76,8 +83,57 @@ internal sealed class IslandDisplayAdapter : IIslandSessionAdapter
             {
                 presentations?.UpdateScreens([geometry.DisplayId]);
                 double available = Math.Max(0, ((long)(geometry.NotificationBounds?.X ?? geometry.TaskbarBounds.X) - geometry.TaskbarBounds.X) * 96d / Math.Max(1u, geometry.Dpi) - preferences.RightGapDip);
-                return HostGroupPresentation.Build(components, states, presentations, geometry.DisplayId, availableWidthDip: available, grouping: grouping);
+                var current = ReadPresentationEnvironment(geometry);
+                return HostGroupPresentation.Build(components, states, presentations, geometry.DisplayId, availableWidthDip: available, grouping: grouping, environment: current);
             });
+    }
+    private HostPresentationEnvironment ReadPresentationEnvironment(TaskbarDockGeometry geometry)
+    {
+        var heightDip = geometry.TaskbarBounds.Height * 96d / Math.Max(1u, geometry.Dpi);
+        try
+        {
+            var scale = uiSettings.TextScaleFactor;
+            if (double.IsFinite(scale) && scale >= 1d && scale <= 2.25d) lastTextScale = scale;
+            else record("text-scale-read-invalid", "保留最后有效文字比例。");
+        }
+        catch (Exception error) when (error is System.Runtime.InteropServices.COMException or UnauthorizedAccessException)
+        {
+            record("text-scale-read-failed", error.Message);
+        }
+        try { environment = HostPresentationEnvironment.FromTaskbar(heightDip, lastTextScale); }
+        catch (ArgumentOutOfRangeException error)
+        {
+            record("taskbar-environment-invalid", error.Message);
+            environment = new HostPresentationEnvironment(HostPresentationDensity.Normal, lastTextScale);
+        }
+        return environment;
+    }
+    private void SubscribeEnvironment()
+    {
+        if (textScaleChanged is not null) return;
+        var generation = Interlocked.Increment(ref environmentGeneration);
+        Windows.Foundation.TypedEventHandler<Windows.UI.ViewManagement.UISettings, object> handler = (_, _) => QueueTextScaleRefresh(generation);
+        uiSettings.TextScaleFactorChanged += handler;
+        textScaleChanged = handler;
+    }
+    private void QueueTextScaleRefresh(long generation)
+    {
+        if (Volatile.Read(ref environmentGeneration) != generation ||
+            Interlocked.CompareExchange(ref textScaleRefreshQueued, generation, 0) != 0) return;
+        if (!dispatcher.TryEnqueue(() =>
+        {
+            Interlocked.CompareExchange(ref textScaleRefreshQueued, 0, generation);
+            if (Volatile.Read(ref environmentGeneration) != generation || textScaleChanged is null || !IsAlive) return;
+            record("text-scale-changed", "重新读取当前比例并原位重测；不改变重嵌代次。");
+            Lost?.Invoke(); // The owner refreshes the current layout on this UI thread.
+        })) Interlocked.CompareExchange(ref textScaleRefreshQueued, 0, generation);
+    }
+    private void UnsubscribeEnvironment()
+    {
+        Interlocked.Increment(ref environmentGeneration); // Reject callbacks already in transit before releasing the subscription.
+        if (textScaleChanged is not { } handler) return;
+        uiSettings.TextScaleFactorChanged -= handler;
+        textScaleChanged = null;
     }
     private CoreResult<string> PrepareTarget(TaskbarDockPreferences preferences, HostComponentDisplayModel? value,
         HostTestConfiguration configuration, bool unavailable, Func<TaskbarDockGeometry, HostGroupPresentationSnapshot>? build)
@@ -128,6 +184,7 @@ internal sealed class IslandDisplayAdapter : IIslandSessionAdapter
         host.Lost += OnLost;
         try
         {
+            SubscribeEnvironment();
             if (!target.OwnedFixture) NativeWindows.ValidateExplorerTarget(target.Parent, target.Geometry.DisplayId);
             host.Start(target.Parent, bounds, component, config, FailAfter);
             if (appearance is not null) host.ApplyAppearance(appearance);
@@ -216,6 +273,8 @@ internal sealed class IslandDisplayAdapter : IIslandSessionAdapter
         appliedTimerReadings = [];
         appliedPresetReadings = [];
         lastFrame = null;
+        try { UnsubscribeEnvironment(); }
+        catch (Exception error) { return CoreResult<bool>.Failure(new("island_cleanup_pending", "环境订阅清理未完成，保留所有权供重试：" + error.Message)); }
         if (host is null) return CoreResult<bool>.Success(true);
         try { host.Close(); host.Lost -= OnLost; host = null; return CoreResult<bool>.Success(true); }
         catch (Exception error) { return CoreResult<bool>.Failure(new("island_cleanup_pending", "内容岛清理未完成，保留所有权供重试：" + error.Message)); }

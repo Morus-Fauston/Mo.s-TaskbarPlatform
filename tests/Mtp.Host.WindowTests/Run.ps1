@@ -1,5 +1,5 @@
 param(
-    [ValidateSet('all', 'event', 'event-production', 'event-settings', 'broker', 'template', 'settings', 'dynamic', 'timer', 'hint', 'hint-window', 'interactive-hint', 'interactive-hint-motion', 'interactive-hint-production', 'flyout', 'flyout-production', 'flyout-create', 'flyout-scheduling', 'preset', 'organization')][string]$Scenario = 'all',
+    [ValidateSet('all', 'event', 'event-production', 'event-settings', 'broker', 'template', 'settings', 'dynamic', 'timer', 'hint', 'hint-window', 'interactive-hint', 'interactive-hint-motion', 'interactive-hint-production', 'flyout', 'flyout-production', 'flyout-create', 'flyout-scheduling', 'preset', 'organization', 'visual-environment', 'environment-recovery')][string]$Scenario = 'all',
     [string]$OutputDirectory = "$PSScriptRoot/bin/window-regression",
     [string]$EvidenceDirectory = "$PSScriptRoot/../../.scratch/二期开发/evidence/HostWindowRegression/run-$(Get-Date -Format 'yyyyMMdd-HHmmss-fff')-$([Guid]::NewGuid().ToString('N').Substring(0, 8))"
 )
@@ -37,6 +37,8 @@ if ($Scenario -eq 'flyout-scheduling') { $run.StartInfo.Arguments = '--flyout-sc
 if ($Scenario -eq 'flyout-create') { $run.StartInfo.Arguments = '--flyout-create-only' }
 if ($Scenario -eq 'flyout-production') { $run.StartInfo.Arguments = '--flyout-production-only' }
 if ($Scenario -eq 'organization') { $run.StartInfo.Arguments = '--organization-only' }
+if ($Scenario -eq 'visual-environment') { $run.StartInfo.Arguments = '--visual-environment-only' }
+if ($Scenario -eq 'environment-recovery') { $run.StartInfo.Arguments = '--environment-recovery-only' }
 if ($Scenario -eq 'preset') { $run.StartInfo.Arguments = '--preset-only' }
 if ($Scenario -eq 'dynamic') { $run.StartInfo.Arguments = '--dynamic-only' }
 if ($Scenario -eq 'settings') { $run.StartInfo.Arguments = '--settings-only' }
@@ -63,12 +65,12 @@ finally {
     }
     # Keep binaries in bin; preserve this run's logs, screenshots and report directories separately.
     foreach ($file in Get-ChildItem -LiteralPath $outputPath -File) {
-        if ($file.Extension -in @('.log', '.png', '.jsonl', '.csv') -and $file.LastWriteTimeUtc -ge $startedAt) {
+        if ($file.Extension -in @('.log', '.png', '.json', '.jsonl', '.csv') -and $file.LastWriteTimeUtc -ge $startedAt) {
             Copy-Item -LiteralPath $file.FullName -Destination $evidencePath
         }
     }
     foreach ($directory in Get-ChildItem -LiteralPath $outputPath -Directory) {
-        if ($directory.Name -notin $previousDirectories -and ($directory.Name -like 'console-*' -or $directory.Name -like 'display-selection-*' -or $directory.Name -like 'broker-*' -or $directory.Name -like 'template-*' -or $directory.Name -like 'settings-*' -or $directory.Name -like 'dynamic-*' -or $directory.Name -like 'timer-*' -or $directory.Name -like 'preset-*' -or $directory.Name -like 'flyout-*' -or $directory.Name -like 'organization-*' -or $directory.Name -like 'event-*' -or $directory.Name -like 'flyout-stack-*' -or $directory.Name -like 'interactive-hint-*' -or $directory.Name -like 'hint-input-*' -or $directory.Name -like 'hint-settings-native-*')) {
+        if ($directory.Name -notin $previousDirectories -and ($directory.Name -like 'console-*' -or $directory.Name -like 'display-selection-*' -or $directory.Name -like 'broker-*' -or $directory.Name -like 'template-*' -or $directory.Name -like 'settings-*' -or $directory.Name -like 'dynamic-*' -or $directory.Name -like 'timer-*' -or $directory.Name -like 'preset-*' -or $directory.Name -like 'flyout-*' -or $directory.Name -like 'organization-*' -or $directory.Name -like 'event-*' -or $directory.Name -like 'flyout-stack-*' -or $directory.Name -like 'interactive-hint-*' -or $directory.Name -like 'hint-input-*' -or $directory.Name -like 'hint-settings-native-*' -or $directory.Name -like 'visual-environment-*' -or $directory.Name -like 'environment-recovery-*')) {
             Copy-Item -LiteralPath $directory.FullName -Destination $evidencePath -Recurse
         }
     }

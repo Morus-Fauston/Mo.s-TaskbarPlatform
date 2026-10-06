@@ -48,7 +48,12 @@ public sealed class HostGroupPresentationTests
         var fixture = new Fixture();
         var compact = fixture.Build(compact: true);
         Assert.Equal(new double[] { 28, 56 }, compact.Layout.Items.Select(value => value.Bounds.Width));
-        Assert.Equal(592, compact.Layout.WidthDip);
+        Assert.Equal(532, compact.Layout.WidthDip);
+        Assert.Equal(new double[] { 210, 88, 210 }, compact.Layout.Components.Select(value => value.Bounds.Width));
+        Assert.Equal(32, compact.Layout.HeightDip);
+        var large = HostGroupPresentation.Build(fixture.Components, fixture.States, fixture.Presentations, "screen",
+            environment: new HostPresentationEnvironment(HostPresentationDensity.Normal, 2.25));
+        Assert.Equal(32, large.Layout.HeightDip);
         var overflow = HostGroupPresentation.Build(fixture.Components, fixture.States, fixture.Presentations, "screen", availableWidthDip: 1);
         Assert.True(overflow.Layout.Overflows); Assert.Equal(604, overflow.Layout.WidthDip);
         Assert.Equal(2, overflow.Items.Count); Assert.Equal(3, overflow.Components.Count);

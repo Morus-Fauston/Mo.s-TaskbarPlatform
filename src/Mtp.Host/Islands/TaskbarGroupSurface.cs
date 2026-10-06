@@ -99,9 +99,9 @@ internal sealed class TaskbarGroupSurface : UserControl, IDisposable
                 visual = new TaskbarItemVisual(placement.Key, activate);
                 items.Add(placement.Key, visual);
                 canvas.Children.Add(visual.Root);
-                visual.Update(model!);
+                visual.Update(model!, snapshot.Environment);
             }
-            else if (current && updateFields) visual.Update(model!);
+            else if (current && updateFields) visual.Update(model!, snapshot.Environment);
             SetBounds(visual.Root, visual.Clip, placement.Bounds, frame.WidthDip, placement.Opacity);
             visual.SetInteractive(current && model!.IsInteractive && placement.IsInteractive && !placement.IsExiting &&
                 placement.Bounds.Width > 0 && placement.Bounds.Height > 0 && placement.Opacity > 0);

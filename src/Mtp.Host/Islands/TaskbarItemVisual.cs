@@ -26,7 +26,7 @@ internal sealed class TaskbarItemVisual : IDisposable
     private readonly TextBlock measure = Label();
     private readonly TranslateTransform textTranslation = new(), busyTranslation = new();
     private readonly SymbolIcon primaryIcon = new(Symbol.Play);
-    private readonly FontIcon statusIcon = new() { FontSize = 11, IsHitTestVisible = false };
+    private readonly FontIcon statusIcon = new() { FontSize = 11, IsTextScaleFactorEnabled = false, IsHitTestVisible = false };
     private readonly Ellipse ring = new() { Width = 24, Height = 24, StrokeThickness = 1, IsHitTestVisible = false };
     private readonly Ellipse busyDot = new() { Width = 4, Height = 4, IsHitTestVisible = false };
     private readonly Rectangle barTrack = new() { Width = 24, Height = 3, Opacity = 0.25, IsHitTestVisible = false };
@@ -38,12 +38,13 @@ internal sealed class TaskbarItemVisual : IDisposable
     private readonly HashSet<string> pending = [];
     private HostItemPresentation? model;
     private TimerDisplayReading? timerReading;
-    private bool disposed, interactive, composite, graphVisible, barMode, neutralCounter;
+    private bool disposed, interactive, composite, singleRowComposite, graphVisible, barMode, neutralCounter;
     private long inputGeneration;
 
     private static TextBlock Label() => new()
     {
         FontSize = 11,
+        IsTextScaleFactorEnabled = false,
         VerticalAlignment = VerticalAlignment.Center,
         TextTrimming = TextTrimming.CharacterEllipsis,
         TextWrapping = TextWrapping.NoWrap,
@@ -107,12 +108,15 @@ internal sealed class TaskbarItemVisual : IDisposable
 
     private Binding ForegroundBinding() => new() { Source = blank, Path = new PropertyPath(nameof(Control.Foreground)), Mode = BindingMode.OneWay };
 
-    public void Update(HostItemPresentation value)
+    public void Update(HostItemPresentation value, HostPresentationEnvironment environment)
     {
         if (model?.SessionId != value.SessionId) { inputGeneration++; pending.Clear(); activationTriggers.Clear(); timerReading = null; }
-        bool rebuild = model?.Presentation != value.Presentation;
+        bool nextSingleRow = value.Presentation.Template == PresetTemplate.Composite && environment.TextScale > 1;
+        bool rebuild = model?.Presentation != value.Presentation || singleRowComposite != nextSingleRow;
         model = value;
         composite = value.Presentation.Template == PresetTemplate.Composite;
+        singleRowComposite = nextSingleRow;
+        foreach (var text in new[] { label, countLabel, timerLabel, progressLabel, measure }) text.FontSize = 11 * environment.TextScale;
         neutralCounter = value.Presentation.Template == PresetTemplate.Counter && value.Presentation.Variant == PresetVariant.Default;
         graphVisible = value.Presentation.Variant != PresetVariant.Text && (value.Presentation.Fields.HasFlag(ContentFields.Progress) ||
             value.Presentation.Template is PresetTemplate.Timer or PresetTemplate.Counter);
@@ -142,13 +146,10 @@ internal sealed class TaskbarItemVisual : IDisposable
     {
         textGrid.Children.Clear(); textGrid.ColumnDefinitions.Clear(); textGrid.RowDefinitions.Clear();
         metrics.Children.Clear(); metrics.ColumnDefinitions.Clear();
-        textGrid.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
-        textGrid.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
-        Grid.SetColumn(statusIcon, 0); Grid.SetColumn(textViewport, 1);
+        Grid.SetRow(metrics, 0); Grid.SetColumn(metrics, 0); Grid.SetColumnSpan(metrics, 1);
+        Grid.SetRow(statusIcon, 0); Grid.SetRow(textViewport, 0);
         if (composite)
         {
-            textGrid.RowDefinitions.Add(new() { Height = new GridLength(16) });
-            textGrid.RowDefinitions.Add(new() { Height = new GridLength(16) });
             foreach (var text in new[] { countLabel, timerLabel, progressLabel }.Where(text => text == countLabel
                 ? model!.Presentation.Fields.HasFlag(ContentFields.Counter) : text == timerLabel
                     ? model!.Presentation.Fields.HasFlag(ContentFields.Timer) : model!.Presentation.Fields.HasFlag(ContentFields.Progress)))
@@ -156,10 +157,23 @@ internal sealed class TaskbarItemVisual : IDisposable
                 metrics.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
                 Grid.SetColumn(text, metrics.Children.Count); metrics.Children.Add(text);
             }
-            Grid.SetColumnSpan(metrics, 2); textGrid.Children.Add(metrics);
-            Grid.SetRow(statusIcon, 1); Grid.SetRow(textViewport, 1);
+            textGrid.Children.Add(metrics);
+            if (singleRowComposite)
+            {
+                // Every field keeps one bounded column inside the same fixed-height slot.
+                textGrid.ColumnDefinitions.Add(new() { Width = new GridLength(metrics.Children.Count, GridUnitType.Star) });
+            }
+            else
+            {
+                textGrid.RowDefinitions.Add(new() { Height = new GridLength(16) });
+                textGrid.RowDefinitions.Add(new() { Height = new GridLength(16) });
+                Grid.SetColumnSpan(metrics, 2);
+                Grid.SetRow(statusIcon, 1); Grid.SetRow(textViewport, 1);
+            }
         }
-        else { Grid.SetRow(statusIcon, 0); Grid.SetRow(textViewport, 0); }
+        textGrid.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+        textGrid.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
+        Grid.SetColumn(statusIcon, singleRowComposite ? 1 : 0); Grid.SetColumn(textViewport, singleRowComposite ? 2 : 1);
         textGrid.Children.Add(statusIcon); textGrid.Children.Add(textViewport);
     }
 
@@ -182,7 +196,7 @@ internal sealed class TaskbarItemVisual : IDisposable
         label.Width = scroll ? GetMeasurement().TextWidthDip : double.NaN;
         label.HorizontalAlignment = neutralCounter ? HorizontalAlignment.Center : HorizontalAlignment.Left;
         textTranslation.X = scroll ? value.TextOffsetDip : 0;
-        double height = composite ? 16 : Math.Max(1, Root.Height);
+        double height = composite && !singleRowComposite ? 16 : Math.Max(1, Root.Height);
         textClip.Rect = new Rect(0, 0, GetMeasurement().ViewportWidthDip, height);
     }
 
@@ -211,7 +225,7 @@ internal sealed class TaskbarItemVisual : IDisposable
         double available = textViewport.ActualWidth;
         if (available <= 0) available = Math.Max(0, Root.Width - (graphVisible && !neutralCounter ? 28 : 0) -
             (primary.Visibility == Visibility.Visible ? 32 : 0) - (secondary.Visibility == Visibility.Visible ? 32 : 0) -
-            (statusIcon.Visibility == Visibility.Visible ? 12 : 0));
+            (statusIcon.Visibility == Visibility.Visible ? 12 : 0)) / (singleRowComposite ? metrics.Children.Count + 1 : 1);
         return new(key, Math.Min(TaskbarGroupLayout.MaximumDimensionDip, measure.DesiredSize.Width), Math.Max(0, available));
     }
 

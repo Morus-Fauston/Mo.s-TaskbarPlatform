@@ -10,6 +10,7 @@ public sealed record HostGroupPresentationSnapshot(TaskbarGroupLayoutResult Layo
     IReadOnlyDictionary<TaskbarItemKey, HostItemPresentation> ItemsByKey)
 {
     public IReadOnlyList<HostIslandInstance> Instances { get; init; } = Array.Empty<HostIslandInstance>();
+    public HostPresentationEnvironment Environment { get; init; } = new();
 }
 
 /// <summary>Projects stable, visible Host entries into fixed-right-edge layout targets without owning screen state.</summary>
@@ -17,7 +18,8 @@ public static class HostGroupPresentation
 {
     public static HostGroupPresentationSnapshot Build(IReadOnlyList<HostComponentDisplayModel> orderedComponents,
         BrokerStateStore? states, ItemPresentationController? presentations, string screenId, bool compact = false,
-        double availableWidthDip = double.MaxValue, IReadOnlyDictionary<string, DynamicGrouping>? grouping = null)
+        double availableWidthDip = double.MaxValue, IReadOnlyDictionary<string, DynamicGrouping>? grouping = null,
+        HostPresentationEnvironment? environment = null)
     {
         ArgumentNullException.ThrowIfNull(orderedComponents);
         if (orderedComponents.Count > TaskbarGroupLayout.MaximumComponents)
@@ -30,6 +32,7 @@ public static class HostGroupPresentation
         var itemsByKey = new Dictionary<TaskbarItemKey, HostItemPresentation>();
         var allItems = new List<HostItemPresentation>();
         var instances = new List<HostIslandInstance>();
+        var resolvedEnvironment = environment ?? new HostPresentationEnvironment(compact ? HostPresentationDensity.Compact : HostPresentationDensity.Normal);
         var applications = states?.Snapshots.ToDictionary(value => value.ApplicationId, StringComparer.Ordinal)
             ?? new Dictionary<string, BrokerApplicationSnapshot>(StringComparer.Ordinal);
         var declaredIdentities = applications.Values.Where(value => value.Declaration is not null)
@@ -80,16 +83,18 @@ public static class HostGroupPresentation
                     var itemKey = new TaskbarItemKey(key, item.Item.ItemId, item.PresenceGeneration);
                     itemsByKey.Add(itemKey, item);
                     allItems.Add(item);
-                    itemMeasurements.Add(new(itemKey, DynamicWidthMetrics.Measure(item.Presentation.Width, compact), item.IsInteractive, instanceByItem.GetValueOrDefault(item.Item.ItemId)));
+                    itemMeasurements.Add(new(itemKey, DynamicWidthMetrics.Measure(item.Presentation.Width, environment: resolvedEnvironment), item.IsInteractive, instanceByItem.GetValueOrDefault(item.Item.ItemId)));
                 }
                 measured.Add(new(key, Items: itemMeasurements));
             }
-            else measured.Add(new(key, component.HasTemplate ? 480 : 240));
+            else measured.Add(new(key, (component.HasTemplate ? 480 : 240) * resolvedEnvironment.SlotWidthDip / 32d));
             visible.Add(component); componentsByKey.Add(key, component);
         }
+        // The group keeps the taskbar's fixed 32 DIP height; density and text scale
+        // affect slot widths and text metrics only.
         var layout = TaskbarGroupLayout.Calculate(measured, 32, availableWidthDip);
         return new(layout, visible.AsReadOnly(), allItems.AsReadOnly(),
             new ReadOnlyDictionary<TaskbarComponentKey, HostComponentDisplayModel>(componentsByKey),
-            new ReadOnlyDictionary<TaskbarItemKey, HostItemPresentation>(itemsByKey)) { Instances = instances.AsReadOnly() };
+            new ReadOnlyDictionary<TaskbarItemKey, HostItemPresentation>(itemsByKey)) { Instances = instances.AsReadOnly(), Environment = resolvedEnvironment };
     }
 }

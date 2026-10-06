@@ -183,6 +183,18 @@ public sealed partial class WindowTestApplication : Application
                 Finish(null);
                 return;
             }
+            if (Environment.GetCommandLineArgs().Contains("--visual-environment-only", StringComparer.Ordinal))
+            {
+                await VisualEnvironmentNativeRegression.RunAsync(message => AppendLog(message + "\n"));
+                Finish(null);
+                return;
+            }
+            if (Environment.GetCommandLineArgs().Contains("--environment-recovery-only", StringComparer.Ordinal))
+            {
+                await EnvironmentRecoveryNativeRegression.RunAsync(message => AppendLog(message + "\n"));
+                Finish(null);
+                return;
+            }
             if (Environment.GetCommandLineArgs().Contains("--template-only", StringComparer.Ordinal))
             {
                 await TemplateNativeRegression.RunAsync(message => AppendLog(message + "\n"));
