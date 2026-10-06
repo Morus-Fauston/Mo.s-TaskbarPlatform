@@ -98,6 +98,9 @@ finally {
             Copy-Item -LiteralPath $directory.FullName -Destination $evidencePath -Recurse
         }
     }
+    # handle-types.jsonl lives inside the per-run combination-stability-* directory, copied above; the
+    # flat-file sweep only covers the output root, so state that explicitly to keep it discoverable.
+    Get-ChildItem -LiteralPath $evidencePath -Recurse -Filter 'handle-types.jsonl' -ErrorAction SilentlyContinue | ForEach-Object { Write-Output "Handle type census archived: $($_.FullName)" }
     Write-Output "Evidence archived: $evidencePath"
 }
 exit 0
