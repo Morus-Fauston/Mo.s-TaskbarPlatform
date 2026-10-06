@@ -50,6 +50,12 @@ internal static class CombinationStabilityNativeRegression
     /// </summary>
     private static bool ControlIdle { get; set; }
     /// <summary>
+    /// Opt-in desktop isolation (<c>MTP_COMBINATION_ISOLATE_INPUT=1</c>): the run does not observe real
+    /// desktop input, so it is reproducible on a machine that is being used. Off by default, because a
+    /// normal run should measure the product as shipped. The mode is recorded in <c>policy.json</c>.
+    /// </summary>
+    private static bool IsolateInput { get; set; }
+    /// <summary>
     /// AutomationPeers constructed by the current round's <see cref="Invoke"/>. The fixture builds a
     /// throwaway peer per action, so this is the per-round peer cost the trend slope must be compared
     /// against; it is reset at each round boundary.
@@ -59,6 +65,7 @@ internal static class CombinationStabilityNativeRegression
     public static async Task RunAsync(Action<string> log)
     {
         ControlIdle = string.Equals(Environment.GetEnvironmentVariable("MTP_COMBINATION_CONTROL"), "idle", StringComparison.OrdinalIgnoreCase);
+        IsolateInput = string.Equals(Environment.GetEnvironmentVariable("MTP_COMBINATION_ISOLATE_INPUT"), "1", StringComparison.Ordinal);
         var watch = Stopwatch.StartNew();
         using var deadline = new CancellationTokenSource(Budget - TimeSpan.FromSeconds(20));
         string evidence = Path.Combine(AppContext.BaseDirectory, "combination-stability-" + Guid.NewGuid().ToString("N"));
@@ -71,6 +78,9 @@ internal static class CombinationStabilityNativeRegression
         {
             requestedRounds = RoundCount, hardBudgetSeconds = 600, warmupSamplesPerPid = 10,
             controlArm = ControlIdle ? "idle" : "normal",
+            // Recorded explicitly so a passing run can never be confused with one that suppressed the
+            // desktop, and vice versa.
+            desktopIsolation = IsolateInput ? "input-observation-disabled" : "live (real desktop input observed)",
             fixtureBoundary = "MTP-owned offscreen Win32 parent; Explorer and manual acceptance remain out of scope",
             warmupRationale = "runtime lazy-init plateaus by ~round 10; measured in evidence/12/ab-peer-20261006-175501/probe-project/results/empty.jsonl",
             resourceTrend = new { handleDelta = 256, privateBytesDelta = 128 * 1024 * 1024, tailHandleSpan = 32, tailPrivateBytesSpan = 16 * 1024 * 1024 },
@@ -491,14 +501,6 @@ internal static class CombinationStabilityNativeRegression
                 () => DescribeButtonMatches(CurrentTaskbarWindow(taskbarGroup.ScreenId), "mtp-template-back"));
             await Until(() => coordinator.Manager.Inspect().Single().Windows.Any(x => x.TemplateId == "panel"), "taskbar return missing", token,
                 () => DescribeFlyoutState("taskbar return missing") + ";" + DescribeTaskbarWindow(taskbarGroup.ScreenId, "main"));
-            // Short hint: requested only when no live hint window exists, so a round that finds the
-            // resident hint still open reuses it instead of allocating another native window + peer.
-            if (coordinator!.Hints.Inspect().Count == 0)
-            {
-                await ClickTemplate("flyouts", "main", "controls", "hint", token);
-                await Until(() => coordinator!.Hints.Inspect().Count > 0, "short hint not observed", token,
-                    () => DescribeFlyoutState("short hint not observed"));
-            }
             RememberHandles();
             // Interactive hint: the owner group shares this screen with the taskbar group, and production
             // keeps at most one group per screen - asking for the owner while the taskbar panel is resident
@@ -521,6 +523,18 @@ internal static class CombinationStabilityNativeRegression
             // hint request arrived (evidence/14/round10: groups=generation=8:closing=True with the request
             // still Queued and revision 0), so the round failed on the very first iteration.
             await Task.Delay(300, token);
+            // Short hint: it also occupies this screen, so it runs *after* the taskbar panel is released for
+            // the same reason as the interactive owner group below. Requesting it while the panel was still
+            // resident made production close the panel instead, and evidence/14/round11 recorded the
+            // consequence one step later: flyout-explicit-close at the hint step, then "interactive hint not
+            // observed" with the owner group already closing. Requested only when no live hint exists, so a
+            // round that finds the resident hint still open reuses it.
+            if (coordinator!.Hints.Inspect().Count == 0)
+            {
+                await ClickTemplate("flyouts", "main", "controls", "hint", token);
+                await Until(() => coordinator!.Hints.Inspect().Count > 0, "short hint not observed", token,
+                    () => DescribeFlyoutState("short hint not observed"));
+            }
             await RequestInteractiveOwnerGroup(token);
             // Interactive hint: requested only when no live one exists. Re-requesting every round made
             // production build a fresh interactive-hint window and peer each time (~1 per round), even
@@ -903,10 +917,18 @@ internal static class CombinationStabilityNativeRegression
         }
         /// <summary>
         /// Stops production's real-input subscription for the business part of a round and reports whether
-        /// it had been running. See the call site for why the shared desktop makes this necessary.
+        /// it had been running. See the call site for why a busy desktop makes this necessary.
+        ///
+        /// This is an explicit, opt-in isolation switch rather than a silent workaround: with
+        /// <c>MTP_COMBINATION_ISOLATE_INPUT=1</c> the run does not observe real desktop input at all, which
+        /// is what makes it reproducible on a machine someone is using. The default leaves the subscription
+        /// live, so a normal run measures the product as shipped - including its documented
+        /// "input outside the group closes the group" contract. Every run records which mode it used in
+        /// <c>policy.json</c> so a report can never be misread as the other mode.
         /// </summary>
         bool PauseInputObserver()
         {
+            if (!IsolateInput) return false;
             object? observer = coordinator is null ? null : PrivateField(coordinator.Manager, "input");
             if (observer is null) return false;
             var active = observer.GetType().GetProperty("IsActive", Members)?.GetValue(observer) as bool? ?? false;
