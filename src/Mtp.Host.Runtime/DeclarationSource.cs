@@ -11,7 +11,7 @@ internal static class BoundedUtf8File
 
     public static bool TryRead(string path, int maximumBytes, out string content)
     {
-        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
         var bytes = new byte[maximumBytes + 1];
         var total = 0;
         while (total < bytes.Length)

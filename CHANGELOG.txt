@@ -1,3 +1,10 @@
+v0.5.0-alpha.13 (2026-10-06 20:17)
+  修复: 偏好写入竞态（File.Replace 遇 ERROR_UNABLE_TO_REMOVE_REPLACED 1175）统一走 PreferenceFileLock.Replace 退避重试，读取加 FileShare.Delete；持续持锁时 5 秒内有界失败且旧文件不变。
+  新增: PreferenceReplacementTests 覆盖显示/外观/停靠三存储的短暂与持续持锁，校验不丢值、不残留 *.tmp。
+  文档: CONTEXT.md 活动卡更名实况岛并补齐术语；AGENTS.md 同步提前建票与子代理授权；WindowTests README 补五期恢复与组合交付入口；.gitignore 忽略 **/TestResults/ 测试产物。
+  验证: 规则测试 744->750 通过 0 失败 0 跳过；新增 6 项单独运行通过。
+
+====
 v0.5.0-alpha.12 (2026-10-06 19:15)
   夹具: 修复组合夹具无法编译（CS0708/CS1061）与第8轮交互提示超时（所属组未settle即请求），失败原因经FlyoutDiagnostics回读。
   诊断: 每轮记录句柄/GDI/USER/线程并新增拆除后对照点；趋势口径统一为首末差，预热窗口2轮改为10轮（实测约10轮平台化）。

@@ -83,3 +83,15 @@ powershell -ExecutionPolicy Bypass -File tests/Mtp.Host.WindowTests/Run.ps1 -Sce
 `Mtp.Host.exe --event-demo` 启动独立SDK模拟事件提供方。显示counter/main/controls后，发送事件更新event0，持续事件打开event1，下一通道轮转event2至event11；组内确认显示SDK确认次数，演示失败产生所属组关联提示，详情/返回只访问声明面板。所有数据为模拟业务。
 
 `Run.ps1 -Scenario event -EvidenceDirectory <新目录>` 串行验证真实WinUI组、8秒空闲及5秒保护、1/5/10上限与降额收敛、同通道更新、关闭失败隔离、关联提示定位/动画及Host自有窗口优先级。替换判断前同步核对实际鼠标/焦点，不等待下一计时器采样。`-Scenario event-settings`使用真实ComboBox/NumberBox/Toggle自动化接口及独立进程回读，覆盖八位置、数量、显示开关和保存失败复位。`-Scenario event-production`走真实SDK/Broker/Host请求、确认/失败/设置/有限重连；使用自有离屏内容岛，不能代替Explorer或多屏人工验收。
+
+## 五期恢复与组合交付
+
+`-Scenario visual-environment` 检查真实 WinUI 控件在模拟密度／文字比例变化下的原位重测和固定 32 DIP 组高。`-Scenario environment-recovery` 使用生产 Controller／Adapter 与自有 Win32 父窗口，验证初始化失败、有限手动重试、父级失效及恢复、隐藏偏好回读、UISettings 回调合并和订阅清理。它们不修改 Explorer 或系统文字比例。
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tests/Mtp.Host.WindowTests/Run.ps1 -Scenario combination-stability -EvidenceDirectory .scratch/五期开发/evidence/12/<新批次>
+```
+
+组合场景在同一 Host 中使用 7 个独立 SDK 服务、独立 Broker 和自有离屏内容岛，执行 50 轮业务组合；第 10／20／30／40 轮分别触发 Broker 恢复、自有父窗口重建、SDK 恢复和减少动画切换。580 秒取消业务，50 轮及全部清理必须在 600 秒内完成才通过；外部 runner 620 秒防挂只终止测试进程并记失败，不保证卡死时全部子进程退出。超时或轮数不足都不记通过。
+
+`combination-stability-*` 保留策略、逐轮结果、CPU／句柄／内存趋势、队列峰值和资源清理回读；CPU 为累计进程时间，无通过阈值。句柄／私有内存按 PID 世代丢弃前两次采样，至少五次有效采样才判定；净增长上限为 256 句柄／128 MiB，末五次波动上限为 32 句柄／16 MiB，不跨 PID 比较。通过还要求全部记录的自有 PID、HWND、实际组计时器及 Host 生命周期资源清零。源文件与本批测试／Host／Broker／SDK 二进制哈希独立归档。共享构建及桌面测试须串行，失败批次不得覆盖。自有窗口自动化结果不替代真实任务栏、多屏／DPI、Explorer、材质、读屏和动画观感的人类验收。

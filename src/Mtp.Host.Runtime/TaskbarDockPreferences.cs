@@ -67,8 +67,7 @@ public sealed class LocalTaskbarDockPreferenceStore(string path) : ITaskbarDockP
                 JsonSerializer.Serialize(stream, next, options);
                 stream.Flush(true);
             }
-            if (File.Exists(fullPath)) File.Replace(temporary, fullPath, null);
-            else File.Move(temporary, fullPath);
+            PreferenceFileLock.Replace(temporary, fullPath);
             return CoreResult<TaskbarDockPreferences>.Success(next);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)

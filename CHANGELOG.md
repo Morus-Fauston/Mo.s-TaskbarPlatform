@@ -1,5 +1,35 @@
 # Changelog
 
+## v0.5.0-alpha.13 (2026-10-06 20:17)
+
+### 修复
+
+- **偏好写入竞态**：并发读取偏好文件时 `File.Replace` 会以 `ERROR_UNABLE_TO_REMOVE_REPLACED`（1175）失败，表现为保存偶发失败、已提交值可能回退。
+  - 根因：读者在 `ReplaceFile` 打开目标之后到达，替换无法移除旧文件。
+  - 修复：新增 `PreferenceFileLock.Replace`，对 32／33／1175 三类可重试 `IOException` 在 2 秒预算内退避重试（20ms 间隔）；读取改用 `FileShare.Read | FileShare.Delete`，允许替换期间打开。
+  - 三个偏好存储（显示、外观、停靠）统一走该路径，行为一致。
+- **有界失败保证**：持续持锁时保存会在 5 秒内失败返回，不无限重试；旧文件内容与临时文件均保持原状。
+
+### 新增
+
+- **偏好替换回归测试**：`PreferenceReplacementTests` 覆盖显示／外观／停靠三种存储。
+  - 短暂持锁：替换清除后不丢失已提交值，且不残留 `*.tmp`。
+  - 持续持锁：失败有界（<5s），旧文件字节不变，不残留 `*.tmp`。
+
+### 文档
+
+- **术语同步**：`CONTEXT.md` 将「活动卡」更名为「实况岛」，并补齐活动、稳定活动 ID、实况岛入口／实例／模板、计数进度、通用状态标记、内容项、项标识等术语；「多项积木」改为允许异构项、宽度由当前显示项求和。
+- **规则同步**：`AGENTS.md` 补入三至五期提前建票与子代理并行授权；短提示浮窗默认位置改为「中央靠下」，并指向 D-138 五期界面与浮窗实施契约。
+- **测试层说明**：`tests/Mtp.Host.WindowTests/README.md` 补入五期恢复与组合交付章节，记录 `visual-environment`／`environment-recovery`／`combination-stability` 三个场景的参数、50 轮／600 秒预算与句柄／内存阈值。
+- **忽略测试产物**：`.gitignore` 增加 `**/TestResults/`，避免 `dotnet test` 生成的 `.trx` 报告进入待提交列表。
+
+### 验证
+
+- 规则测试：744 → **750 通过，0 失败，0 跳过**（新增 6 项）。
+- `PreferenceReplacementTests` 单独运行：**6 通过，0 失败**。
+- WindowTests `Program.cs` 新增 `--combination-stability-only` 分派，供组合场景入口使用。
+
+---
 ## v0.5.0-alpha.12 (2026-10-06 19:15)
 
 ### 组合稳定性夹具与证据链

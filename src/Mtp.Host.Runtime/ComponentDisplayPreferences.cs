@@ -325,14 +325,7 @@ public sealed class LocalComponentDisplayPreferenceStore : IComponentDisplayPref
                 stream.Flush(flushToDisk: true);
             }
 
-            if (File.Exists(fullPath))
-            {
-                File.Replace(temporaryPath, fullPath, destinationBackupFileName: null);
-            }
-            else
-            {
-                File.Move(temporaryPath, fullPath);
-            }
+            PreferenceFileLock.Replace(temporaryPath, fullPath);
 
             return CoreResult<ComponentDisplayPreferences>.Success(preferences);
         }

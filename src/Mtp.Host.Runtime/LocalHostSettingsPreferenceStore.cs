@@ -89,8 +89,7 @@ public sealed class LocalHostSettingsPreferenceStore(string path) : IHostSetting
                 stream.Write(bytes);
                 stream.Flush(flushToDisk: true);
             }
-            if (File.Exists(fullPath)) File.Replace(temporary, fullPath, null);
-            else File.Move(temporary, fullPath);
+            PreferenceFileLock.Replace(temporary, fullPath);
             return next;
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)

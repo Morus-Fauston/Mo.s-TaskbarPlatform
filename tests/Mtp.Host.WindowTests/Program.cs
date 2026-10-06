@@ -195,6 +195,12 @@ public sealed partial class WindowTestApplication : Application
                 Finish(null);
                 return;
             }
+            if (Environment.GetCommandLineArgs().Contains("--combination-stability-only", StringComparer.Ordinal))
+            {
+                await CombinationStabilityNativeRegression.RunAsync(message => AppendLog(message + "\n"));
+                Finish(null);
+                return;
+            }
             if (Environment.GetCommandLineArgs().Contains("--template-only", StringComparer.Ordinal))
             {
                 await TemplateNativeRegression.RunAsync(message => AppendLog(message + "\n"));
