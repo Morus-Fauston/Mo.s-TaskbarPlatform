@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.5.0-alpha.12 (2026-10-06 19:15)
+
+### 组合稳定性夹具与证据链
+
+- **夹具可编译**：组合夹具此前无法编译（`static class` 内声明实例方法 CS0708；`BrokerApplicationSnapshot.Revision`/`TemplateEntries` 实际位于 `.State`，CS1061）——现象是任何组合场景都无法构建；根因是诊断方法定位错误与属性路径写错；修复为改为局部函数并纠正属性访问。这同时说明既有 combination 批次并非当前源码产生。
+- **交互提示稳定通过**：第 8 轮必然超时（`interactive hint not observed`）。现象是请求已发出但提示始终不出现；根因是夹具在所属浮窗组尚未 settled 时就发请求，而生产 `InteractiveHintManager.Available()` 依赖 `BoundsForHint`（需 `group.Layout`），夹具只等待了 `!Closing`；修复为等待 `BoundsForHint(...) is not null`。
+- **失败原因可回读**：提示被拒时生产返回 `StaleHint`/`EntryDisabled` 等 `Reject` 码，但夹具丢弃该结果，只能 12 秒后报裸超时。经既有 `host.FlyoutDiagnostics` 缝采集 `flyout-presentation-result`，把真实 Code 写入失败诊断。
+- **资源分类采样**：每轮记录宿主进程的句柄总数、GDI 对象、USER 对象与线程数，并新增"全部拆除后"对照点，写入 `resources.jsonl` 与 `cleanup.json.afterTeardown`；用于区分有界缓存与真实滞留。
+- **趋势口径修正**：句柄用首末差而 GDI/USER 用极差，两者相减无物理含义，且瞬态脉冲会被误读为趋势；已统一为同 PID 分组内首末差。预热窗口由 2 轮改为 10 轮——独立对照探针测得运行时惰性预热约需 10 轮平台化，2 轮会把预热误计为泄漏。
+- **完成标记生效**：组合场景从不采样 dock 帧，日志恒为 `PASS: 0 native frame samples.`，而 Run.ps1 的正则恰好匹配 0，等于空校验；改为校验该场景自身的 50/50 轮与 `cleanupVerified=true`。
+
+### 验证与边界
+
+- **自动化结果**：Mtp.sln Release 构建 0 警告 0 错误；规则测试 750 通过、0 失败、0 跳过；WindowTests 构建 0 错误。
+- **组合回归**：`Run.ps1 -Scenario combination-stability` 串行三次，均 **50/50 轮**、276.5s / 269.5s / 267.3s（600 秒内），退出码 1。清理与业务路径全部通过——`failure=null`、全部自有 PID 退出、`hostReleased`、`nativeReleased`、`managersReleased`、`timersStopped`、`lifecycleAfter` 各项归零；`cleanupVerified=false` **仅**由资源趋势失败导致。
+- **资源趋势未通过（如实保留）**：宿主进程句柄三次分别 +963 / +944 / +947，可复现；分类采样 GDI 0/−2、USER −3/−3、线程 −24/−21，增长落在非 GDI/USER/线程的内核对象。拆除后对照点仅回收 109/约 950 句柄与 1.4 MB 私有内存，故不是停止负载即回收的缓存，卡口判失败正确。独立 A/B 探针否证 AutomationPeer 假说：200 轮 peer 创建句柄 907→909，而"每轮不做事"的对照臂同样 698→907 后平台化，证明观测爬升属运行时预热。
+- **未放宽任何阈值**：50 轮、600 秒、清理条件、256 句柄／128 MiB 净增与 32 句柄／16 MiB 末段波动阈值均未修改；未把失败、提前退出或部分轮次记为通过。
+- **证据**：`.scratch/五期开发/evidence/12/combination-bounded-20261006-1945/`（三次批次、命令日志、`资源趋势根因诊断.md`）、`ab-peer-20261006-175501/`（独立探针与判决）、`archive-audit-20261006-1830.md`（归档核验）。
+- **待人工边界**：真实任务栏、Explorer 重启、多屏／混合 DPI、自动隐藏、材质、读屏与动画观感仍未验证；五期12保持 `in-progress`，第六期未开工，本条目不代表发布或人工验收。
+
+---
 ## v0.5.0-alpha.11 (2026-10-06 14:18)
 
 ### 环境恢复与动态呈现
