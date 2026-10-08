@@ -1,5 +1,13 @@
 param(
     [ValidateSet('all', 'event', 'event-production', 'event-settings', 'broker', 'template', 'settings', 'dynamic', 'timer', 'hint', 'hint-window', 'interactive-hint', 'interactive-hint-motion', 'interactive-hint-production', 'flyout', 'flyout-production', 'flyout-create', 'flyout-scheduling', 'preset', 'organization', 'visual-environment', 'environment-recovery', 'combination-stability')][string]$Scenario = 'all',
+    # Tiered entry for the combination fixture. 'smoke' is the daily automated tier (a few rounds);
+    # 'soak' is the 50-round long run kept for a major version. Both drive the same fixture.
+    [ValidateSet('smoke', 'soak')][string]$CombinationProfile = 'smoke',
+    # Controlled counterexample for the exit-code contract: software | fixture | environment | resource.
+    # Empty means a normal run. Used to prove each failure class is really reachable.
+    [string]$InjectFailure = '',
+    # Opt-in desktop isolation. Off by default so a normal run measures the product as shipped.
+    [switch]$IsolateInput,
     [string]$OutputDirectory = "$PSScriptRoot/bin/window-regression",
     [string]$EvidenceDirectory = "$PSScriptRoot/../../.scratch/二期开发/evidence/HostWindowRegression/run-$(Get-Date -Format 'yyyyMMdd-HHmmss-fff')-$([Guid]::NewGuid().ToString('N').Substring(0, 8))"
 )
@@ -21,6 +29,14 @@ $run = [Diagnostics.Process]::new()
 $run.StartInfo = [Diagnostics.ProcessStartInfo]::new("$outputPath/Mtp.Host.WindowTests.exe")
 $run.StartInfo.UseShellExecute = $false
 $run.StartInfo.WindowStyle = 'Hidden'
+# Environment is inherited by the child, so the fixture's switches are set here rather than duplicated
+# in every scenario's argument list. Run.ps1 keeps them visible in one place, and policy.json records
+# what the run actually used.
+if ($Scenario -eq 'combination-stability') {
+    $run.StartInfo.Environment['MTP_COMBINATION_PROFILE'] = $CombinationProfile
+    if ($InjectFailure) { $run.StartInfo.Environment['MTP_COMBINATION_INJECT_FAILURE'] = $InjectFailure }
+    if ($IsolateInput) { $run.StartInfo.Environment['MTP_COMBINATION_ISOLATE_INPUT'] = '1' }
+}
 if ($Scenario -eq 'event-production') { $run.StartInfo.Arguments = '--event-production-only' }
 if ($Scenario -eq 'event') { $run.StartInfo.Arguments = '--event-only' }
 if ($Scenario -eq 'event-settings') { $run.StartInfo.Arguments = '--event-settings-only' }
@@ -39,14 +55,18 @@ if ($Scenario -eq 'flyout-production') { $run.StartInfo.Arguments = '--flyout-pr
 if ($Scenario -eq 'organization') { $run.StartInfo.Arguments = '--organization-only' }
 if ($Scenario -eq 'visual-environment') { $run.StartInfo.Arguments = '--visual-environment-only' }
 if ($Scenario -eq 'environment-recovery') { $run.StartInfo.Arguments = '--environment-recovery-only' }
-if ($Scenario -eq 'combination-stability') { $run.StartInfo.Arguments = '--combination-stability-only' }
+if ($Scenario -eq 'combination-stability') { $run.StartInfo.Arguments = "--combination-stability-only --combination-profile $CombinationProfile" }
 if ($Scenario -eq 'preset') { $run.StartInfo.Arguments = '--preset-only' }
 if ($Scenario -eq 'dynamic') { $run.StartInfo.Arguments = '--dynamic-only' }
 if ($Scenario -eq 'settings') { $run.StartInfo.Arguments = '--settings-only' }
 try {
     if (-not $run.Start()) { throw 'Could not start the WinUI regression process.' }
-    # The combination fixture has its own 600s work budget; allow bounded cleanup and evidence flush.
-    $timeoutMilliseconds = if ($Scenario -eq 'combination-stability') { 620000 } else { 60000 }
+    # The combination fixture has its own work budget (3 min for smoke, 10 min for soak); allow bounded
+    # cleanup and evidence flush on top, and widen it further for an injected counterexample run, which
+    # tears the session down through the failure path.
+    $timeoutMilliseconds = if ($Scenario -eq 'combination-stability') {
+        if ($CombinationProfile -eq 'soak') { 620000 } else { 200000 }
+    } else { 60000 }
     if (-not $run.WaitForExit($timeoutMilliseconds)) {
         $run.Kill()
         $run.WaitForExit()
@@ -55,17 +75,39 @@ try {
     $testExitCode = $run.ExitCode
     $log = Get-Content -LiteralPath $logPath
     $log
-    if ($testExitCode -ne 0) { throw "WinUI regression failed with exit code $testExitCode." }
-    if ($Scenario -eq 'combination-stability') {
+    # An injected counterexample is *expected* to fail. It passes only when it produced the failure class
+    # and exit code the code under test claims, so the harness verifies the contract instead of the run.
+    $expectedExit = switch ($InjectFailure) {
+        'software' { 10 } 'fixture' { 11 } 'environment' { 12 } 'resource' { 13 } default { $null }
+    }
+    if ($null -ne $expectedExit) {
+        if ($testExitCode -ne $expectedExit) { throw "Injected $InjectFailure run exited $testExitCode; expected $expectedExit." }
+        $verdict = $log | Where-Object { $_ -match '^combination-stability-result: ' } | Select-Object -Last 1
+        if (-not $verdict) { throw 'Injected combination run ended without its result marker.' }
+        if ($verdict -notmatch "exitCode=$expectedExit;") { throw "Injected run reported the wrong exit code: $verdict" }
+        if ($verdict -notmatch "failureClass=$InjectFailure-failure;") { throw "Injected run reported the wrong failure class: $verdict" }
+        Write-Output "Injected $InjectFailure counterexample verified: $verdict"
+    }
+    elseif ($testExitCode -ne 0) { throw "WinUI regression failed with exit code $testExitCode." }
+    if ($Scenario -eq 'combination-stability' -and $null -eq $expectedExit) {
         # The combination scenario never samples dock frames, so the shared "PASS: N native frame
         # samples." marker is a no-op here (it always reads PASS: 0). Verify this scenario's own
-        # verdict instead: its fixture must report 50/50 rounds with a verified cleanup.
+        # verdict instead: it must report every requested round of its profile with a verified cleanup.
+        #
+        # This runs before the generic exit-code check above would matter, and it re-derives the verdict
+        # from the report rather than trusting the process code alone: the report is the artifact the
+        # ticket asks a reader to consult, so the runner must agree with it.
         $verdict = $log | Where-Object { $_ -match '^combination-stability-result: ' } | Select-Object -Last 1
         if (-not $verdict) { throw 'Combination regression ended without its result marker.' }
-        if ($verdict -notmatch 'roundsCompleted=50;') { throw "Combination regression did not complete 50 rounds: $verdict" }
+        $expectedRounds = if ($CombinationProfile -eq 'soak') { 50 } else { 3 }
+        if ($verdict -notmatch "roundsCompleted=$expectedRounds;") { throw "Combination regression did not complete $expectedRounds rounds: $verdict" }
+        if ($verdict -notmatch "requestedRounds=$expectedRounds;") { throw "Combination regression ran the wrong profile: $verdict" }
+        if ($testExitCode -ne 0) { throw "Combination regression exited $testExitCode; report: $verdict" }
         if ($verdict -notmatch 'cleanupVerified=True;') { throw "Combination regression did not verify cleanup: $verdict" }
+        if ($verdict -notmatch 'verdict=passed;') { throw "Combination regression did not report a passing verdict: $verdict" }
+        Write-Output "Combination $CombinationProfile verified: $verdict"
     }
-    elseif (-not ($log -match '^PASS: \d+ native frame samples\.$')) { throw 'WinUI regression ended without its completion marker.' }
+    elseif ($Scenario -ne 'combination-stability' -and -not ($log -match '^PASS: \d+ native frame samples\.$')) { throw 'WinUI regression ended without its completion marker.' }
 }
 finally {
     $run.Dispose()

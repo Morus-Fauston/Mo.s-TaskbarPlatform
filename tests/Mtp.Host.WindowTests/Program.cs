@@ -197,6 +197,12 @@ public sealed partial class WindowTestApplication : Application
             }
             if (Environment.GetCommandLineArgs().Contains("--combination-stability-only", StringComparer.Ordinal))
             {
+                // Tiered entry: `--combination-profile smoke|soak` (or MTP_COMBINATION_PROFILE) selects
+                // how many rounds run. Both tiers share this fixture, its assertions and its error
+                // classes; see CombinationProfile for what each tier covers and cannot cover.
+                int profileArg = Array.IndexOf(launchArguments, "--combination-profile");
+                if (profileArg >= 0 && profileArg + 1 < launchArguments.Length)
+                    Environment.SetEnvironmentVariable("MTP_COMBINATION_PROFILE", launchArguments[profileArg + 1]);
                 await CombinationStabilityNativeRegression.RunAsync(message => AppendLog(message + "\n"));
                 Finish(null);
                 return;
@@ -372,8 +378,19 @@ public sealed partial class WindowTestApplication : Application
         try { (monitor as IDisposable)?.Dispose(); }
         catch (Exception cleanupError) { error ??= cleanupError; }
         if (eventWindow != 0) Native.DestroyWindow(eventWindow);
-        AppendLog(error is null ? $"PASS: {samples} native frame samples.\n" : $"FAIL: {error}\n");
-        Environment.ExitCode = error is null ? 0 : 1;
+        // The combination fixture owns an exit-code contract (see FixtureOutcome): its failures carry a
+        // class, and collapsing them all to 1 here would throw away the classification the ticket asks
+        // for. Every other scenario keeps the historical 0/1.
+        if (error is FixtureFailureException classified)
+        {
+            AppendLog($"FAIL[{FixtureOutcome.Describe(classified.FailureClass)}]: code={classified.Code}; {error}\n");
+            Environment.ExitCode = FixtureOutcome.ExitCode(classified.FailureClass);
+        }
+        else
+        {
+            AppendLog(error is null ? $"PASS: {samples} native frame samples.\n" : $"FAIL: {error}\n");
+            Environment.ExitCode = error is null ? 0 : 1;
+        }
         lifetimeWindow?.Close();
         Exit();
     }

@@ -20,7 +20,6 @@ namespace Mtp.Host.WindowTests;
 internal static class CombinationStabilityNativeRegression
 {
     private const BindingFlags Members = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
-    private const int RoundCount = 50;
     /// <summary>
     /// Owner tag of the post-teardown control point. <see cref="ResourceTrend"/> groups by PID, so this
     /// tag is the only thing that keeps that point out of the host's round series; both the writer and
@@ -55,17 +54,38 @@ internal static class CombinationStabilityNativeRegression
     /// normal run should measure the product as shipped. The mode is recorded in <c>policy.json</c>.
     /// </summary>
     private static bool IsolateInput { get; set; }
+    /// <summary>Run tier (smoke/soak). See <see cref="CombinationProfile"/> for what each covers.</summary>
+    private static CombinationProfile Profile { get; set; } = CombinationProfile.Smoke;
+    /// <summary>
+    /// Controlled fault injection (<c>MTP_COMBINATION_INJECT_FAILURE=&lt;code&gt;</c>) used to prove the
+    /// error classes and exit codes are actually reachable instead of merely declared. Each code injects
+    /// exactly one deliberate defect of one class at a documented point, so the ticket's "受控反例"
+    /// requirement can be executed repeatably. Never set on a normal run; the value is echoed into
+    /// <c>policy.json</c> so an injected run can never be mistaken for a real one.
+    /// </summary>
+    private static string? InjectedFailure { get; set; }
     /// <summary>
     /// AutomationPeers constructed by the current round's <see cref="Invoke"/>. The fixture builds a
     /// throwaway peer per action, so this is the per-round peer cost the trend slope must be compared
     /// against; it is reset at each round boundary.
     /// </summary>
     private static int RoundPeerInvocations;
+    /// <summary>
+    /// How many times this run had to re-assert input isolation. Production restarts its own input
+    /// observer whenever it creates a group, so a nonzero count is the proof that the isolation switch
+    /// was actually re-applied during the run rather than silently dropped after the first group.
+    /// </summary>
+    private static int InputPauses;
 
     public static async Task RunAsync(Action<string> log)
     {
         ControlIdle = string.Equals(Environment.GetEnvironmentVariable("MTP_COMBINATION_CONTROL"), "idle", StringComparison.OrdinalIgnoreCase);
         IsolateInput = string.Equals(Environment.GetEnvironmentVariable("MTP_COMBINATION_ISOLATE_INPUT"), "1", StringComparison.Ordinal);
+        InjectedFailure = Environment.GetEnvironmentVariable("MTP_COMBINATION_INJECT_FAILURE");
+        if (string.IsNullOrWhiteSpace(InjectedFailure)) InjectedFailure = null;
+        Profile = CombinationProfile.Parse(Environment.GetEnvironmentVariable("MTP_COMBINATION_PROFILE"));
+        int RoundCount = Profile.Rounds;
+        TimeSpan Budget = Profile.Budget;
         var watch = Stopwatch.StartNew();
         using var deadline = new CancellationTokenSource(Budget - TimeSpan.FromSeconds(20));
         string evidence = Path.Combine(AppContext.BaseDirectory, "combination-stability-" + Guid.NewGuid().ToString("N"));
@@ -76,17 +96,43 @@ internal static class CombinationStabilityNativeRegression
         using var handleTypes = new StreamWriter(Path.Combine(evidence, "handle-types.jsonl"));
         await File.WriteAllTextAsync(Path.Combine(evidence, "policy.json"), JsonSerializer.Serialize(new
         {
-            requestedRounds = RoundCount, hardBudgetSeconds = 600, warmupSamplesPerPid = 10,
+            profile = Profile.Describe(),
+            profileName = Profile.Name,
+            requestedRounds = RoundCount, hardBudgetSeconds = Budget.TotalSeconds, warmupSamplesPerPid = 10,
             controlArm = ControlIdle ? "idle" : "normal",
             // Recorded explicitly so a passing run can never be confused with one that suppressed the
             // desktop, and vice versa.
             desktopIsolation = IsolateInput ? "input-observation-disabled" : "live (real desktop input observed)",
+            inputPauses = InputPauses,
+            desktopIsolationSwitch = new
+            {
+                variable = "MTP_COMBINATION_ISOLATE_INPUT",
+                enabled = IsolateInput,
+                defaultValue = "off",
+                effect = "pauses production's own FlyoutInputObserver for the business rounds via its TryStart/TryStop lifecycle seam"
+            },
             fixtureBoundary = "MTP-owned offscreen Win32 parent; Explorer and manual acceptance remain out of scope",
             warmupRationale = "runtime lazy-init plateaus by ~round 10; measured in evidence/12/ab-peer-20261006-175501/probe-project/results/empty.jsonl",
-            resourceTrend = new { handleDelta = 256, privateBytesDelta = 128 * 1024 * 1024, tailHandleSpan = 32, tailPrivateBytesSpan = 16 * 1024 * 1024 },
-            handleTypeProbe = ControlIdle
-                ? "per-round kernel handle census by object type (SystemExtendedHandleInformation + same-process DuplicateHandle/NtQueryObject)"
-                : "per-round kernel handle census by object type (SystemExtendedHandleInformation + same-process DuplicateHandle/NtQueryObject)"
+            // Absolute reference values only. Since the maintainer's 2026-10-07 ruling the trend is
+            // reported as "plateau + absolute values" and these no longer veto a run.
+            resourceTrendReference = new { handleDelta = 256, privateBytesDelta = 128 * 1024 * 1024, tailHandleSpan = 32, tailPrivateBytesSpan = 16 * 1024 * 1024 },
+            resourceTrendVerdict = "plateau-and-report (absolute reference values are reported, not gating)",
+            failureClasses = new
+            {
+                software = "production did not honour a 五期 contract",
+                fixture = "this harness is wrong; never retried",
+                environment = "the machine interfered (real desktop input, slow service restart); retry allowed",
+                resource = "a resource ceiling or the run budget was crossed"
+            },
+            exitCodes = new
+            {
+                passed = FixtureOutcome.ExitPassed, softwareFailure = FixtureOutcome.ExitSoftwareFailure,
+                fixtureFailure = FixtureOutcome.ExitFixtureFailure, environmentFailure = FixtureOutcome.ExitEnvironmentFailure,
+                resourceFailure = FixtureOutcome.ExitResourceFailure, unclassifiedFailure = FixtureOutcome.ExitUnclassified
+            },
+            retryPoints = FixtureOutcome.RetryPoints.Select(point => new { point.Name, failureClass = FixtureOutcome.Describe(point.Class), point.Bound, point.Rationale }).ToArray(),
+            injectedFailure = InjectedFailure,
+            handleTypeProbe = "per-round kernel handle census by object type (SystemExtendedHandleInformation + same-process DuplicateHandle/NtQueryObject)"
         }, new JsonSerializerOptions { WriteIndented = true }));
 
         using var display = new HostDisplayController(new LocalJsonDeclarationSource(Path.Combine(AppContext.BaseDirectory, "declaration.json")),
@@ -127,6 +173,11 @@ internal static class CombinationStabilityNativeRegression
         ProtocolMessage? lastFlyoutMessage = null;
         ProtocolResult? lastHintPresentation = null;
         Exception? failure = null;
+        /// <summary>
+        /// A teardown problem observed while an earlier failure was already being reported. Kept separate
+        /// so it can be recorded without replacing the run's primary classification.
+        /// </summary>
+        Exception? teardownFailure = null;
         int completed = 0, queuePeak = 0;
         int roundsObserved = 0;
         bool cleanupVerified = false;
@@ -217,22 +268,11 @@ internal static class CombinationStabilityNativeRegression
                 try
                 {
                     await ExerciseRound(round, deadline.Token);
-                    if (!ControlIdle && round == 10) { fault = "broker-reconnect"; await RecoverBroker(deadline.Token); }
-                    if (!ControlIdle && round == 20)
-                    {
-                        fault = "parent-recreate";
-                        nint oldHandle = adapter.Handle; nint oldParent = target.Parent;
-                        target.Destroy(); host.Refresh();
-                        await Until(() => !NativeWindows.IsWindow(oldParent) && !NativeWindows.IsWindow(oldHandle) && !adapter.IsAlive,
-                            "parent loss was not observed", deadline.Token);
-                        target.Recreate(); PlaceOwned(); host.Refresh();
-                        await Until(() => adapter.IsAlive && adapter.Handle != oldHandle && NativeWindows.GetParent(adapter.Handle) == target.Parent &&
-                            adapter.GetGroupFrame() is { IsComplete: true }, "parent recreation failed", deadline.Token);
-                        log("combination-parent-replacement: " + JsonSerializer.Serialize(new { oldParent = oldParent.ToInt64(), oldHandle = oldHandle.ToInt64(),
-                            newParent = target.Parent.ToInt64(), newHandle = adapter.Handle.ToInt64() }));
-                    }
-                    if (!ControlIdle && round == 30) { fault = "service-recovery"; await RecoverService("dynamic", deadline.Token); }
-                    if (!ControlIdle && round == 40) { fault = "reduced-motion-switch"; adapter.ReducedMotionOverride = true; SetReducedMotion(coordinator, true); host.Refresh(); await Until(() => adapter.GetGroupFrame() is { IsComplete: true }, "reduced-motion settle failed", deadline.Token); }
+                    // Controlled counterexample hooks. They run at the first round so a 3-round smoke run
+                    // can prove the classes and exit codes without a 50-round soak. Each one injects a
+                    // single deliberate defect of a single class at a defined point.
+                    await InjectControlledFailure(round);
+                    await ApplyScheduledFault(round, deadline.Token, value => fault = value);
                     lifecycleProbes.Add(CaptureLifecycleProbe(round));
                     await ParkRound(deadline.Token);
                     completed++;
@@ -273,10 +313,57 @@ internal static class CombinationStabilityNativeRegression
             //
             // The real input subscription is turned back on here, after the last business round, so
             // CloseFixture can assert that it is live and that closing the fixture still releases it.
-            RestoreInputObserver(roundsObserved > 0);
-            await CloseFixture(deadline.Token);
+            //
+            // This matters most when isolation was used: production's own lifecycle is "observer runs
+            // while a group exists, stopped when the last one closes" (TaskbarFlyoutManager.TryStart at
+            // group creation, TryStop at zero groups). Restoring it means CloseFixture exercises that same
+            // real path rather than asserting on a subscription the fixture left parked. If the restore
+            // is skipped while isolation is on, the observer stays stopped and the teardown assertion
+            // would pass without ever proving production can release a live subscription.
+            RestoreInputObserver(IsolateInput && InputPauses > 0);
+            // Self-description probe for the teardown assertion. It runs here - after the rounds, with
+            // production's groups still resident - so the failure it produces is the same one a genuine
+            // teardown failure produces, and its现场 can be judged as evidence.
+            if (InjectedFailure == "assert-teardown")
+            {
+                log("combination-injected-failure: code=assert-teardown");
+                await Until(() => false, "flyout managers not closed", deadline.Token,
+                    () => JsonSerializer.Serialize(new
+                    {
+                        note = "flyout managers not closed (self-description probe)",
+                        lastAction,
+                        taskbarGroups = coordinator!.Manager.Inspect().Select(x => new { x.ScreenId, x.Generation, x.Closing, x.Error, windows = x.Windows.Count }).ToArray(),
+                        hasResources = new
+                        {
+                            taskbar = coordinator.Manager.HasResources, hints = coordinator.Hints.HasResources,
+                            interactiveHints = coordinator.InteractiveHints.HasResources, events = coordinator.Events.HasResources
+                        },
+                        hostQueueCount = Field<HostFlyoutRequestQueue>(host, "flyoutRequests").Count
+                    }),
+                    TimeSpan.FromMilliseconds(400), failureClass: FailureClass.Software);
+            }
+            // When a round already failed, this teardown still runs so the run releases its processes and
+            // windows, but its assertions must NOT replace the original failure. A fixture defect at
+            // round N used to be overwritten by a teardown that then failed for the *consequence* of that
+            // defect, which reported the wrong class - and, worse, hid which component was actually
+            // broken. The first failure is the one that gets classified; teardown problems are recorded
+            // alongside it instead.
+            try
+            {
+                await CloseFixture(deadline.Token);
+            }
+            catch (Exception teardownError)
+            {
+                if (failure is null) failure = teardownError;
+                else
+                {
+                    teardownFailure = teardownError;
+                    log("combination-teardown-after-failure: original=" + FixtureOutcome.CodeOf(failure) +
+                        "; teardown=" + FixtureOutcome.CodeOf(teardownError));
+                }
+            }
         }
-        catch (Exception error) { failure = error; }
+        catch (Exception error) { failure ??= error; }
         finally
         {
             bool hostReleased = false;
@@ -324,6 +411,13 @@ internal static class CombinationStabilityNativeRegression
                 await resources.FlushAsync();
             }
             var trend = ResourceTrend(samples);
+            // A smoke run cannot produce a trend: the judge drops a 10-round warmup and needs at least
+            // five post-warmup samples per PID, so 3 rounds can never reach a verdict. That is a property
+            // of the tier, not a failure, so the trend is marked "not-applicable" and excluded from the
+            // pass condition instead of being reported as a red "no-samples" trend. The soak tier keeps
+            // the full plateau judgement.
+            bool trendApplicable = Profile.IsSoak;
+            bool trendVerdict = !trendApplicable || trend.Pass;
             // Keep the whole production flyout record trail next to the fixture's own JSONL: it is the
             // only place that shows *why* a group closed (idle schedule, input observer, refresh
             // failure, explicit close) instead of only that the fixture stopped seeing its window.
@@ -332,11 +426,19 @@ internal static class CombinationStabilityNativeRegression
             int teardownHandles = samples.Where(x => x.Owner == TeardownOwner).Select(x => x.HandleCount).DefaultIfEmpty(-1).Last();
             long lastRoundPrivate = samples.Where(x => x.Owner == "host").Select(x => x.PrivateBytes).DefaultIfEmpty(0).Last();
             long teardownPrivate = samples.Where(x => x.Owner == TeardownOwner).Select(x => x.PrivateBytes).DefaultIfEmpty(-1).Last();
+            // Cleanup verdict: does the fixture prove everything it created is released, within budget?
+            //
+            // The resource trend is deliberately NOT part of this. The maintainer's 2026-10-07 ruling
+            // replaced "handleDelta <= 256 vetoes the run" with "report the plateau and the absolute
+            // values", so a run whose growth has not plateaued is reported as such - it is not turned
+            // into a red run by a fixed ceiling, and it does not invalidate the cleanup evidence the run
+            // did produce. Everything else here keeps its original strictness: every recorded PID, HWND,
+            // timer, subscription and the whole Host lifecycle snapshot must still be clean.
             cleanupVerified = failure is null && completed == RoundCount && hostReleased && pidsExited && nativeReleased &&
                 managersReleased && timersStopped && after is { OwnedServices: 0, OwnedBrokers: 0, ActiveClockTasks: 0, ActiveRecoveryTasks: 0,
                     ActiveOutputDrains: 0, OutstandingActions: 0, BusyActions: 0, CurrentBroker: null,
                     LastRetiredBroker: { ReceiverCompleted: true, ActionDispatcherCompleted: true, PermissionPublisherCompleted: true,
-                        ActionQueueCount: 0, PermissionSnapshotCount: 0, PendingRegistrationCount: 0 } } && trend.Pass && watch.Elapsed <= Budget;
+                        ActionQueueCount: 0, PermissionSnapshotCount: 0, PendingRegistrationCount: 0 } } && watch.Elapsed <= Budget;
             await File.WriteAllTextAsync(Path.Combine(evidence, "cleanup.json"), JsonSerializer.Serialize(new
             {
                 hostReleased, roundsCompleted = completed, requestedRounds = RoundCount, elapsedMs = watch.ElapsedMilliseconds,
@@ -351,15 +453,199 @@ internal static class CombinationStabilityNativeRegression
                         "resources retained after full teardown"
                 }
             }, new JsonSerializerOptions { WriteIndented = true }));
-            var result = new { roundsCompleted = completed, requestedRounds = RoundCount, elapsedMs = watch.ElapsedMilliseconds, cleanupVerified, queuePeak, controlArm = ControlIdle ? "idle" : "normal", trend, failure = failure?.ToString(),
+            // Per-round durations, stated verbatim. The ticket asks for the round pace to be relaxed and
+            // for single-round and total times to be recorded honestly, so the report must show what the
+            // explicit waits actually cost instead of hiding them behind a total.
+            var roundDurations = samples.Where(x => x.Owner == "host").Select(x => x.Round).Distinct().Order()
+                .Select(round => new
+                {
+                    round,
+                    handleCount = samples.Where(x => x.Owner == "host" && x.Round == round).Select(x => x.HandleCount).DefaultIfEmpty(-1).Last(),
+                    privateBytes = samples.Where(x => x.Owner == "host" && x.Round == round).Select(x => x.PrivateBytes).DefaultIfEmpty(-1).Last()
+                }).ToArray();
+            FailureClass failureClass = failure is null ? FailureClass.None : FixtureOutcome.Classify(failure);
+            string failureCode = failure is null ? "none" : FixtureOutcome.CodeOf(failure);
+            int exitCode = failure is null
+                ? (cleanupVerified ? FixtureOutcome.ExitPassed : FixtureOutcome.ExitFixtureFailure)
+                : FixtureOutcome.ExitCodeOf(failure);
+            // A run that finished every round but whose cleanup verdict is false still failed, and the
+            // report must say so in the same vocabulary as every other failure. Reaching here without an
+            // exception means the rounds themselves were fine, so the remaining cause is cleanup release
+            // or the budget: a Resource failure, not "passed". Leaving this as "fixture-failure" made the
+            // field disagree with failureClass=passed, which is exactly the kind of ambiguity this ticket
+            // exists to remove.
+            //
+            // Note the trend is not consulted here: an un-plateaued trend is reported in `trend` and
+            // `trendVerdict` and never flips this verdict, per the maintainer's ruling.
+            FailureClass unverifiedFailureClass = failure is null && !cleanupVerified ? FailureClass.Resource : failureClass;
+            string unverifiedFailureCode = failure is null && !cleanupVerified ? "resource.trend-or-budget" : failureCode;
+            int unverifiedExitCode = failure is null
+                ? (cleanupVerified ? FixtureOutcome.ExitPassed : FixtureOutcome.ExitCode(unverifiedFailureClass))
+                : exitCode;
+            var result = new
+            {
+                roundsCompleted = completed, requestedRounds = RoundCount,
+                profile = Profile.Describe(), profileName = Profile.Name,
+                elapsedMs = watch.ElapsedMilliseconds,
+                meanRoundMs = completed == 0 ? 0 : watch.ElapsedMilliseconds / completed,
+                perRoundWindowWaitMs = Profile.PerRoundWindowWait?.TotalMilliseconds ?? 0,
+                cleanupVerified,
+                controlArm = ControlIdle ? "idle" : "normal",
+                desktopIsolation = IsolateInput ? "input-observation-disabled" : "live (real desktop input observed)",
+                inputPauses = InputPauses,
+                verdict = FixtureOutcome.Describe(unverifiedFailureClass),
+                failureClass = FixtureOutcome.Describe(unverifiedFailureClass),
+                failureCode = unverifiedFailureCode,
+                exitCode = unverifiedExitCode,
+                injectedFailure = InjectedFailure,
+                teardownFailure = teardownFailure?.ToString(),
+                teardownFailureClass = teardownFailure is null ? null : FixtureOutcome.Describe(FixtureOutcome.Classify(teardownFailure)),
+                teardownFailureCode = teardownFailure is null ? null : FixtureOutcome.CodeOf(teardownFailure),
+                trend,
+                // smoke has no trend by construction; stating it explicitly keeps "no trend reported"
+                // from being read as "trend passed".
+                trendApplicable,
+                trendVerdict = trendApplicable ? (trend.Pass ? "plateaued-no-continuing-growth" : "still-growing-second-half-slope") : "not-applicable-for-this-profile",
+                failure = failure?.ToString(),
                 // Whole-run totals next to the trend: the slope is only attributable if the run also states
                 // how many flyout windows and peers the fixture itself created to produce it.
-                flyoutCounts = new Dictionary<string, int>(flyoutCounts, StringComparer.Ordinal) };
+                flyoutCounts = new Dictionary<string, int>(flyoutCounts, StringComparer.Ordinal),
+                roundSamples = roundDurations
+            };
             await File.WriteAllTextAsync(Path.Combine(evidence, "result.json"), JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true }));
-            log($"combination-stability-result: roundsCompleted={completed}; elapsedMs={watch.ElapsedMilliseconds}; cleanupVerified={cleanupVerified}; controlArm={(ControlIdle ? "idle" : "normal")}; evidence={evidence}; queuePeak={queuePeak}");
+            // The log line must quote the same values that were written to result.json. It previously used
+            // the raw locals, so a run whose cleanup verdict failed logged "exitCode=11" while its own
+            // result.json said 13 - two different answers to "whose problem is this" for one run.
+            log($"combination-stability-result: roundsCompleted={completed}; requestedRounds={RoundCount}; elapsedMs={watch.ElapsedMilliseconds}; cleanupVerified={cleanupVerified}; controlArm={(ControlIdle ? "idle" : "normal")}; profile={Profile.Name}; desktopIsolation={(IsolateInput ? "isolated" : "live")}; verdict={(unverifiedFailureClass == FailureClass.None ? "passed" : FixtureOutcome.Describe(unverifiedFailureClass))}; failureClass={FixtureOutcome.Describe(unverifiedFailureClass)}; failureCode={unverifiedFailureCode}; exitCode={unverifiedExitCode}; trend={(trendApplicable ? trend.Verdict : "not-applicable")}; evidence={evidence}; queuePeak={queuePeak}");
         }
         if (failure is not null) throw failure;
-        Check(cleanupVerified, "Combination cleanup, bounded resource trend or hard budget failed; inspect " + evidence);
+        // A run that finished every round still has to fail here when its cleanup or budget verdict is
+        // false, and it has to fail with the class the report already published.
+        if (!cleanupVerified) throw new FixtureFailureException(FailureClass.Resource, "resource.cleanup-or-budget",
+            "Combination cleanup or hard budget failed; inspect " + evidence);
+
+        /// <summary>
+        /// Runs the profile's fault schedule for this round. Extracted from the round loop so the
+        /// schedule is data (<see cref="CombinationProfile.Faults"/>) rather than four hard-coded round
+        /// numbers: smoke runs the same fixture with an empty schedule, soak keeps the 10/20/30/40 set
+        /// that 14票 established, and both are visible in <c>policy.json</c> before the run starts.
+        /// </summary>
+        async Task ApplyScheduledFault(int round, CancellationToken token, Action<string> setFault)
+        {
+            if (ControlIdle) return;
+            if (!Profile.Faults.TryGetValue(round, out string? name)) return;
+            setFault(name);
+            switch (name)
+            {
+                case "broker-reconnect":
+                    await RecoverBroker(token);
+                    break;
+                case "parent-recreate":
+                    nint oldHandle = adapter.Handle; nint oldParent = target.Parent;
+                    target.Destroy(); host.Refresh();
+                    await Until(() => !NativeWindows.IsWindow(oldParent) && !NativeWindows.IsWindow(oldHandle) && !adapter.IsAlive,
+                        "parent loss was not observed", token);
+                    target.Recreate(); PlaceOwned(); host.Refresh();
+                    await Until(() => adapter.IsAlive && adapter.Handle != oldHandle && NativeWindows.GetParent(adapter.Handle) == target.Parent &&
+                        adapter.GetGroupFrame() is { IsComplete: true }, "parent recreation failed", token);
+                    log("combination-parent-replacement: " + JsonSerializer.Serialize(new { oldParent = oldParent.ToInt64(), oldHandle = oldHandle.ToInt64(),
+                        newParent = target.Parent.ToInt64(), newHandle = adapter.Handle.ToInt64() }));
+                    break;
+                case "service-recovery":
+                    await RecoverService("dynamic", token);
+                    break;
+                case "reduced-motion-switch":
+                    adapter.ReducedMotionOverride = true; SetReducedMotion(coordinator!, true); host.Refresh();
+                    await Until(() => adapter.GetGroupFrame() is { IsComplete: true }, "reduced-motion settle failed", token);
+                    break;
+                default:
+                    throw new FixtureFailureException(FailureClass.Fixture, "fixture.unknown-fault",
+                        "profile scheduled an unknown fault: " + name);
+            }
+        }
+
+        /// <summary>
+        /// The controlled counterexamples behind the exit-code contract. Each value of
+        /// <c>MTP_COMBINATION_INJECT_FAILURE</c> raises exactly one deliberate defect of one class, so
+        /// "错误分类已实现" is verified by execution rather than by reading the switch statement.
+        ///
+        /// They are injected at the first round and are deliberately fatal: the point is to observe the
+        /// class and the exit code of a red run, and a run that recovered would prove nothing.
+        ///
+        /// <c>assert-*</c> values additionally drive three real assertion sites to failure, so the
+        /// "断言自解释" requirement is checked against the output the fixture actually produces rather
+        /// than by reading the source. They are still classified by the site's own class: the site is
+        /// reached for real, its self-description is printed, and the run is then classified from the
+        /// exception that site raises.
+        /// </summary>
+        async Task InjectControlledFailure(int round)
+        {
+            if (InjectedFailure is null || round != 1) return;
+            log("combination-injected-failure: code=" + InjectedFailure);
+            switch (InjectedFailure)
+            {
+                // A software counterexample has to be driven through production, so it asserts the
+                // product contract on real state: a component root that production declared but that has
+                // no loaded action button. The observable is production's own composition, so the class
+                // is Software, not Fixture.
+                case "software":
+                    var aliveRoot = Field<ContentIslandHost>(adapter, "host").ContentRoot;
+                    bool anyAction = aliveRoot is not null && Find<Button>(aliveRoot, ActionId("dynamic", "main", "left")) is { IsLoaded: true };
+                    if (anyAction) throw new FixtureFailureException(FailureClass.Software, "software.injected-dynamic-action-missing",
+                        "injected software failure: production reported a composed dynamic component without a loaded action button");
+                    break;
+                // A fixture counterexample: the harness's own invariant, with no product involvement at all.
+                case "fixture":
+                    throw new FixtureFailureException(FailureClass.Fixture, "fixture.injected-selftest",
+                        "injected fixture failure: deliberate harness self-test defect");
+                // An environment counterexample: the machine did not deliver a response in time.
+                case "environment":
+                    throw new FixtureFailureException(FailureClass.Environment, "environment.injected-timeout",
+                        "injected environment failure: deliberate peer response timeout");
+                // A resource counterexample: the run's own ceiling, reported honestly rather than as a leak.
+                case "resource":
+                    throw new FixtureFailureException(FailureClass.Resource, "resource.injected-ceiling",
+                        "injected resource failure: deliberate ceiling crossing");
+                // --- Self-description probes: drive a real assertion site to failure and print its 现场 ---
+                // 1) The taskbar panel probe. Exercises DescribeFlyoutState + DescribeTaskbarWindow.
+                case "assert-taskbar-panel":
+                    await Until(() => false, "taskbar panel missing", default,
+                        () => DescribeFlyoutState("taskbar panel missing") + ";" + DescribeTaskbarWindow("owned-primary", "main"),
+                        TimeSpan.FromMilliseconds(400), "taskbar-panel-restore");
+                    break;
+                // 2) The interactive-hint probe. Exercises DescribeInteractiveHintRequest.
+                case "assert-interactive-hint":
+                    await Until(() => false, "interactive hint not observed", default,
+                        DescribeInteractiveHintRequest, TimeSpan.FromMilliseconds(400));
+                    break;
+                // 3) The teardown probe. The CloseFixture managers现场 is exercised from the teardown path
+                //    itself (see the "assert-teardown" handling after the round loop), because calling it
+                //    from inside a round would run it before production finished opening the group and
+                //    would prove nothing about the message a real teardown failure prints.
+                case "assert-teardown":
+                    break;
+                default:
+                    throw new FixtureFailureException(FailureClass.Fixture, "fixture.unknown-injection",
+                        "unknown MTP_COMBINATION_INJECT_FAILURE value '" + InjectedFailure + "'");
+            }
+            await Task.Yield();
+        }
+
+        /// <summary>
+        /// The explicit per-round wait the ticket asks for ("每轮时间可以放宽，显式预留时间用于等待重建").
+        /// It is a deliberate sleep after a window-producing step so production's own open/close
+        /// animation can finish before the next assertion samples state, instead of the round racing it
+        /// and being cut short by production's idle policy. Rounds may take longer as a result; per-round
+        /// and total times are recorded verbatim in <c>rounds.jsonl</c> and <c>cleanup.json</c>.
+        ///
+        /// It also re-asserts input isolation, because a window-producing step is exactly what makes
+        /// production restart its own input observer.
+        /// </summary>
+        async Task WaitForWindowLifecycle(CancellationToken token)
+        {
+            SuspendInputObservation();
+            if (Profile.PerRoundWindowWait is { } wait) await Task.Delay(wait, token);
+        }
 
         async Task ExerciseRound(int round, CancellationToken token)
         {
@@ -411,7 +697,15 @@ internal static class CombinationStabilityNativeRegression
             // single real click is enough to close the group mid-round (evidence/14/round9 failed at round
             // 15 for precisely that reason). The input-close contract keeps its coverage through
             // CloseFixture, which restores the subscription and asserts the full release.
-            PauseInputObserver();
+            //
+            // The pause must be re-applied, not applied once. Production calls `input.TryStart()` inside
+            // its own group creation (TaskbarFlyoutManager line ~113), so a single TryStop at the top of
+            // the round is silently undone the moment the round opens its next group. Evidence/15
+            // (ev15-soak-iso-r2) measured exactly that: `desktopIsolation=input-observation-disabled` was
+            // recorded while 17 input-driven closes still landed, because every group the round created
+            // restarted the observer. Suppression is therefore re-asserted after each window-producing
+            // step, so the recorded switch describes what the run actually did.
+            SuspendInputObservation();
             await Until(() => Find<Button>(Find<FrameworkElement>(Field<ContentIslandHost>(adapter, "host").ContentRoot,
                 "mtp-component/" + string.Join("/", Escape("dynamic"), Escape("main"), Escape("left"))),
                 ActionId("dynamic", "main", "left")) is { IsLoaded: true }, "dynamic controls not restored", token);
@@ -485,6 +779,10 @@ internal static class CombinationStabilityNativeRegression
             // real desktop input is the fixture's own robustness problem, not a product defect.
             var taskbarGroup = coordinator!.Manager.Inspect().Single(x => x.ScreenId == "owned-primary");
             await RequestTaskbarGroupUntilPanel(taskbarGroup.ScreenId, token);
+            // Explicit lifecycle wait: production opens the group on its own animation schedule. Waiting
+            // here is the ticket's "每轮时间可以放宽" made real - the round pays the animation instead of
+            // racing it, so a slow open is no longer read as a missing panel.
+            await WaitForWindowLifecycle(token);
             await InvokeUntil(() => FindInteractiveButton(CurrentTaskbarWindow(taskbarGroup.ScreenId, "main"), "mtp-template-child"),
                 "taskbar child navigation invoke failed", token,
                 () => DescribeButtonMatches(CurrentTaskbarWindow(taskbarGroup.ScreenId, "main"), "mtp-template-child"));
@@ -521,8 +819,9 @@ internal static class CombinationStabilityNativeRegression
             // Let production finish the close animation before the next group is requested on this screen.
             // Requesting in the same turn produced an owner group that was already Closing by the time the
             // hint request arrived (evidence/14/round10: groups=generation=8:closing=True with the request
-            // still Queued and revision 0), so the round failed on the very first iteration.
-            await Task.Delay(300, token);
+            // still Queued and revision 0), so the round failed on the very first iteration. The wait is
+            // profile-driven (see WaitForWindowLifecycle) rather than a bare 300 ms literal.
+            await WaitForWindowLifecycle(token);
             // Short hint: it also occupies this screen, so it runs *after* the taskbar panel is released for
             // the same reason as the interactive owner group below. Requesting it while the panel was still
             // resident made production close the panel instead, and evidence/14/round11 recorded the
@@ -535,6 +834,12 @@ internal static class CombinationStabilityNativeRegression
                 await Until(() => coordinator!.Hints.Inspect().Count > 0, "short hint not observed", token,
                     () => DescribeFlyoutState("short hint not observed"));
             }
+            // Wait for the short hint's own open/close cycle to finish before requesting the interactive
+            // owner group: both occupy this screen, and requesting the owner while the hint is still
+            // animating leaves the owner already Closing when the hint request arrives
+            // (evidence/14/round10, and evidence/15/ev15-soak-isolated reproduced it at generation=2
+            // closing=True revision=0). The wait belongs *before* the owner request, not after it.
+            await WaitForWindowLifecycle(token);
             await RequestInteractiveOwnerGroup(token);
             // Interactive hint: requested only when no live one exists. Re-requesting every round made
             // production build a fresh interactive-hint window and peer each time (~1 per round), even
@@ -550,7 +855,10 @@ internal static class CombinationStabilityNativeRegression
             }
             catch (TimeoutException error)
             {
-                throw new TimeoutException("interactive hint not observed; " + DescribeInteractiveHintRequest(), error);
+                // Production accepted the hint request but no interactive hint appeared: a product contract
+                // failure, so it classifies as Software rather than as a machine timeout.
+                throw new FixtureFailureException(FailureClass.Software, "software.interactive-hint-missing",
+                    "interactive hint not observed; " + DescribeInteractiveHintRequest(), error);
             }
             var hint = coordinator!.InteractiveHints.Inspect().Single();
             // Re-resolve the interactive-hint window per probe for the same reason as the event group:
@@ -571,6 +879,7 @@ internal static class CombinationStabilityNativeRegression
                 "interactive expansion missing", token,
                 () => DescribeButtonMatches(HintRoot(), "mtp-template-expand"));
             await Until(() => coordinator.Manager.Inspect().Any(x => x.Entry.ApplicationId == "hints" && x.Windows.Any(w => w.TemplateId == "expanded")), "interactive expansion not applied", token);
+            await WaitForWindowLifecycle(token);
             // Event flyout: the round keeps exercising both event entries. A resident generation is reused,
             // but event groups retire on their own schedule, so the request also runs whenever the live
             // group has no usable window - otherwise "the group object exists" was mistaken for "the
@@ -585,6 +894,7 @@ internal static class CombinationStabilityNativeRegression
                 await ClickTemplate("events", "main", "controls", round % 2 == 0 ? "persistent" : "send", token);
                 await Until(() => EventRoot() is not null, "event window not observed", token,
                     () => DescribeFlyoutState("event window not observed"));
+                await WaitForWindowLifecycle(token);
             }
             await Until(() => EventRoot() is { } root && Find<Button>(root, "mtp-template-confirm") is { IsLoaded: true },
                 "event confirm missing", token,
@@ -654,7 +964,8 @@ internal static class CombinationStabilityNativeRegression
             }
             catch (TimeoutException error)
             {
-                throw new TimeoutException("native template did not dispatch " + lastAction + "; candidates=" + DescribeButtonMatches(TemplateRoot(), automationId), error);
+                throw new FixtureFailureException(FailureClass.Software, "software.template-did-not-dispatch",
+                    "native template did not dispatch " + lastAction + "; candidates=" + DescribeButtonMatches(TemplateRoot(), automationId), error);
             }
             try
             {
@@ -664,7 +975,8 @@ internal static class CombinationStabilityNativeRegression
             }
             catch (TimeoutException error)
             {
-                throw new TimeoutException("native template did not confirm " + lastAction + "; candidates=" + DescribeButtonMatches(TemplateRoot(), automationId), error);
+                throw new FixtureFailureException(FailureClass.Software, "software.template-did-not-confirm",
+                    "native template did not confirm " + lastAction + "; candidates=" + DescribeButtonMatches(TemplateRoot(), automationId), error);
             }
             host.Refresh();
         }
@@ -703,10 +1015,29 @@ internal static class CombinationStabilityNativeRegression
             };
             return JsonSerializer.Serialize(new
             {
-                interactiveHints = coordinator?.InteractiveHints.Inspect(),
-                taskbarGroups = coordinator?.Manager.Inspect(),
-                ordinaryHints = coordinator?.Hints.Inspect(),
-                events = coordinator?.Events.Inspect(),
+                // Handles are projected to long before serializing. System.Text.Json cannot serialize
+                // IntPtr, so passing the inspection records straight through made the *description*
+                // throw NotSupportedException - which replaced the real failure with a serialization
+                // error and lost the现场 entirely. A self-describing assertion must never be the thing
+                // that fails.
+                interactiveHints = coordinator?.InteractiveHints.Inspect().Select(x => new
+                {
+                    x.Generation, x.Closing, handle = x.Handle.ToInt64(), x.Bounds, owner = x.Request.Owner
+                }).ToArray(),
+                taskbarGroups = coordinator?.Manager.Inspect().Select(group => new
+                {
+                    group.ScreenId, group.Generation, group.Closing, group.Error,
+                    windows = group.Windows.Select(window => new { window.TemplateId, handle = window.Handle.ToInt64(), window.Closing }).ToArray()
+                }).ToArray(),
+                ordinaryHints = coordinator?.Hints.Inspect().Select(x => new
+                {
+                    x.Generation, x.Closing, handle = x.Handle.ToInt64(), x.Bounds, x.Text
+                }).ToArray(),
+                events = coordinator?.Events.Inspect().Select(x => new
+                {
+                    x.Identity, x.Closing, x.CleanupPending,
+                    windows = x.Windows.Select(w => new { w.TemplateId, handle = w.Handle.ToInt64(), w.Closing }).ToArray()
+                }).ToArray(),
                 hintsState = snapshot is null ? null : new
                 {
                     snapshot.SessionId,
@@ -766,7 +1097,14 @@ internal static class CombinationStabilityNativeRegression
             string last = "<none>";
             while (attempt.Elapsed < TimeSpan.FromSeconds(20))
             {
-                if (FindInteractiveButton(CurrentTaskbarWindow(screenId, "main"), "mtp-template-child") is not null) return;
+                if (FindInteractiveButton(CurrentTaskbarWindow(screenId, "main"), "mtp-template-child") is not null)
+                {
+                    // The group exists now, so production has restarted its input observer while creating
+                    // it. Re-assert isolation before returning, otherwise the very group this method just
+                    // established is closable by the next real desktop click.
+                    SuspendInputObservation();
+                    return;
+                }
                 last = DescribeFlyoutState("taskbar panel missing") + ";" + DescribeTaskbarWindow(screenId, "main");
                 // Only ask again when the flyouts group really is gone. Re-requesting while a group is
                 // still coming up would drive production's replacement path (Replacing/…-superseded) and
@@ -779,7 +1117,8 @@ internal static class CombinationStabilityNativeRegression
                 }
                 await Task.Delay(50, token);
             }
-            throw new TimeoutException("taskbar panel missing; " + last);
+            throw new FixtureFailureException(FailureClass.Environment, "environment.timeout",
+                "taskbar panel missing; " + last + "; retryPoint=taskbar-panel-restore; retryClass=environment-failure; waitedMs=" + attempt.ElapsedMilliseconds);
         }
         /// <summary>
         /// Waits until an interactive-but-not-yet-closing taskbar group owned by <c>hints</c> is live,
@@ -796,7 +1135,13 @@ internal static class CombinationStabilityNativeRegression
                 x.Entry.ApplicationId == "hints" && !x.Closing && x.Windows.Count > 0);
             while (attempt.Elapsed < TimeSpan.FromSeconds(20))
             {
-                if (HasOwner()) return;
+                if (HasOwner())
+                {
+                    // Same reason as the taskbar group: the owner group's creation restarted the input
+                    // observer, so isolation has to be re-asserted on the path that returns success.
+                    SuspendInputObservation();
+                    return;
+                }
                 last = DescribeFlyoutState("interactive owner group missing") + ";" + DescribeTaskbarWindow("owned-primary", "main");
                 // Restart when no *live* "hints" group is present - including the case where one exists but
                 // is already closing. Treating a closing group as present left the round waiting for an
@@ -809,7 +1154,8 @@ internal static class CombinationStabilityNativeRegression
                 }
                 await Task.Delay(50, token);
             }
-            throw new TimeoutException("interactive owner group missing; " + last);
+            throw new FixtureFailureException(FailureClass.Environment, "environment.timeout",
+                "interactive owner group missing; " + last + "; retryPoint=interactive-owner-group; retryClass=environment-failure; waitedMs=" + attempt.ElapsedMilliseconds);
         }
         string DescribeFlyoutJournal()
         {
@@ -861,10 +1207,22 @@ internal static class CombinationStabilityNativeRegression
                 journal = DescribeFlyoutJournal()
             });
         }
+        /// <summary>
+        /// Clicks a button that production may replace underneath the fixture. A COM "element not
+        /// available" between the probe and the invoke is retried within a 2 s bound, because that is an
+        /// environment condition (see the <c>invoke-com-retry</c> retry point). A button that never becomes
+        /// clickable is NOT retried past that bound: it is a software failure, because production showing a
+        /// live group without a usable control is a product contract violation.
+        ///
+        /// The failure carries the live state: "candidates=&lt;none&gt;" alone (all the first soak run
+        /// printed) cannot say whether the window had no such button, had one that was disabled, or had
+        /// gone away entirely.
+        /// </summary>
         async Task InvokeUntil(Func<Button?> locate, string failureMessage, CancellationToken token, Func<string>? describe = null)
         {
             Exception? last = null;
             string lastCandidates = "<not sampled>";
+            bool sawButton = false;
             var deadline = Stopwatch.StartNew();
             while (deadline.Elapsed < TimeSpan.FromSeconds(2))
             {
@@ -873,6 +1231,7 @@ internal static class CombinationStabilityNativeRegression
                 if (describe is not null) lastCandidates = describe();
                 if (button is { IsLoaded: true, IsEnabled: true })
                 {
+                    sawButton = true;
                     try
                     {
                         Invoke(button);
@@ -880,12 +1239,27 @@ internal static class CombinationStabilityNativeRegression
                     }
                     catch (COMException error) when (error.HResult == unchecked((int)0x80040200))
                     {
+                        // The element vanished between the probe and the invoke: production replaced the
+                        // group. Covered by the bounded retry, and recorded so a repeated occurrence is
+                        // visible in the journal rather than hidden.
                         last = error;
                     }
                 }
                 await Task.Delay(20, token);
             }
-            throw new InvalidOperationException(failureMessage + "; candidates=" + lastCandidates, last);
+            string state = JsonSerializer.Serialize(new
+            {
+                note = failureMessage,
+                waitedMs = deadline.ElapsedMilliseconds,
+                sawClickableButton = sawButton,
+                candidates = lastCandidates,
+                comRetries = last is null ? 0 : 1,
+                retryPoint = "invoke-com-retry",
+                flyouts = DescribeFlyoutState(failureMessage),
+                taskbarWindow = DescribeTaskbarWindow("owned-primary", "main")
+            });
+            throw new FixtureFailureException(FailureClass.Software, "software.invoke-target-missing",
+                failureMessage + "; " + state, last);
         }
         async Task ExerciseTimer(CancellationToken token)
         {
@@ -915,6 +1289,19 @@ internal static class CombinationStabilityNativeRegression
             Invoke(secondary);
             await Until(() => adapter.GroupSnapshot!.ItemsByKey[Key("timers", "down")].Expanded && adapter.GetGroupFrame() is { IsComplete: true }, "timer declared batch expansion missing", token);
         }
+        /// <summary>
+        /// Re-asserts input isolation. Called before the round's business steps and again after every step
+        /// that can make production create a group, because production restarts its own observer inside
+        /// group creation. Idempotent, and cheap: it returns immediately when isolation is off or the
+        /// observer is already stopped.
+        /// </summary>
+        void SuspendInputObservation()
+        {
+            if (!IsolateInput) return;
+            if (!PauseInputObserver()) return;
+            InputPauses++;
+        }
+
         /// <summary>
         /// Stops production's real-input subscription for the business part of a round and reports whether
         /// it had been running. See the call site for why a busy desktop makes this necessary.
@@ -950,7 +1337,8 @@ internal static class CombinationStabilityNativeRegression
         {
             await Until(() => adapter.GetGroupFrame() is { IsComplete: true }, "shared width did not settle before reversal", token);
             TaskbarItemKey key = Key("dynamic", "a");
-            var initial = adapter.GetGroupFrame() ?? throw new InvalidOperationException("missing expansion frame");
+            var initial = adapter.GetGroupFrame() ?? throw new FixtureFailureException(
+                FailureClass.Fixture, "fixture.expansion-frame-missing", "missing expansion frame");
             double baselineWidth = initial.WidthDip;
             Button? button = Find<Button>(Field<ContentIslandHost>(adapter, "host").ContentRoot, ItemId(key));
             Check(button is not null && button.IsEnabled, "expand button missing");
@@ -1011,15 +1399,52 @@ internal static class CombinationStabilityNativeRegression
                 coordinator.InteractiveHints.Inspect().Count == 0 && coordinator.Events.Inspect().Count == 0 &&
                 !coordinator.Manager.HasResources && !coordinator.Hints.HasResources &&
                 !coordinator.InteractiveHints.HasResources && !coordinator.Events.HasResources, "flyout managers not closed", token,
-                timeout: TimeSpan.FromSeconds(30));
+                // Self-describing: a bare "flyout managers not closed" cannot say whether production kept
+                // a group alive, which group it was, or whether the fixture merely still holds resources.
+                // One smoke run failed here and the message alone did not answer any of that, which is
+                // exactly the gap this output closes.
+                () => JsonSerializer.Serialize(new
+                {
+                    note = "flyout managers not closed",
+                    lastAction,
+                    elapsedMs = watch.ElapsedMilliseconds,
+                    taskbarGroups = coordinator.Manager.Inspect().Select(x => new { x.ScreenId, x.Generation, x.Closing, x.Error, windows = x.Windows.Count }).ToArray(),
+                    shortHints = coordinator.Hints.Inspect().Select(x => new { x.Generation, x.Closing, handle = x.Handle.ToInt64() }).ToArray(),
+                    interactiveHints = coordinator.InteractiveHints.Inspect().Select(x => new { x.Generation, x.Closing, handle = x.Handle.ToInt64() }).ToArray(),
+                    events = coordinator.Events.Inspect().Select(x => new { x.Identity, x.Closing, x.CleanupPending, windows = x.Windows.Count }).ToArray(),
+                    hasResources = new
+                    {
+                        taskbar = coordinator.Manager.HasResources, hints = coordinator.Hints.HasResources,
+                        interactiveHints = coordinator.InteractiveHints.HasResources, events = coordinator.Events.HasResources
+                    },
+                    hostQueueCount = Field<HostFlyoutRequestQueue>(host, "flyoutRequests").Count,
+                    journal = DescribeFlyoutJournal()
+                }),
+                // Production is required to close every MTP-owned flyout during teardown. A group still
+                // alive after the bounded close window is a product contract failure, not machine noise,
+                // so it classifies as Software and takes exit code 10.
+                timeout: TimeSpan.FromSeconds(30), failureClass: FailureClass.Software);
             SelectVisible(false); host.Refresh();
             await Until(() => !adapter.IsAlive && adapter.GetGroupFrame() is null && adapter.GetTimerReadings().Count == 0 &&
-                adapter.GetPresetReadings().Count == 0, "hidden group retained visual or animation readings", token);
+                adapter.GetPresetReadings().Count == 0, "hidden group retained visual or animation readings", token,
+                () => JsonSerializer.Serialize(new
+                {
+                    note = "hidden group retained visual or animation readings",
+                    lastAction, adapterAlive = adapter.IsAlive, adapterHandle = adapter.Handle.ToInt64(),
+                    groupFrame = adapter.GetGroupFrame() is null ? "<null>" : adapter.GetGroupFrame()!.ToString(),
+                    timers = adapter.GetTimerReadings().Count, presets = adapter.GetPresetReadings().Count,
+                    timerDriverRunning = adapter.TimerDriverRunning
+                }), failureClass: FailureClass.Software, retryPoint: null);
             Check(session!.Actions.OutstandingCount == 0 && session.Actions.BusyCount == 0 &&
-                Field<HostFlyoutRequestQueue>(host, "flyoutRequests").Count == 0, "pending action survived fixture close");
+                Field<HostFlyoutRequestQueue>(host, "flyoutRequests").Count == 0, "pending action survived fixture close",
+                FailureClass.Software, "software.pending-action-after-close");
             Check(!adapter.TimerDriverRunning && observedGroupTimers.All(timer => !timer.IsEnabled) && !TimerEnabled(coordinator.Hints) &&
-                !TimerEnabled(coordinator.InteractiveHints) && !TimerEnabled(coordinator.Events), "fixture timer survived close");
-            Check(roundHandles.All(handle => !FlyoutNative.IsWindow(handle)), "fixture native owner survived close");
+                !TimerEnabled(coordinator.InteractiveHints) && !TimerEnabled(coordinator.Events), "fixture timer survived close",
+                FailureClass.Software, "software.timer-survived-close");
+            // The native owners below are created by this fixture, so a surviving handle here is the
+            // harness failing to release its own window - a fixture defect, not a product one.
+            Check(roundHandles.All(handle => !FlyoutNative.IsWindow(handle)), "fixture native owner survived close",
+                FailureClass.Fixture, "fixture.native-owner-survived-close");
             observedGroupTimers.Clear();
             roundHandles.Clear();
             GC.Collect();
@@ -1184,9 +1609,11 @@ internal static class CombinationStabilityNativeRegression
         FrameworkElement ComponentRoot(string app, string feature, string component) =>
             Find<FrameworkElement>(Field<ContentIslandHost>(adapter, "host").ContentRoot,
                 "mtp-component/" + string.Join("/", Escape(app), Escape(feature), Escape(component))) ??
-            throw new InvalidOperationException($"missing component root {app}/{feature}/{component}");
+            throw new FixtureFailureException(FailureClass.Fixture, "fixture.component-root-missing",
+                $"missing component root {app}/{feature}/{component}");
         TaskbarItemKey Key(string app, string item) => adapter.GroupSnapshot!.ItemsByKey.Keys.Single(key => key.Component.ApplicationId == app && key.ItemId == item);
-        ApplicationState State(string app) => session!.States.GetSnapshot(app)?.State ?? throw new InvalidOperationException("confirmed state missing: " + app);
+        ApplicationState State(string app) => session!.States.GetSnapshot(app)?.State ?? throw new FixtureFailureException(
+            FailureClass.Fixture, "fixture.confirmed-state-missing", "confirmed state missing: " + app);
         static string Escape(string value) => Uri.EscapeDataString(value);
         static string ActionId(string app, string feature, string component) => "mtp-action/" + string.Join("/", Escape(app), Escape(feature), Escape(component));
     }
@@ -1213,7 +1640,15 @@ internal static class CombinationStabilityNativeRegression
     }
     private sealed record NativeWindowSample(int Callbacks, int Owned, int Previews, int ThreadTopLevelWindows);
     private sealed record TrendResult(bool Pass, int WarmupRounds, int MaxHandleDelta, long MaxPrivateDelta, int TailHandleSpan, long TailPrivateSpan, string Verdict,
-        int GdiDelta, int UserDelta, int KernelDelta, int ThreadDelta, int ExcludedTeardownSamples);
+        int GdiDelta, int UserDelta, int KernelDelta, int ThreadDelta, int ExcludedTeardownSamples,
+        // Plateau evidence and the absolute reference comparison. The maintainer's 2026-10-07 ruling
+        // replaced "handleDelta <= 256 vetoes the run" with "report the plateau and the absolute values":
+        // bounded growth (runtime warmup, object pools, compositor caches) is not a leak, and the
+        // difference between "bounded" and "leaking" is whether the growth stops, not whether some
+        // absolute number was crossed. The numbers below keep the run comparable to the 13/14 baselines
+        // without letting a fixed ceiling turn a real failure into a permanent red.
+        int SecondHalfHandleSlope, int SecondHalfPrivateSlope, bool PlateauHandles, bool PlateauPrivate,
+        string ReferenceComparison);
     private static TrendResult ResourceTrend(IReadOnlyList<ResourceSample> values)
     {
         bool allObserved = values.Count > 0 && values.All(x => x.HandleCount >= 0 && x.PrivateBytes >= 0);
@@ -1235,7 +1670,7 @@ internal static class CombinationStabilityNativeRegression
         int excludedTeardown = values.Count(x => x.Owner == TeardownOwner);
         var valid = values.Where(x => x.HandleCount >= 0 && x.PrivateBytes >= 0 && x.Owner != TeardownOwner).GroupBy(x => x.Pid)
             .Select(g => g.OrderBy(x => x.Round).Skip(WarmupRounds).ToArray()).Where(x => x.Length >= 5).ToArray();
-        if (valid.Length == 0) return new(false, WarmupRounds, 0, 0, 0, 0, "no-samples", 0, 0, 0, 0, excludedTeardown);
+        if (valid.Length == 0) return new(false, WarmupRounds, 0, 0, 0, 0, "no-samples", 0, 0, 0, 0, excludedTeardown, 0, 0, false, false, "no-samples");
         int maxHandles = valid.Max(x => x[^1].HandleCount - x[0].HandleCount);
         long maxPrivate = valid.Max(x => x[^1].PrivateBytes - x[0].PrivateBytes);
         int tailHandles = valid.Max(x => x.TakeLast(5).Max(s => s.HandleCount) - x.TakeLast(5).Min(s => s.HandleCount));
@@ -1248,9 +1683,52 @@ internal static class CombinationStabilityNativeRegression
         int userDelta = gui.Length == 0 ? -1 : gui.Max(x => x[^1].UserObjects - x[0].UserObjects);
         int threadDelta = gui.Length == 0 ? -1 : gui.Max(x => x[^1].ThreadCount - x[0].ThreadCount);
         int kernelDelta = gdiDelta < 0 || userDelta < 0 ? -1 : maxHandles - gdiDelta - userDelta;
-        bool pass = allObserved && maxHandles <= 256 && maxPrivate <= 128 * 1024 * 1024 && tailHandles <= 32 && tailPrivate <= 16 * 1024 * 1024;
-        return new(pass, WarmupRounds, maxHandles, maxPrivate, tailHandles, tailPrivate, pass ? "within-bounded-cache-threshold" : "resource-trend-exceeded",
-            gdiDelta, userDelta, kernelDelta, threadDelta, excludedTeardown);
+        // Plateau judgement: the second half of the observed window must not keep climbing. A leak that
+        // is still growing at the end of the run shows a positive second-half slope; a bounded cache
+        // shows a slope near zero even when its absolute value is large. This is the primary criterion.
+        int secondHalfHandleSlope = SecondHalfSlope(valid, sample => sample.HandleCount);
+        int secondHalfPrivateSlope = SecondHalfSlope(valid, sample => (int)(sample.PrivateBytes / (1024 * 1024)));
+        // "Near zero" is a slope of at most one handle per round over the second half; private memory is
+        // measured in MiB/round. A bounded runtime cache repeatedly measured 0 handles/round after
+        // warmup, so this is not a tolerance invented to make a failing run green.
+        bool plateauHandles = secondHalfHandleSlope <= 1;
+        bool plateauPrivate = secondHalfPrivateSlope <= 1;
+        string reference = $"handleDelta={maxHandles} (reference 256), tailHandleSpan={tailHandles} (reference 32), " +
+            $"privateDeltaMiB={maxPrivate / (1024 * 1024)} (reference 128), tailPrivateMiB={tailPrivate / (1024 * 1024)} (reference 16); " +
+            "reference values are reported, not gating";
+        // Pass means "no continuing growth", plus the run was fully observed. The absolute reference
+        // values are deliberately NOT part of this verdict - that is exactly the ruling this ticket
+        // implements - but they stay in Verdict/ReferenceComparison so a report can be compared against
+        // the 13/14 baselines without re-running anything.
+        bool pass = allObserved && plateauHandles && plateauPrivate;
+        string verdict = !allObserved ? "no-samples"
+            : pass ? "plateaued-no-continuing-growth"
+            : "still-growing-second-half-slope";
+        return new(pass, WarmupRounds, maxHandles, maxPrivate, tailHandles, tailPrivate, verdict,
+            gdiDelta, userDelta, kernelDelta, threadDelta, excludedTeardown,
+            secondHalfHandleSlope, secondHalfPrivateSlope, plateauHandles, plateauPrivate, reference);
+    }
+
+    /// <summary>
+    /// Least-squares slope over the second half of a PID's post-warmup series, expressed per round.
+    /// Using the second half (not the whole series) is what separates "the runtime warmed up and then
+    /// stopped" from "something allocates every round and never stops".
+    /// </summary>
+    private static int SecondHalfSlope(IReadOnlyList<ResourceSample[]> perPid, Func<ResourceSample, int> selector)
+    {
+        int worst = int.MinValue;
+        foreach (var series in perPid)
+        {
+            var second = series.Skip(series.Length / 2).ToArray();
+            if (second.Length < 2) continue;
+            double meanX = second.Average(x => (double)x.Round);
+            double meanY = second.Average(x => (double)selector(x));
+            double covariance = second.Sum(x => (x.Round - meanX) * (selector(x) - meanY));
+            double variance = second.Sum(x => (x.Round - meanX) * (x.Round - meanX));
+            int slope = variance == 0 ? 0 : (int)Math.Round(covariance / variance);
+            worst = Math.Max(worst, slope);
+        }
+        return worst == int.MinValue ? 0 : worst;
     }
 
     private static bool TimerEnabled(object? manager) => manager?.GetType().GetField("timer", Members)?.GetValue(manager) is DispatcherTimer timer && timer.IsEnabled;
@@ -1266,7 +1744,14 @@ internal static class CombinationStabilityNativeRegression
         return Field<TaskbarFlyoutCoordinator>(host, "flyouts");
     }
     private static bool ProcessExited(int pid) { try { using var p = Process.GetProcessById(pid); return p.HasExited; } catch { return true; } }
-    private static async Task Until(Func<bool> condition, string error, CancellationToken token, Func<string>? describe = null, TimeSpan? timeout = null)
+    /// <summary>
+    /// Waits for a condition, then fails as an <see cref="FailureClass.Environment"/> failure quoting the
+    /// live state. <paramref name="retryPoint"/> names the bounded retry point that owns this wait (see
+    /// <see cref="FixtureOutcome.RetryPoints"/>), so a red run states which retry was already exhausted
+    /// instead of leaving "was this retried?" to the reader.
+    /// </summary>
+    private static async Task Until(Func<bool> condition, string error, CancellationToken token, Func<string>? describe = null,
+        TimeSpan? timeout = null, string? retryPoint = null, FailureClass failureClass = FailureClass.Environment)
     {
         var wait = Stopwatch.StartNew();
         TimeSpan limit = timeout ?? TimeSpan.FromSeconds(12);
@@ -1278,7 +1763,17 @@ internal static class CombinationStabilityNativeRegression
             // already been torn down, and its windows, buttons and queue state are gone. The bare
             // "taskbar panel missing" message this replaces was unusable for exactly that reason.
             if (wait.Elapsed > limit)
-                throw new TimeoutException(describe is null ? error : error + "; " + describe());
+            {
+                // A self-describing assertion must never fail *because of* its own description: evidence/15's
+                // first interactive-hint probe made the describer throw NotSupportedException (an
+                // unserializable IntPtr), which replaced the real failure with a serialization error. The
+                // describer is therefore best-effort, and a broken one is reported as such.
+                string detail;
+                try { detail = describe is null ? error : error + "; " + describe(); }
+                catch (Exception describeError) { detail = error + "; <describer-failed:" + describeError.GetType().Name + ": " + describeError.Message + ">"; }
+                if (retryPoint is not null) detail += $"; retryPoint={retryPoint}; retryClass={FixtureOutcome.Describe(failureClass)}; waitedMs={wait.ElapsedMilliseconds}";
+                throw new FixtureFailureException(failureClass, failureClass == FailureClass.Environment ? "environment.timeout" : "software.timeout", detail);
+            }
             await Task.Delay(25, token);
         }
     }
@@ -1383,8 +1878,19 @@ internal static class CombinationStabilityNativeRegression
     private static void Invoke(Button button) { RoundPeerInvocations++; ((IInvokeProvider)new ButtonAutomationPeer(button).GetPattern(PatternInterface.Invoke)).Invoke(); }
     private static T Field<T>(object owner, string name) where T : class => (T)owner.GetType().GetField(name, Members)!.GetValue(owner)!;
     private static void SetField(object owner, string name, object value) => owner.GetType().GetField(name, Members)!.SetValue(owner, value);
-    private static void Check(bool value, string message) { if (!value) throw new InvalidOperationException(message); }
+    /// <summary>
+    /// A failed assertion. Class defaults to <see cref="FailureClass.Software"/> because most of these
+    /// checks assert a 五期 product contract ("the group reached panel", "the confirm button exists");
+    /// call sites that are really about this harness's own objects pass
+    /// <see cref="FailureClass.Fixture"/> explicitly. The class decides the process exit code, so it is
+    /// never inferred silently at the throw site without a stated code.
+    /// </summary>
+    private static void Check(bool value, string message, FailureClass failureClass = FailureClass.Software, string? code = null)
+    {
+        if (!value) throw new FixtureFailureException(failureClass, code ?? "software.assertion-failed", message);
+    }
     private static void CheckSetting<T>(CoreResult<T> result, string message) =>
-        Check(result.IsSuccess, $"{message}; code={result.Error?.Code}; message={result.Error?.Message}");
+        Check(result.IsSuccess, $"{message}; code={result.Error?.Code}; message={result.Error?.Message}",
+            FailureClass.Software, "software.setting-not-accepted");
 }
 
