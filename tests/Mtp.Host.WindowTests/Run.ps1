@@ -8,12 +8,31 @@ param(
     [string]$InjectFailure = '',
     # Opt-in desktop isolation. Off by default so a normal run measures the product as shipped.
     [switch]$IsolateInput,
+    # Content-addressed binary pool used by combination-stability so the same binary is not stored once
+    # per batch. Defaults to <repo>/.scratch/tool-cache/binary-pool.
+    [string]$BinaryPoolDirectory = '',
     [string]$OutputDirectory = "$PSScriptRoot/bin/window-regression",
-    [string]$EvidenceDirectory = "$PSScriptRoot/../../.scratch/二期开发/evidence/HostWindowRegression/run-$(Get-Date -Format 'yyyyMMdd-HHmmss-fff')-$([Guid]::NewGuid().ToString('N').Substring(0, 8))"
+    # Where this run's evidence goes. -EvidenceDirectory wins when given; otherwise a batch directory is
+    # generated under -EvidenceRoot, so a caller only has to name the root:
+    #   <EvidenceRoot>/<scenario>-<timestamp>-<id>
+    #
+    # -EvidenceRoot defaults to a neutral staging area rather than a period directory. It used to default
+    # to .scratch/二期开发/evidence/HostWindowRegression, which meant every run that forgot to pass a path
+    # silently landed under 二期 no matter which phase was being worked on.
+    #
+    # Staging is a scratch location: promote a batch to its permanent home under
+    # .scratch/<期次>/evidence/<票号>/<批次>/ once it is the evidence you intend to cite.
+    [string]$EvidenceRoot = "$PSScriptRoot/../../.scratch/evidence-staging",
+    [string]$EvidenceDirectory = ''
 )
 $ErrorActionPreference = 'Stop'
 $outputPath = [IO.Path]::GetFullPath($OutputDirectory)
-$evidencePath = [IO.Path]::GetFullPath($EvidenceDirectory)
+$evidencePath = if ($EvidenceDirectory) {
+    [IO.Path]::GetFullPath($EvidenceDirectory)
+} else {
+    $batchName = '{0}-{1}-{2}' -f $Scenario, (Get-Date -Format 'yyyyMMdd-HHmmss-fff'), ([Guid]::NewGuid().ToString('N').Substring(0, 8))
+    Join-Path ([IO.Path]::GetFullPath($EvidenceRoot)) $batchName
+}
 if ($evidencePath.TrimEnd('\', '/') -eq $outputPath.TrimEnd('\', '/') -or $evidencePath.StartsWith($outputPath.TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
     throw 'EvidenceDirectory must be separate from the build output directory.'
 }
@@ -112,22 +131,59 @@ try {
 finally {
     $run.Dispose()
     New-Item -ItemType Directory -Path $evidencePath | Out-Null
+    $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
+    $binaryPool = if ($BinaryPoolDirectory) { [IO.Path]::GetFullPath($BinaryPoolDirectory) } else { Join-Path $repoRoot '.scratch/tool-cache/binary-pool' }
     $capturedBinaries = Join-Path $evidencePath 'binary-identity'
-    New-Item -ItemType Directory -Path $capturedBinaries | Out-Null
-    foreach ($binaryName in @('Mtp.Host.dll', 'Mtp.Host.exe', 'Mtp.Host.WindowTests.dll', 'Mtp.Host.Runtime.dll', 'Mtp.Platform.Core.dll', 'Mtp.Contracts.dll', 'Mtp.Transport.dll')) {
-        Copy-Item -LiteralPath (Join-Path $outputPath $binaryName) -Destination $capturedBinaries
-    }
-    if ($Scenario -eq 'combination-stability') {
-        foreach ($child in @('Broker', 'CounterService')) {
-            Copy-Item -LiteralPath (Join-Path $outputPath $child) -Destination $capturedBinaries -Recurse
+    $identityBinaries = @('Mtp.Host.dll', 'Mtp.Host.exe', 'Mtp.Host.WindowTests.dll', 'Mtp.Host.Runtime.dll', 'Mtp.Platform.Core.dll', 'Mtp.Contracts.dll', 'Mtp.Transport.dll')
+
+    # Store one binary in the content-addressed pool and return its manifest entry. Named so a reader can
+    # recover it from the SHA256 alone: <sha256[0..16]>_<filename>.
+    function Add-BinaryToPool([string]$sourcePath) {
+        $hash = (Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash
+        $poolFile = '{0}_{1}' -f $hash.Substring(0, 16).ToLowerInvariant(), [IO.Path]::GetFileName($sourcePath)
+        $destination = Join-Path $binaryPool $poolFile
+        if (-not (Test-Path -LiteralPath $destination)) {
+            New-Item -ItemType Directory -Force -Path $binaryPool | Out-Null
+            Copy-Item -LiteralPath $sourcePath -Destination $destination -Force
         }
-        Get-ChildItem -LiteralPath $capturedBinaries -File -Recurse | Get-FileHash -Algorithm SHA256 |
-            Select-Object Path, Hash | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath (Join-Path $evidencePath 'binary-hashes.json') -Encoding UTF8
-        git -C "$PSScriptRoot/../.." rev-parse HEAD | Set-Content -LiteralPath (Join-Path $evidencePath 'source-head.txt')
-        git -C "$PSScriptRoot/../.." status --short | Set-Content -LiteralPath (Join-Path $evidencePath 'source-status.txt')
+        [pscustomobject]@{ Path = $sourcePath; Hash = $hash; PoolFile = $poolFile }
+    }
+
+    if ($Scenario -eq 'combination-stability') {
+        # Combination runs are repeated often (smoke per change, soak per major version), and copying the
+        # whole identity set into every batch accumulates linearly: 17 batches measured 53 MB, of which
+        # 93% was byte-identical duplication. The batch therefore keeps only the SHA256 manifest, and
+        # each unique binary is stored once in the shared pool.
+        New-Item -ItemType Directory -Force -Path $binaryPool | Out-Null
+        $identity = New-Object System.Collections.Generic.List[object]
+        foreach ($binaryName in $identityBinaries) {
+            $identity.Add((Add-BinaryToPool (Join-Path $outputPath $binaryName)))
+        }
+        foreach ($child in @('Broker', 'CounterService')) {
+            Get-ChildItem -LiteralPath (Join-Path $outputPath $child) -File |
+                ForEach-Object { $identity.Add((Add-BinaryToPool $_.FullName)) }
+        }
+        $identity | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath (Join-Path $evidencePath 'binary-hashes.json') -Encoding UTF8
+        @(
+            'This batch keeps no binary copy; every archived binary lives in the shared content-addressed pool.',
+            "Pool:      $binaryPool",
+            'Recover:   take the SHA256 from binary-hashes.json and read <sha256[0..16]>_<filename> from the pool.',
+            'Naming:    a pool file is named by its SHA256 prefix plus its original file name, so no index is needed.',
+            'binary-pool-index.json, where present, is the record of an earlier bulk de-duplication pass.'
+        ) | Set-Content -LiteralPath (Join-Path $evidencePath 'binary-identity-redirect.txt') -Encoding UTF8
+        git -C $repoRoot rev-parse HEAD | Set-Content -LiteralPath (Join-Path $evidencePath 'source-head.txt')
+        git -C $repoRoot status --short | Set-Content -LiteralPath (Join-Path $evidencePath 'source-status.txt')
         Get-ChildItem -LiteralPath "$PSScriptRoot/../../src", $PSScriptRoot -Recurse -File -Filter '*.cs' |
             Where-Object { $_.FullName -notmatch '[\\/](bin|obj)[\\/]' } | Get-FileHash -Algorithm SHA256 |
             Select-Object Path, Hash | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath (Join-Path $evidencePath 'source-hashes.json') -Encoding UTF8
+    }
+    else {
+        # Other scenarios keep the binaries next to the evidence: Verify-HostEvidence.ps1
+        # -CapturedBinaryDirectory re-hashes them from that directory to match a report's identity.
+        New-Item -ItemType Directory -Path $capturedBinaries -Force | Out-Null
+        foreach ($binaryName in $identityBinaries) {
+            Copy-Item -LiteralPath (Join-Path $outputPath $binaryName) -Destination $capturedBinaries
+        }
     }
     # Keep binaries in bin; preserve this run's logs, screenshots and report directories separately.
     foreach ($file in Get-ChildItem -LiteralPath $outputPath -File) {

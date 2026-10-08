@@ -141,3 +141,29 @@ HostBrokerSession.GetLifecycleSnapshot和SdkClient.GetLifecycleSnapshot读取实
 纯采样边界位于`TimerPresentationSamplerTests`；样例业务使用`dotnet test tests/Mtp.TimerDemo.Tests/Mtp.TimerDemo.Tests.csproj -nr:false`，项目已纳入解决方案。`HostBrokerSession.ReceivedStateMessages`是Host实际收到的State计数；Heartbeat计数仅反映Host收到的消息，不代表SDK向Broker发送的心跳总量。Windows自有窗口自动化不代替真实任务栏、多屏或人工动画体验验收。
 
 五期预置模板：`Mtp.Host.exe --preset-demo`，允许presets和controls。`powershell -ExecutionPolicy Bypass -File tests/Mtp.Host.WindowTests/Run.ps1 -Scenario preset -EvidenceDirectory <独立证据目录>`通过真实SDK验证数字/环/条、独立进度依据、组合字段、不确定忙碌、文字实测滚动、反向与减少动画、活动结束和清理。纯状态命令为`dotnet test tests/Mtp.PresetDemo.Tests/Mtp.PresetDemo.Tests.csproj -nr:false`，采样见`PresetMotionSamplerTests`；计数UIA明确已完成数量或当前项序号，图形不从计数推比例。原生记录`preset-pass`及对应中间采样；截图只保留稳定终态。
+
+## 构建产物与目录整洁
+
+各测试项目编译出的 `bin/` 与 `obj/` 是 `.gitignore` 忽略的构建产物（`**/bin/`、`**/obj/`），**可整体删除，下次构建自动重建**，源码与证据不受影响。
+
+它们此前会静默堆积成多个平级目录，因为存在两种输出布局，且各自会留下历史目录：
+
+| 构建方式 | 输出布局 |
+|---|---|
+| `Run.ps1`（内部用 `-p:OutDir=`） | `bin/window-regression/`，**扁平**，一个项目一个固定目录 |
+| 直接 `dotnet build` / `dotnet test` | `bin/<Configuration>/<TFM>/`，标准布局 |
+
+再叠加"给 `Run.ps1 -OutputDirectory` 传场景名"（历史上出现过 `acrylic-composition`、`phase06-acceptance`、`preview-regression` 等），同一个 `bin/` 下就会并排多套命名。目标框架迁移同样留残留：项目从 `net10.0` 改为 `net10.0-windows10.0.26100.0`（或反向）后，旧 TFM 目录不会自动清理。
+
+**约定**：
+
+1. 测试构建统一走 `Run.ps1`，输出用它默认的 `bin/window-regression`；不要给 `-OutputDirectory` 传场景名。直接 `dotnet build`/`dotnet test` 产生的标准布局目录用完即可由下面的脚本清掉。
+2. 清理用本目录下的 `Clean-BuildOutput.ps1`：
+
+```powershell
+pwsh -File tests/Clean-BuildOutput.ps1 -WhatIf        # 预览 tests 下的 bin/obj 及体积
+pwsh -File tests/Clean-BuildOutput.ps1                # 清理 tests
+pwsh -File tests/Clean-BuildOutput.ps1 -Scope all     # src + tests
+```
+
+3. `obj/` 保存 NuGet 还原缓存与编译中间产物，删掉会让下次构建做完整还原（首次慢一些）；只清 `bin/` 时可手工删对应目录。

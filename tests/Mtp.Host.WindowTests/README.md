@@ -6,28 +6,31 @@ Run on Windows with an interactive desktop and the Host Windows App SDK prerequi
 powershell -ExecutionPolicy Bypass -File tests/Mtp.Host.WindowTests/Run.ps1
 ```
 
-构建输出仍在 `bin/window-regression/`。`Run.ps1` 将每轮新产生的日志、截图与报告归档到本地 `.scratch/二期开发/evidence/HostWindowRegression/run-时间戳-唯一标识/`，包括失败运行留下的材料；只另存 Host DLL/EXE 的身份副本到 `binary-identity/`，不复制全部运行库。可用 `-EvidenceDirectory` 指定新的独立批次目录。输出中的归档路径是本轮长期引用入口。
+构建输出仍在 `bin/window-regression/`。`Run.ps1` 将每轮新产生的日志、截图与报告归档到独立批次目录，包括失败运行留下的材料。输出中的归档路径是本轮长期引用入口。
+
+**证据落脚点**（五期15 起）：`-EvidenceDirectory <路径>` 精确指定批次目录；`-EvidenceRoot <根路径>` 只给根，批次子目录自动生成为 `<场景>-<时间戳>-<随机>`；两者都不给时落到中性暂存区 `.scratch/evidence-staging/`。此前默认值写死 `.scratch/二期开发/evidence/HostWindowRegression/`，导致不管在做哪期、只要忘了传路径就落进二期目录，现已改为不再硬编码期次。暂存区是 scratch 位置：确认为要长期引用的证据后，再归档到 `.scratch/<期次>/evidence/<票号>/<批次>/`。
+
+二进制身份副本按场景分流：`combination-stability` 只写 `binary-hashes.json` 与 `binary-identity-redirect.txt`，二进制本体入共享哈希池 `.scratch/tool-cache/binary-pool/`（按 SHA256 取回）；其他场景仍把本体存到 `binary-identity/`，因为 `Verify-HostEvidence.ps1 -CapturedBinaryDirectory` 要从该目录重新哈希匹配报告身份。
 
 2026-10-05 之前的已有日志、console 和 display-selection 材料已迁至 `.scratch/二期开发/evidence/HostWindowRegression/before-layout-20261005/`。原始报告中的采集时路径与二进制身份保留，迁移后仍按报告身份核对，不能因后续重新构建而把旧报告当成新证据。
 
-This separate process instantiates the historical 05A/05C dock from `Mtp.Host.Legacy.Windows` through reflection, shows it offscreen,
-and checks native frame styles and the full client rectangle across dispatcher turns, repeated
-layout, resizing, hiding, restoration, and recreation. It checks that NOACTIVATE and TOOLWINDOW
-are retained, hiding preserves window identity, restoration keeps foreground focus, and repeated
-layout does not raise the dock over another topmost window. A native test window emits a WinEvent
-to verify the actual event subscription, UI dispatch latency, and shutdown cleanup.
-The process exits nonzero on failure and writes `window-tests.log` in its isolated build output.
-It also logs a read-only snapshot of the current taskbar/display environment and its read duration.
-It also instantiates the production MainWindow offscreen with fresh preferences in the isolated
-test output directory. Real ComboBox selection and popup events cover repeated target changes
-with the dock closed/open, one preference commit per selection, failed-save rollback, and a missing
-target reconciled only after popup closure (including the production one-second refresh timer).
-The display selection cases now use the production content island beneath an offscreen, test-owned native parent.
-It does not launch the Host application's App, read/write the user's preferences, modify Explorer,
-or close an existing Host. The runner requires both a zero process exit code and a completion marker.
-Keep it separate from `dotnet test Mtp.sln`, which does not initialize a WinUI app.
+### 本项目构建输出布局（五期15）
 
-These native measurements do not replace human acceptance of transparency, input, or taskbar placement.
+`bin/` 与 `obj/` 是 `.gitignore` 忽略的构建产物，**可整体删除，下次构建自动重建**。本项目的输出容易堆成多个平级目录，因为存在两种布局：
+
+| 构建方式 | 输出布局 |
+|---|---|
+| 走 `Run.ps1`（内部 `-p:OutDir=`） | `bin/window-regression/`（**扁平**，固定一个目录） |
+| 直接 `dotnet build` | `bin/<Configuration>/<TFM>/`（标准布局，如 `bin/Debug/net10.0`） |
+
+再叠加"给 `-OutputDirectory` 传场景名"（历史上出现过 `acrylic-composition`、`phase06-acceptance`、`preview-regression` 等），同一个 `bin/` 下就会并排多套命名。TFM 迁移也会留残留：`Mtp.Host` 早期是 `net10.0`，改用 WinUI 后是 `net10.0-windows10.0.26100.0`，旧目录不会自动清理。
+
+清理约定与脚本用法见[测试层 README 的"构建产物与目录整洁"](../README.md#构建产物与目录整洁)：统一走 `Run.ps1` 固定输出到 `bin/window-regression`，清理用 `tests/Clean-BuildOutput.ps1`。
+
+该独立进程通过反射实例化 `Mtp.Host.Legacy.Windows` 中的历史 05A/05C 贴靠窗口，在屏幕外显示它，并跨 dispatcher 轮次、重复布局、缩放、隐藏、恢复与重建检查原生窗口样式与完整客户区矩形。它校验 NOACTIVATE 与 TOOLWINDOW 被保留、隐藏保持窗口标识、恢复不夺取前台焦点，且重复布局不会把该窗口抬到另一个置顶窗口之上。一个原生测试窗口发出 WinEvent，用于验证实际的事件订阅、UI 派发延迟与关闭清理。失败时进程以非零码退出，并把 `window-tests.log` 写入它自己的隔离构建输出。它还记录当前任务栏／显示环境的只读快照及其读取耗时。它同样在屏幕外实例化生产 MainWindow（使用隔离测试输出目录中的全新偏好）。真实 ComboBox 选择与弹出事件覆盖贴靠窗口关闭／打开两种状态下的反复目标切换、每次选择只提交一次偏好、保存失败回滚，以及缺失目标仅在弹出关闭后才被重新协调（含生产的一秒刷新定时器）。显示选择用例现在使用测试自有原生父窗口之下的生产内容岛。它不启动 Host 应用的 App、不读写用户偏好、不修改 Explorer，也不关闭已存在的 Host。运行器同时要求进程退出码为零并出现完成标记。它与 `dotnet test Mtp.sln` 分开（后者不初始化 WinUI 应用）。
+
+这些原生测量不替代对透明度、输入或任务栏位置的人工验收。
+
 ## Explorer 旧探针清理回归（2026-10-04）
 
 `ExplorerProbeCleanupRegression` 在同一 WinUI 进程内使用测试自有原生父窗口与旧探针窗口，交替执行父级强制销毁、正常 Detach，并复用旧适配器四轮。原实现第一轮在 `Window.Close` 发生 `0xc0000005`；此前修复同时检查失效句柄并在 MTP 窗口的原生销毁通知中完成 WinUI 关闭。05M 将这些源码及已有修复移到测试专用项目，生产 Host 不再依赖它们。此历史回归不操作 Explorer，不代替新内容岛的人工验证。
@@ -175,3 +178,21 @@ powershell -ExecutionPolicy Bypass -File tests/Mtp.Host.WindowTests/Run.ps1 -Sce
 （本机为 24 核混合架构）。内存绝对值（idle 臂第 50 轮）：9 进程私有合计 246.5 MB，其中 **Host 自身 126.7 MB**、
 Broker 约 34 MB、7 个 SDK 服务合计约 125 MB；真实单应用部署约 175 MB。两条臂 50 轮内存净变化均为负
 （预热后回落），与"平台化"判定一致。待机占用、真实 Explorer 任务栏嵌入下的占用、小时级稳态均**未测**。
+
+### 证据与二进制身份（五期15）
+
+组合场景会反复运行（每次改动跑冒烟、每个大版本跑长跑）。为记录"这批证据由哪个二进制产生"，
+运行器原本把完整二进制身份集复制进**每个**批次目录，于是副本线性累积：实测 14+15 票共
+2861 个二进制文件、1274 MB，而**唯一哈希只有 179 个**。
+
+因此 `combination-stability` 改为**内容寻址**：
+
+- 二进制入共享池 `.scratch/tool-cache/binary-pool/`（池内缺失才复制，可用 `-BinaryPoolDirectory` 覆盖）；
+- 批次只写 `binary-hashes.json`（`Path`/`Hash`/`PoolFile`）与 `binary-identity-redirect.txt`；
+- 池内文件命名为 `<sha256 前 16 位>_<原文件名>`，**按哈希即可取回，不依赖索引**。
+
+单批次证据目录由约 **3322 KB 降至约 105 KB（−96.8%）**。
+
+**其他场景保持原行为**：仍把本体复制到证据的 `binary-identity/`，因为
+`Verify-HostEvidence.ps1 -CapturedBinaryDirectory` 要从该目录重新哈希以匹配报告身份。
+哈希清单、日志与 jsonl 原始采样在任何场景下都不参与去重。

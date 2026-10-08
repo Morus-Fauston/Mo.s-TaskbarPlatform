@@ -25,3 +25,27 @@ dotnet test Mtp.sln -c Release
 ```
 
 独立 WinUI 回归与对照工具另见测试和工具入口。构建、自动化或截图不等于真实 Windows 人工验收。
+
+## 许可
+
+本项目按 **Apache License 2.0** 授权，协议全文见 [LICENSE](LICENSE)。
+
+```
+Copyright 2026 Morus-Fauston
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+```
+
+该授权适用于本仓库的全部内容，**包括历史提交**。SPDX 标识：`Apache-2.0`。
+
+许可授予的权利（含第 3 条的专利授权与第 6 条的商标除外声明）与义务以 [LICENSE](LICENSE) 全文为准；本节只为便于阅读，不构成对协议的修改。

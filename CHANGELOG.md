@@ -1,5 +1,75 @@
 # Changelog
 
+## v0.5.0-alpha.17 (2026-10-08 23:00)
+
+### 许可
+
+- **开源协议**：仓库此前没有协议文件，按著作权默认规则等于「保留所有权利」——代码可被查看，
+  但他人没有复制、修改、分发或商用的合法权利，这对需要第三方接入 SDK 的平台是实际阻塞。
+  现引入 **Apache License 2.0**（标准全文，协议正文一字未改，仅按官方指示把 APPENDIX 的
+  模板字段填成实际版权行），并在 README 补许可章节与 SPDX 标识。
+- **选择理由**：本项目是要被外部应用接入的平台（Host + Broker + SDK）。Apache-2.0 第 3 条的
+  专利授权与专利报复条款是接入方法务评估时的实际门槛；商标除外声明（第 6 条）另可防止项目名
+  被冒用。同类独立个人工具项目继续用 MIT 即可，差异按项目性质区分而非不一致。
+- **历史版本覆盖**：版权行取项目起始年 `2026`，并在 README 明示授权覆盖全部历史提交；
+  **未改写 Git 历史**，40 个既有提交的哈希与远端分支对应关系保持原样。
+
+### 仓库治理
+
+- **证据路径**：现象是运行器默认把证据写到写死的 `.scratch/二期开发/evidence/HostWindowRegression/`，
+  无论在做哪一期、只要忘记传路径就静默落进二期目录。根因是默认值硬编码期次。新增 `-EvidenceRoot`
+  （只给根目录，批次子目录名自动生成为 `<场景>-<时间戳>-<随机>`），默认根改为中性暂存区
+  `.scratch/evidence-staging/`；`-EvidenceDirectory` 仍优先，既有调用不受影响。
+- **证据体积**：现象是同一份二进制按批次反复复制，组合回归每批次证据约 3322 KB。根因是运行器为
+  记录「证据由哪个二进制产生」而复制完整身份集，重复运行会产生内容相同的副本（实测 14+15 票
+  2861 个文件里唯一哈希只有 179 个）。修复为内容寻址：二进制按 SHA256 入共享哈希池
+  `.scratch/tool-cache/binary-pool/`，批次只保留 `binary-hashes.json` 与 `binary-identity-redirect.txt`。
+  实测单批次证据由约 3322 KB 降至约 **105 KB（−96.8%）**。
+- **二进制池**：新增 `-BinaryPoolDirectory` 覆盖池位置；池内文件以 `<sha256 前 16 位>_<原文件名>`
+  命名，按哈希即可取回、不依赖索引。其他场景（如 console）保持原行为 —— 仍把本体存到证据的
+  `binary-identity/`，因为 `Verify-HostEvidence.ps1 -CapturedBinaryDirectory` 要从该目录重新哈希
+  匹配报告身份，一刀切取消会破坏既有校验。
+
+### 新增
+
+- **构建产物清理脚本**：新增 `tests/Clean-BuildOutput.ps1`，列出并删除 `bin/`、`obj/`，
+  支持 `-Scope tests|src|tools|all` 与 `-WhatIf` 预览；按体积排序输出、深度优先删除
+  （避免父目录先删导致嵌套目标消失）。
+
+### 文档
+
+- **测试层构建产物约定**：`tests/README.md` 说明目录堆积的机理 —— 走 `Run.ps1` 是扁平布局
+  `bin/window-regression/`，直接 `dotnet build` 是标准布局 `bin/<Configuration>/<TFM>/`，
+  再叠加 `-OutputDirectory` 传场景名与 TFM 迁移残留，同一个 `bin/` 下就会并排多套命名；
+  约定测试构建统一走 `Run.ps1`。
+- **工具目录归档说明**：`tools/README.md` 记录本目录只保留源码、构建产物不作长期材料，
+  并登记已移除的 `TaskbarVisibilityLab/`（05E 封存实验的观测工具，未进入 main，源码保存在
+  分支 `codex/05e-taskbar-visibility-probe`），附判定方法（`git ls-files` 为空即 main 上无源码，
+  再用 `git branch -a --contains` 找所属分支）。
+- **早期英文段落翻译**：`tests/Mtp.Host.WindowTests/README.md` 中 2026-09-12 建库时留下的
+  英文说明段落（16 行 + 1 行边界声明）译为中文，术语 `NOACTIVATE`／`TOOLWINDOW`／`WinEvent`／
+  `ComboBox`／`dispatcher` 保留英文；同时修复该段落与后续 `##` 标题之间缺失的空行
+  （Markdown 会把紧邻段落的标题渲染成普通文本）。
+
+### 验证
+
+- 许可：`LICENSE` 的 9 个条款、`END OF TERMS AND CONDITIONS`、`APPENDIX` 结构完整；
+  填入版权字段后净减 14 字节（11357 → 11343），协议正文未改。README 与 LICENSE 版权行一致。
+- 脚本：`Run.ps1` 与 `Clean-BuildOutput.ps1` 语法校验通过；`-Scope tools` 在清理后正确报
+  `Nothing to clean`，`-Scope all -WhatIf` 正确列出 52 个目录 / 108.4 MB。
+- 证据路径实测：`Run.ps1 -Scenario broker` 不带证据参数时落点
+  `.scratch/evidence-staging/broker-20261008-222123-784-cd35e010`，退出码 0，二期目录未被写入。
+- 删除重建：清空 `tests/` 全部构建产物后完整重建耗时 31.1 秒、0 错误；隔离模式冒烟
+  3/3 轮 `verdict=passed`、`exitCode=0`。
+
+### 边界
+
+- `src/**` 改动为零；本次不涉及生产代码、测试断言、资源阈值或夹具判据。
+- 本地私有材料的清理（`.scratch` 证据去重 4599.6 MB → 549.2 MB、`tools` 157.9 MB → 228 KB、
+  构建产物 774.9 MB）不入版本控制，仅影响本地磁盘；相应方法与脚本已入库以便复现。
+
+---
+
 ## v0.5.0-alpha.16 (2026-10-08 12:18)
 
 ### 组合夹具重构为可复用实机自动化测试

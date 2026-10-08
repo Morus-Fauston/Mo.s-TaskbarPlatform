@@ -1,3 +1,14 @@
+v0.5.0-alpha.17 (2026-10-08 23:00)
+  治理: 仓库治理——引入 Apache-2.0 开源协议、证据路径与体积改造、构建产物清理入口、工具目录与文档归档。
+  - 许可: 仓库此前无协议即"保留所有权利"，他人无合法使用权，对需第三方接入 SDK 的平台是实际阻塞；引入 Apache-2.0 标准全文（协议正文未改，仅按官方指示填 APPENDIX 版权字段），README 补许可章节与 SPDX；选它而非 MIT 是为第 3 条专利授权与专利报复条款，属接入方法务评估的实际门槛。授权覆盖全部历史提交，未改写 Git 历史。
+  - 证据路径: 默认值原写死 .scratch/二期开发/evidence/HostWindowRegression/，忘了传路径就静默落二期；新增 -EvidenceRoot（只给根，批次名自动生成），默认改中性暂存区 .scratch/evidence-staging/，-EvidenceDirectory 仍优先。
+  - 证据体积: 二进制按批次反复复制（14+15 票 2861 文件唯一哈希仅 179 个）改为内容寻址——按 SHA256 入共享池 .scratch/tool-cache/binary-pool/，批次只留清单与重定向说明；单批次证据 3322 KB -> 105 KB（-96.8%）。其他场景保持复制本体，因 Verify-HostEvidence.ps1 需从 binary-identity/ 重新哈希匹配报告身份。
+  新增: tests/Clean-BuildOutput.ps1 清理 bin/obj，支持 -Scope tests|src|tools|all 与 -WhatIf 预览。
+  文档: tests/README.md 记构建产物两种布局并存导致的堆积与统一约定；tools/README.md 记本目录只留源码并登记已移除的 TaskbarVisibilityLab（05E 封存实验，未进 main，源码在分支 codex/05e-taskbar-visibility-probe）；tests/Mtp.Host.WindowTests/README.md 将 2026-09-12 遗留英文段落译为中文并修复标题前缺失空行。
+  验证: LICENSE 条款与 APPENDIX 结构完整、正文未改（11357->11343 字节）；两个脚本语法通过、-Scope all -WhatIf 正确列出 52 目录/108.4 MB；Run.ps1 实测落点 evidence-staging 且退出码 0；清空 tests 构建后完整重建 31.1 秒 0 错误、隔离模式冒烟 3/3 轮通过。
+  边界: src/** 改动为零；不涉及生产代码、断言与阈值。本地材料清理（.scratch 4599.6->549.2 MB、tools 157.9 MB->228 KB）不入版本控制，仅影响本地磁盘。
+
+====
 v0.5.0-alpha.16 (2026-10-08 12:18)
   夹具: 组合夹具重构为可复用实机自动化测试——四类错误分类、退出码语义、smoke/soak 分层入口、桌面隔离转正为显式开关、双判据趋势报告。
   - 分类: 软件失败(10)/夹具失败(11)/环境失败(12)/资源失败(13) 四类可区分；规则写入 FixtureOutcome 类型头注释并随 policy.json 输出；受控反例实测四类均正确触发。
