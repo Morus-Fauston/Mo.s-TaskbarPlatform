@@ -7,6 +7,10 @@ Docs/
 # 本地参考项目不上传到公开仓库
 参考项目/
 
+# 本机逐步人工验收工具与启动入口
+/Start-Acceptance.cmd
+/tools/ManualAcceptance/
+
 # IDE 与操作系统本地状态
 .vs/
 .vscode/*.log

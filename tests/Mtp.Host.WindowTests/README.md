@@ -10,7 +10,7 @@ powershell -ExecutionPolicy Bypass -File tests/Mtp.Host.WindowTests/Run.ps1
 
 **证据落脚点**（五期15 起）：`-EvidenceDirectory <路径>` 精确指定批次目录；`-EvidenceRoot <根路径>` 只给根，批次子目录自动生成为 `<场景>-<时间戳>-<随机>`；两者都不给时落到中性暂存区 `.scratch/evidence-staging/`。此前默认值写死 `.scratch/二期开发/evidence/HostWindowRegression/`，导致不管在做哪期、只要忘了传路径就落进二期目录，现已改为不再硬编码期次。暂存区是 scratch 位置：确认为要长期引用的证据后，再归档到 `.scratch/<期次>/evidence/<票号>/<批次>/`。
 
-二进制身份副本按场景分流：`combination-stability` 只写 `binary-hashes.json` 与 `binary-identity-redirect.txt`，二进制本体入共享哈希池 `.scratch/tool-cache/binary-pool/`（按 SHA256 取回）；其他场景仍把本体存到 `binary-identity/`，因为 `Verify-HostEvidence.ps1 -CapturedBinaryDirectory` 要从该目录重新哈希匹配报告身份。
+二进制身份副本按场景分流：`combination-stability` 只写 `binary-hashes.json` 与 `binary-identity-redirect.txt`，二进制本体入共享哈希池 `.scratch/证据二进制池/`（按 SHA256 取回）；其他场景仍把本体存到 `binary-identity/`，因为 `Verify-HostEvidence.ps1 -CapturedBinaryDirectory` 要从该目录重新哈希匹配报告身份。
 
 2026-10-05 之前的已有日志、console 和 display-selection 材料已迁至 `.scratch/二期开发/evidence/HostWindowRegression/before-layout-20261005/`。原始报告中的采集时路径与二进制身份保留，迁移后仍按报告身份核对，不能因后续重新构建而把旧报告当成新证据。
 
@@ -187,7 +187,7 @@ Broker 约 34 MB、7 个 SDK 服务合计约 125 MB；真实单应用部署约 1
 
 因此 `combination-stability` 改为**内容寻址**：
 
-- 二进制入共享池 `.scratch/tool-cache/binary-pool/`（池内缺失才复制，可用 `-BinaryPoolDirectory` 覆盖）；
+- 二进制入共享池 `.scratch/证据二进制池/`（池内缺失才复制，可用 `-BinaryPoolDirectory` 覆盖）；
 - 批次只写 `binary-hashes.json`（`Path`/`Hash`/`PoolFile`）与 `binary-identity-redirect.txt`；
 - 池内文件命名为 `<sha256 前 16 位>_<原文件名>`，**按哈希即可取回，不依赖索引**。
 

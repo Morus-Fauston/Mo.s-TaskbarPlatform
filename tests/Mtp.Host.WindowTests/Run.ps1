@@ -1,4 +1,4 @@
-param(
+﻿param(
     [ValidateSet('all', 'event', 'event-production', 'event-settings', 'broker', 'template', 'settings', 'dynamic', 'timer', 'hint', 'hint-window', 'interactive-hint', 'interactive-hint-motion', 'interactive-hint-production', 'flyout', 'flyout-production', 'flyout-create', 'flyout-scheduling', 'preset', 'organization', 'visual-environment', 'environment-recovery', 'combination-stability')][string]$Scenario = 'all',
     # Tiered entry for the combination fixture. 'smoke' is the daily automated tier (a few rounds);
     # 'soak' is the 50-round long run kept for a major version. Both drive the same fixture.
@@ -9,7 +9,7 @@ param(
     # Opt-in desktop isolation. Off by default so a normal run measures the product as shipped.
     [switch]$IsolateInput,
     # Content-addressed binary pool used by combination-stability so the same binary is not stored once
-    # per batch. Defaults to <repo>/.scratch/tool-cache/binary-pool.
+    # per batch. Defaults to <repo>/.scratch/证据二进制池.
     [string]$BinaryPoolDirectory = '',
     [string]$OutputDirectory = "$PSScriptRoot/bin/window-regression",
     # Where this run's evidence goes. -EvidenceDirectory wins when given; otherwise a batch directory is
@@ -132,7 +132,7 @@ finally {
     $run.Dispose()
     New-Item -ItemType Directory -Path $evidencePath | Out-Null
     $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
-    $binaryPool = if ($BinaryPoolDirectory) { [IO.Path]::GetFullPath($BinaryPoolDirectory) } else { Join-Path $repoRoot '.scratch/tool-cache/binary-pool' }
+    $binaryPool = if ($BinaryPoolDirectory) { [IO.Path]::GetFullPath($BinaryPoolDirectory) } else { Join-Path $repoRoot '.scratch/证据二进制池' }
     $capturedBinaries = Join-Path $evidencePath 'binary-identity'
     $identityBinaries = @('Mtp.Host.dll', 'Mtp.Host.exe', 'Mtp.Host.WindowTests.dll', 'Mtp.Host.Runtime.dll', 'Mtp.Platform.Core.dll', 'Mtp.Contracts.dll', 'Mtp.Transport.dll')
 
