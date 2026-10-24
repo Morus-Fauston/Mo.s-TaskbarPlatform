@@ -78,6 +78,17 @@ internal static class IslandOrganizationNativeRegression
                 Check(!fixedCombo.IsEnabled && fixedCombo.Items.Count == 1, "Fixed grouping exposed unsupported choices.");
             }
             var originalKey = Key("a1-status");
+            var sharedKey = Key("shared");
+            var sharedButton = ItemButton(sharedKey);
+            Check(sharedButton.IsLoaded && sharedButton.ActualWidth > 0 && sharedButton.ActualHeight > 0 &&
+                sharedButton.Visibility == Visibility.Visible && AutomationProperties.GetName(sharedButton) == "正常：共同任务",
+                "Initial shared item was not rendered with its complete accessible content.");
+            log("ticket16-shared-visible: " + JsonSerializer.Serialize(new
+            {
+                name = AutomationProperties.GetName(sharedButton), sharedButton.ActualWidth, sharedButton.ActualHeight,
+                sharedButton.Visibility, item = Snapshot(adapter).ItemsByKey[sharedKey].Item,
+                instructions = "点重新开始，悬停共同任务所在的小格可读全文；点共享一次移除，再点一次恢复。"
+            }));
             var originalItem = Snapshot(adapter).ItemsByKey[originalKey];
             var originalButton = ItemButton(originalKey);
             Invoke(originalButton);
@@ -101,6 +112,8 @@ internal static class IslandOrganizationNativeRegression
             await ConsoleScreenshot.SaveAsync(island.ContentRoot!, Path.Combine(root, "organization-split.png")).WaitAsync(TimeSpan.FromSeconds(2));
             await Action("shared");
             await Until(() => Snapshot(adapter).Instances.Count == 3 && Frame(adapter)!.IsComplete, "Removing shared reference did not separate three activities.");
+            Check(!Snapshot(adapter).ItemsByKey.Keys.Any(key => key.ItemId == "shared"),
+                "The shared toggle did not remove the shared content item.");
             Check(Snapshot(adapter).Instances.Select(value => value.InstanceId).SequenceEqual(new[] { "a3", "a2", "a1" }), "Provider activity order was lost.");
             Check(ReferenceEquals(originalButton, ItemButton(originalKey)), "Shared item removal recreated an unrelated native item.");
             Sample("three-instances");

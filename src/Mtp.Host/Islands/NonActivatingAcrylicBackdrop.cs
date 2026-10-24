@@ -9,15 +9,15 @@ namespace Mtp.Host.Islands;
 internal sealed class NonActivatingAcrylicBackdrop(Action<string, object?> record) : SystemBackdrop
 {
     private DesktopAcrylicController? controller;
-    private readonly SystemBackdropConfiguration configuration = new() { IsInputActive = true };
+    private BackdropThemeSubscription? theme;
 
     protected override void OnTargetConnected(ICompositionSupportsSystemBackdrop target, XamlRoot root)
     {
-        base.OnTargetConnected(target, root);
         controller = new DesktopAcrylicController();
         try
         {
-            ApplyConfiguration(target, root);
+            theme = new BackdropThemeSubscription(root, ApplyConfiguration, record);
+            ApplyConfiguration();
             if (!controller.AddSystemBackdropTarget(target))
                 throw new InvalidOperationException("Desktop Acrylic rejected the island target.");
             controller.StateChanged += OnStateChanged;
@@ -25,6 +25,7 @@ internal sealed class NonActivatingAcrylicBackdrop(Action<string, object?> recor
         }
         catch
         {
+            theme?.Dispose(); theme = null;
             controller.Dispose();
             controller = null;
             throw;
@@ -33,22 +34,18 @@ internal sealed class NonActivatingAcrylicBackdrop(Action<string, object?> recor
 
     protected override void OnDefaultSystemBackdropConfigurationChanged(ICompositionSupportsSystemBackdrop target, XamlRoot root)
     {
-        base.OnDefaultSystemBackdropConfigurationChanged(target, root);
-        if (controller != null) ApplyConfiguration(target, root);
+        theme?.Refresh();
     }
 
-    private void ApplyConfiguration(ICompositionSupportsSystemBackdrop target, XamlRoot root)
+    private void ApplyConfiguration()
     {
-        var defaults = GetDefaultSystemBackdropConfiguration(target, root);
+        if (controller is null || theme is null) return;
+        var configuration = theme.Configuration;
         var foreground = NativeWindows.GetForegroundWindow();
-        configuration.Theme = defaults.Theme;
-        configuration.IsHighContrast = defaults.IsHighContrast;
-        configuration.HighContrastBackgroundColor = defaults.HighContrastBackgroundColor;
         controller!.SetSystemBackdropConfiguration(configuration);
         record("acrylic-input-policy", new
         {
             materialActive = configuration.IsInputActive,
-            defaultInputActive = defaults.IsInputActive,
             configuration.IsHighContrast,
             theme = configuration.Theme.ToString(),
             focusChanged = NativeWindows.GetForegroundWindow() != foreground,
@@ -56,17 +53,17 @@ internal sealed class NonActivatingAcrylicBackdrop(Action<string, object?> recor
     }
 
     private void OnStateChanged(ISystemBackdropController sender, object args) => RecordState();
-    private void RecordState() => record("acrylic-controller-state", new { state = controller!.State.ToString(), appearance = "pending-human" });
+    private void RecordState() { if (controller is not null) record("acrylic-controller-state", new { state = controller.State.ToString(), appearance = "pending-human" }); }
 
     protected override void OnTargetDisconnected(ICompositionSupportsSystemBackdrop target)
     {
+        theme?.Dispose(); theme = null;
         if (controller != null)
         {
             controller.StateChanged -= OnStateChanged;
             try { controller.RemoveSystemBackdropTarget(target); }
             finally { controller.Dispose(); controller = null; }
         }
-        base.OnTargetDisconnected(target);
     }
 }
 

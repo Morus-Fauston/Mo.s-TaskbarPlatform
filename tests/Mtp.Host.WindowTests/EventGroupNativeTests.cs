@@ -44,9 +44,11 @@ internal static class EventGroupNativeTests
         void Settings(int limit) => manager.ApplySettings(new(new(), [], Events: new(MaximumGroupsPerScreen: limit)));
         try
         {
-            outside.AppWindow.MoveAndResize(new((int)work.Right - 180, work.Y + 24, 150, 90));
-            outside.Activate(); ((Button)outside.Content).Focus(FocusState.Keyboard);
-            Check(SetForegroundWindow(outsideHandle), "Owned event focus target could not request foreground.");
+            outside.AppWindow.MoveAndResize(new((int)work.Right - 520, work.Y + 24, 480, 160));
+            outside.Activate();
+            await Until(() => ((Button)outside.Content).IsLoaded, "Owned event focus target did not load");
+            await HintInputProcessFixture.EstablishNormalForegroundAsync(outsideHandle, (uint)Environment.ProcessId);
+            Check(((Button)outside.Content).Focus(FocusState.Keyboard), "Owned event Button did not accept keyboard focus");
             SetCursorPos((int)work.Right - 120, work.Y + 60);
             await Pump();
             Check(FlyoutNative.GetForegroundWindow() == outsideHandle, "Owned event focus baseline was not established before showing events.");

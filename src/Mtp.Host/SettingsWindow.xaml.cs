@@ -1,4 +1,4 @@
-using Microsoft.UI.Xaml;
+﻿using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
@@ -25,14 +25,9 @@ public sealed partial class SettingsWindow : Window
     private bool queued;
     private string? operationError;
     private readonly AccessibilitySettings accessibility = new();
-    private HostAppearancePreferences? appliedAppearance;
-    private ElementTheme appliedTheme;
-    private bool appliedHighContrast;
     private bool highContrastSubscribed;
-    private bool lastHighContrast;
     private string? highContrastNotice;
-    private long materialGeneration;
-    private string windowMaterialStatus = "设置窗口材质尚未应用";
+    private const string windowMaterialStatus = "设置页背景随主题变化，不受任务栏与浮窗的材质强度影响。";
 
     internal SettingsWindow(HostSettingsController settings, HostConsoleController host, Func<IReadOnlyList<TaskbarDockDisplay>> displays)
     {
@@ -81,7 +76,7 @@ public sealed partial class SettingsWindow : Window
                 HostTheme.Dark => ElementTheme.Dark,
                 _ => ElementTheme.Default,
             };
-            ApplyWindowAppearance(snapshot.Preferences.Appearance);
+            RefreshContrastNotice();
             Navigation.IsBackEnabled = snapshot.Navigation.CanGoBack;
             var selected = snapshot.Navigation.Current;
             Navigation.SelectedItem = selected switch
@@ -126,9 +121,13 @@ public sealed partial class SettingsWindow : Window
             MaterialStatusText.Text = snapshot.MaterialStatus + "\n" + windowMaterialStatus +
                 (highContrastNotice is null ? "" : "\n" + highContrastNotice);
             string? error = operationError ?? snapshot.Error?.Message ?? displaySelection.Error ?? host.PreferenceError?.Message;
-            error ??= host.CurrentError;
             ErrorBar.Message = error ?? "";
             ErrorBar.IsOpen = error is not null;
+            // Business rejections belong to transient short hints. Keep their
+            // diagnostic history in Host; only actual platform faults surface here.
+            var platformError = host.PlatformError;
+            PlatformNotice.Message = platformError?.Message ?? "";
+            PlatformNotice.IsOpen = platformError is not null && platformError.Message != error;
         }
         catch (Exception error) when (error is IOException or InvalidOperationException or ArgumentException or ObjectDisposedException)
         {
@@ -138,66 +137,26 @@ public sealed partial class SettingsWindow : Window
         finally { rendering = false; }
     }
 
-    private void ApplyWindowAppearance(HostAppearancePreferences appearance)
+    private void RefreshContrastNotice()
     {
-        bool highContrast;
+        // Native theme resources own the opaque settings page, including high contrast.
+        // Global material/opacity only apply to components and flyouts.
         try
         {
-            highContrast = lastHighContrast = accessibility.HighContrast;
+            _ = accessibility.HighContrast;
             highContrastNotice = highContrastSubscribed ? null : "高对比变化通知不可用，随现有 Host 刷新读取状态。";
         }
         catch (System.Runtime.InteropServices.COMException)
-        {
-            highContrast = lastHighContrast;
-            highContrastNotice = "高对比状态暂时不可读，保留最后确认状态并随 Host 刷新重试。";
-        }
-        if (appliedAppearance == appearance && appliedTheme == Root.ActualTheme && appliedHighContrast == highContrast) return;
-        appliedAppearance = appearance;
-        appliedTheme = Root.ActualTheme;
-        appliedHighContrast = highContrast;
-        long current = ++materialGeneration;
-        var resolved = MaterialResolver.Resolve(new(appearance.Material, appearance.Opacity), new(true,
-            Microsoft.UI.Composition.SystemBackdrops.DesktopAcrylicController.IsSupported(),
-            Microsoft.UI.Composition.SystemBackdrops.MicaController.IsSupported()));
-        MaterialKind effective = highContrast ? MaterialKind.None : resolved.Effective.Kind;
-        string? reason = highContrast ? "高对比模式使用不透明系统背景" : resolved.DowngradeReason;
-        SystemBackdrop = null;
-        try
-        {
-            if (effective is MaterialKind.Acrylic or MaterialKind.Mica)
-            {
-                Root.Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
-                SystemBackdrop = new Islands.ConfiguredMaterialBackdrop(effective, resolved.Effective.Opacity, (_, value) =>
-                {
-                    if (disposed || materialGeneration != current) return;
-                    string? state = value?.GetType().GetProperty("state")?.GetValue(value)?.ToString();
-                    windowMaterialStatus = "设置窗口：" + MaterialResolver.Describe(effective) + " · API 状态 " + (state ?? "已设置") +
-                        (reason is null ? "" : " · " + reason);
-                    RequestRender();
-                });
-            }
-            else ApplySolidBackground(effective == MaterialKind.Solid ? resolved.Effective.Opacity : 1, highContrast);
-            windowMaterialStatus = "设置窗口：请求" + MaterialResolver.Describe(appearance.Material) + "，已应用" + MaterialResolver.Describe(effective) +
-                (reason is null ? "" : " · " + reason) + "；外观待实际确认";
-        }
-        catch (Exception error) when (error is System.Runtime.InteropServices.COMException or InvalidOperationException or ArgumentException)
-        {
-            SystemBackdrop = null;
-            ApplySolidBackground(1, highContrast);
-            windowMaterialStatus = "设置窗口：材质不可用，已回退不透明背景，保留原请求 · " + error.Message;
-        }
-    }
-
-    private void ApplySolidBackground(double opacity, bool highContrast)
-    {
-        var color = highContrast ? new UISettings().GetColorValue(UIColorType.Background) :
-            SurfacePalette.Background is SolidColorBrush brush ? brush.Color :
-            Root.ActualTheme == ElementTheme.Dark ? Windows.UI.Color.FromArgb(255, 32, 32, 32) : Windows.UI.Color.FromArgb(255, 243, 243, 243);
-        color.A = (byte)Math.Round(255 * opacity);
-        Root.Background = new SolidColorBrush(color);
+        { highContrastNotice = "高对比状态暂时不可读，保留系统主题背景。"; }
     }
 
     private void ActualThemeChanged(FrameworkElement sender, object args) => RequestRender();
+    private void FocusInteractiveHintClicked(object sender, RoutedEventArgs args)
+    {
+        bool focused = host.FocusInteractiveHint();
+        InteractiveHintStatus.Text = focused ? "" : "当前没有可进入的交互提示，请先打开一个提示。";
+        InteractiveHintStatus.Visibility = focused ? Visibility.Collapsed : Visibility.Visible;
+    }
     private void HighContrastChanged(AccessibilitySettings sender, object args) => RequestRender();
 
     private void RenderApplications(HostSettingsSnapshot snapshot)
@@ -545,8 +504,6 @@ public sealed partial class SettingsWindow : Window
             try { accessibility.HighContrastChanged -= HighContrastChanged; }
             catch (System.Runtime.InteropServices.COMException) { }
         }
-        materialGeneration++;
-        SystemBackdrop = null;
         displaySelection.Stop();
         settings.Dispose();
         AppWindow.Changed -= ConstrainSize;

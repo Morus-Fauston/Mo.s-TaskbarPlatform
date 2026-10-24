@@ -9,6 +9,7 @@ Docs/
 
 # 本机逐步人工验收工具与启动入口
 /Start-Acceptance.cmd
+/Start-Ticket16-Retest.cmd
 /tools/ManualAcceptance/
 
 # IDE 与操作系统本地状态

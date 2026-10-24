@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Mtp.Contracts;
@@ -198,12 +198,17 @@ internal sealed class TaskbarFlyoutManager : IDisposable
             return Failure<bool>("InvalidInteractionWindow", "关联窗口必须由当前Host拥有且在预算内");
         group.Associated.Add(window); return CoreResult<bool>.Success(true);
     }
-    internal ProtocolResult ExpandFromHint(HintOwner owner, string? panelTemplateId)
+    internal ProtocolResult ExpandFromHint(HintOwner owner, string? panelTemplateId, bool keyboard = false)
     {
         if (!groups.TryGetValue(owner.ScreenId, out var group) || group.Generation != owner.Generation || group.Closing ||
             group.Request.Entry != owner.Entry || group.Request.SessionId != owner.SessionId)
             return ProtocolResult.Reject("StaleFlyout", "提示所属浮窗组已结束");
-        if (panelTemplateId is null || panelTemplateId == group.Declaration.MainTemplateId) return ProtocolResult.Success("Displayed");
+        group.Keyboard |= keyboard;
+        if (panelTemplateId is null || panelTemplateId == group.Declaration.MainTemplateId)
+        {
+            if (keyboard) EnterKeyboard(owner.ScreenId, owner.Generation);
+            return ProtocolResult.Success("Displayed");
+        }
         return Navigate(group, panelTemplateId);
     }
     internal CoreResult<bool> TryClose()

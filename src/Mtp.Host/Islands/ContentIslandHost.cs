@@ -1,5 +1,6 @@
-using Microsoft.UI;
+﻿using Microsoft.UI;
 using Microsoft.UI.Dispatching;
+using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Hosting;
 using Microsoft.UI.Xaml.Media;
 using Mtp.Platform.Core;
@@ -145,15 +146,24 @@ internal sealed class ContentIslandHost
             effective.Kind == MaterialKind.None ? 1 : effective.Opacity, appearance.Theme.ToString().ToLowerInvariant());
         Configuration = config;
         content?.ApplyAppearance(config);
+        if (effective.Kind == MaterialKind.Solid && content is not null) content.UseCompositionSurface();
+        MaterialStatus = $"请求：{MaterialResolver.Describe(request.Kind)}；实际API：{MaterialResolver.Describe(effective.Kind)}。{(highContrast ? "高对比使用系统不透明背景。" : resolution.DowngradeReason)} 外观待人工确认。";
         try
         {
             source!.SystemBackdrop = effective.Kind switch
             {
+                MaterialKind.Solid => new SolidTintBackdrop(null, Windows.UI.Color.FromArgb((byte)Math.Round(255 * effective.Opacity),
+                    content?.ActualTheme == ElementTheme.Dark ? (byte)32 : (byte)243,
+                    content?.ActualTheme == ElementTheme.Dark ? (byte)32 : (byte)243,
+                    content?.ActualTheme == ElementTheme.Dark ? (byte)32 : (byte)243), (kind, detail) =>
+                    {
+                        if (kind == "solid-surface-fallback") MaterialStatus = $"请求：{MaterialResolver.Describe(request.Kind)}；实际：不透明回退。{System.Text.Json.JsonSerializer.Serialize(detail)}";
+                        record(kind, detail);
+                    }),
                 MaterialKind.Acrylic => new ConfiguredMaterialBackdrop(MaterialKind.Acrylic, effective.Opacity, record),
                 MaterialKind.Mica => new ConfiguredMaterialBackdrop(MaterialKind.Mica, effective.Opacity, record),
                 _ => null,
             };
-            MaterialStatus = $"请求：{MaterialResolver.Describe(request.Kind)}；实际API：{MaterialResolver.Describe(effective.Kind)}。{(highContrast ? "高对比使用系统不透明背景。" : resolution.DowngradeReason)} 外观待人工确认。";
         }
         catch (Exception error)
         {

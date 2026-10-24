@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.WindowsRuntime;
 using System.Text.Json;
@@ -42,8 +42,18 @@ internal static class InteractiveHintWindowNativeTests
             nint target = new(ready!.Handle);
             FlyoutNative.GetWindowThreadProcessId(target, out uint targetPid);
             Check(ready.ProcessId == child.Id && targetPid == child.Id && FlyoutNative.IsWindow(target), "Invalid target identity.");
+            // A real title-bar click establishes the owned normal application's baseline.
+            // Drop temporary topmost before hints appear, so later blank clicks cannot raise it above them.
+            Check(FlyoutNative.SetWindowPos(target, new nint(-1), 0, 0, 0, 0, 0x0013), "Cannot expose owned input baseline");
+            var targetBounds = FlyoutNative.Bounds(target);
+            var titlePoint = new FlyoutNative.Point { X = targetBounds.X + targetBounds.Width / 2, Y = targetBounds.Y + 12 };
+            Check(FlyoutNative.Root(FlyoutNative.WindowFromPoint(titlePoint)) == target, "Owned title baseline is occluded");
+            Check(SetCursorPos(titlePoint.X, titlePoint.Y), "Cannot position owned title baseline");
+            SendMouse(2); SendMouse(4);
+            await Task.Delay(80);
+            Check(FlyoutNative.SetWindowPos(target, new nint(-2), 0, 0, 0, 0, 0x0013), "Cannot restore normal input baseline");
             var states = new BrokerStateStore(["interactive-test"]);
-            InteractiveHintManagerNativeTests.Connect(states, "native-window");
+            InteractiveHintManagerNativeTests.Connect(states, "native-window", step: 5);
             var entry = new TemplateEntryReference("group", TemplateEntryKind.Hint, "adjust");
             int actions = 0, expansions = 0, backgroundActions = 0;
             using var images = new RegisteredImageCache();
@@ -56,7 +66,8 @@ internal static class InteractiveHintWindowNativeTests
             var clock = new ManualClock();
             var lifetime = new FlyoutLifetime(1, FlyoutLifetimeKind.InteractiveHint, clock: clock);
             var active = new HashSet<string>(StringComparer.Ordinal);
-            window = new(foreground, background, () => { },
+            int closeRequests = 0;
+            window = new(foreground, background, () => closeRequests++,
                 (kind, value) => log(kind + ": " + JsonSerializer.Serialize(value)), (source, value) =>
                 {
                     if (value) active.Add(source); else active.Remove(source);
@@ -79,6 +90,16 @@ internal static class InteractiveHintWindowNativeTests
             Check(ReferenceEquals(foreground.CapturedSnapshot, background.CapturedSnapshot),
                 "Foreground and background did not render the exact same confirmed snapshot.");
             var blank = new FlyoutNative.Point { X = (int)bounds.Right - 8, Y = bounds.Y + 8 };
+            var blankHit = FlyoutNative.WindowFromPoint(blank);
+            var blankRoot = FlyoutNative.Root(blankHit);
+            FlyoutNative.GetWindowThreadProcessId(blankRoot, out uint blankPid);
+            log("interactive-blank-hit: " + JsonSerializer.Serialize(new
+            {
+                point = new { blank.X, blank.Y }, hit = blankHit.ToInt64(), root = blankRoot.ToInt64(),
+                pid = blankPid, expected = target.ToInt64(), expectedPid = child.Id,
+                foreground = window.Handle.ToInt64(), background = window.BackgroundHandle.ToInt64(),
+                regions = window.RegionBoundsForTesting, window.LastBounds
+            }));
             Check(FlyoutNative.Root(FlyoutNative.WindowFromPoint(blank)) == target,
                 "Empty hint area did not pass native hit testing through to the other process.");
             await Click(blank, target);
@@ -92,10 +113,62 @@ internal static class InteractiveHintWindowNativeTests
             var thumbPoint = Center(thumb, window);
             Check(SetCursorPos(thumbPoint.X, thumbPoint.Y), "Cannot position pointer over owned slider.");
             Check(FlyoutNative.Root(FlyoutNative.WindowFromPoint(thumbPoint)) == window.Handle, "Slider region did not hit foreground.");
+            slider.ValueChanged += (_, args) => log("ticket16-native-value: " + JsonSerializer.Serialize(new { args.OldValue, args.NewValue }));
+            slider.RegisterPropertyChangedCallback(Slider.IntermediateValueProperty, (_, _) => log("ticket16-native-intermediate: " + slider.IntermediateValue));
+            thumb.DragDelta += (_, args) => log("ticket16-thumb-delta: " + JsonSerializer.Serialize(new { args.HorizontalChange, args.VerticalChange, slider.Value, slider.IntermediateValue }));
+            var trackRegion = window.RegionBoundsForTesting[0];
+            var track = trackRegion with { X = window.LastBounds.X + trackRegion.X, Y = window.LastBounds.Y + trackRegion.Y };
+            var trackPoint = new FlyoutNative.Point { X = track.X + track.Width - 15, Y = thumbPoint.Y };
+            Check(SetCursorPos(trackPoint.X, trackPoint.Y), "Cannot position over slider track");
+            SendMouse(1); await Task.Delay(30);
+            FlyoutNative.GetCursorPos(out var trackActual);
+            var trackHit = FlyoutNative.Root(FlyoutNative.WindowFromPoint(trackActual));
+            FlyoutNative.GetWindowThreadProcessId(trackHit, out uint trackPid);
+            log("ticket16-track-baseline: " + JsonSerializer.Serialize(new { intended = new { trackPoint.X, trackPoint.Y }, actual = new { trackActual.X, trackActual.Y }, hit = trackHit.ToInt64(), expected = window.Handle.ToInt64(), trackPid, foreground = FlyoutNative.GetForegroundWindow().ToInt64() }));
+            Check(trackActual.X == trackPoint.X && trackActual.Y == trackPoint.Y && trackHit == window.Handle, "Owned track input baseline changed or became occluded");
+            SendMouse(2); pointerDown = true;
+            await Task.Delay(70);
+            log("ticket16-track-press: " + JsonSerializer.Serialize(new { actions, slider.Value, slider.IsEnabled, active }));
+            Check(active.Contains("capture") && active.Contains("pressed") && slider.Value > 40, "Track input did not reach the native slider; no drag assertion was exercised");
+            Check(actions == 0 && slider.IsEnabled, "Slider track press submitted before release and interrupted dragging");
+            SendMouse(4); pointerDown = false;
+            await Task.Delay(80);
+            log("ticket16-track-release: " + JsonSerializer.Serialize(new { actions, slider.Value, slider.IsEnabled, active,
+                confirmed = foreground.CapturedSnapshot?.Nodes.Single(node => node.NodeId == "value").Confirmed?.Number,
+                preview = foreground.CapturedSnapshot?.Nodes.Single(node => node.NodeId == "value").Preview?.Number }));
+            await Until(() => actions == 1 && slider.Value == 40 && !active.Contains("capture"), "Track release did not submit and roll back");
+            actions = 0;
+            Check(SetCursorPos(thumbPoint.X, thumbPoint.Y), "Cannot return to slider thumb");
+            SendMouse(1);
+            await Task.Delay(30);
             SendMouse(0x0002); pointerDown = true;
             await Until(() => active.Contains("capture") && active.Contains("pressed"), "Real slider press did not retain pointer capture.");
+            for (int step = 1; step <= 12; step++)
+            {
+                Check(SendInput(1, [new Input { Type = 0, MouseX = 5, Flags = 1 }], Marshal.SizeOf<Input>()) == 1, "Cannot move captured slider pointer.");
+                await Task.Delay(30);
+                double beforeRefresh = slider.Value;
+                double intermediateBefore = slider.IntermediateValue;
+                var thumbBefore = thumb.TransformToVisual(foreground).TransformPoint(new(0, 0));
+                var frameBefore = window.LastBounds;
+                foreground.Refresh();
+                var thumbAfter = thumb.TransformToVisual(foreground).TransformPoint(new(0, 0));
+                log("ticket16-slider-drag-frame: " + JsonSerializer.Serialize(new
+                {
+                    step, pointerX = thumbPoint.X + step * 5, beforeRefresh, afterRefresh = slider.Value,
+                    intermediateBefore, intermediateAfter = slider.IntermediateValue,
+                    thumbBefore = new { thumbBefore.X, thumbBefore.Y }, thumbAfter = new { thumbAfter.X, thumbAfter.Y },
+                    frameBefore, frameAfter = window.LastBounds, actions,
+                    preview = foreground.CapturedSnapshot?.Nodes.Single(node => node.NodeId == "value").Preview?.Number,
+                    confirmed = foreground.CapturedSnapshot?.Nodes.Single(node => node.NodeId == "value").Confirmed?.Number
+                }));
+                Check(actions == 0, "Slider submitted an action before pointer release.");
+                Check(Math.Abs(slider.IntermediateValue - intermediateBefore) < 0.001, "Snapshot refresh snapped the native intermediate drag position to a step");
+                Check(slider.Value == beforeRefresh, "Snapshot refresh moved the slider away from its active drag value.");
+            }
             var outside = new FlyoutNative.Point { X = (int)bounds.Right - 8, Y = bounds.Y + bounds.Height / 2 };
             Check(SetCursorPos(outside.X, outside.Y), "Cannot drag captured pointer outside control region.");
+            SendMouse(1);
             await Task.Delay(80);
             Check(active.Contains("capture"), "Leaving the control region lost real drag capture.");
             clock.Advance(TimeSpan.FromSeconds(20));
@@ -123,9 +196,30 @@ internal static class InteractiveHintWindowNativeTests
             await Until(() => !active.Contains("hover"), "Pointer hover source did not clear outside controls.");
             Check(window.FocusFirst(), "Explicit keyboard entry failed to obtain foreground and control focus.");
             await Until(() => active.Contains("keyboard"), "Keyboard focus did not pause lifetime.");
+            int beforeArrow = actions;
+            SendKey(0x27);
+            await Until(() => actions == beforeArrow + 1 && slider.Value == 40, "Keyboard arrow did not submit and preserve confirmed value on rejection");
+            SendKey(9);
+            await Until(() => expand.FocusState == FocusState.Keyboard, "Tab did not navigate from slider to expand");
+            SendKey(0x10, false); SendKey(9); SendKey(0x10, true);
+            await Until(() => slider.FocusState == FocusState.Keyboard, "Shift+Tab did not navigate back to slider");
             clock.Advance(TimeSpan.FromSeconds(20));
             Check(!lifetime.IsExpired(1), "Keyboard focus did not pause timeout.");
             await SaveNativeAsync(bounds, Path.Combine(directory, "interactive-keyboard-native.png"));
+            var menu = new MenuFlyout();
+            menu.Items.Add(new MenuFlyoutItem { Text = "原生菜单" });
+            bool menuOpen = false;
+            menu.Opened += (_, _) => menuOpen = true;
+            menu.Closed += (_, _) => menuOpen = false;
+            menu.ShowAt(expand);
+            await Until(() => menuOpen, "Native hint child menu did not open");
+            SendKey(0x1B);
+            await Until(() => !menuOpen, "First Escape did not close native child menu");
+            Check(closeRequests == 0, "Menu-consumed Escape also closed hint");
+            var escape = new[] { new Input { Type = 1, Key = 0x1B }, new Input { Type = 1, Key = 0x1B, KeyFlags = 2 } };
+            Check(SendInput(2, escape, Marshal.SizeOf<Input>()) == 2, "Escape delivery failed.");
+            await Until(() => closeRequests == 1, "Unhandled Escape did not request hint close.");
+            log("ticket16-pass: explicit keyboard entry and unhandled native Escape closes hint");
             await Click(blank, target);
             await Until(() => CountsNow()?.Clicks == 2 && active.Count == 0, "Leaving keyboard focus did not release the final interaction source.");
             clock.Advance(TimeSpan.FromMilliseconds(4999));
@@ -160,7 +254,7 @@ internal static class InteractiveHintWindowNativeTests
                 "Cross-process target final delivery/cleanup did not match exactly three clicks.");
             log("interactive-native-pass: disabled/hidden regions removed; native pair Close failure retained owner then retry released; target input=3/3/3; all owned HWNDs/process exited");
 
-            Counts? CountsNow() => Read<Counts>(Path.Combine(directory, "counts.json"));
+            Counts? CountsNow() => HintInputProcessFixture.ReadInputCounts<Counts>(directory);
         }
         finally
         {
@@ -188,8 +282,13 @@ internal static class InteractiveHintWindowNativeTests
     {
         Check(SetCursorPos(point.X, point.Y), "SetCursorPos failed.");
         Check(FlyoutNative.Root(FlyoutNative.WindowFromPoint(point)) == expected, "Click target is not the expected owned HWND.");
+        SendMouse(1);
+        await Task.Delay(30);
         SendMouse(0x0002); SendMouse(0x0004); await Task.Delay(80);
     }
+    private static void SendKey(ushort key) { SendKey(key, false); SendKey(key, true); }
+    private static void SendKey(ushort key, bool up)
+    { Check(SendInput(1, [new Input { Type = 1, Key = key, KeyFlags = up ? 2u : 0u }], Marshal.SizeOf<Input>()) == 1, "Native key delivery failed"); }
     private static void SendMouse(uint flags)
     { Check(SendInput(1, [new Input { Type = 0, Flags = flags }], Marshal.SizeOf<Input>()) == 1, "Real mouse input was not delivered."); }
     private static IEnumerable<DependencyObject> Descendants(DependencyObject value)
@@ -251,6 +350,9 @@ internal static class InteractiveHintWindowNativeTests
     [StructLayout(LayoutKind.Explicit, Size = 40)] private struct Input
     {
         [FieldOffset(0)] public uint Type;
+        [FieldOffset(8)] public ushort Key;
+        [FieldOffset(8)] public int MouseX;
+        [FieldOffset(12)] public uint KeyFlags;
         [FieldOffset(20)] public uint Flags;
     }
     [StructLayout(LayoutKind.Sequential)] private struct BitmapInfo

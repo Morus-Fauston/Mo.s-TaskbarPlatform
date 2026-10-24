@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Runtime.InteropServices;
 using Mtp.Platform.Core;
 
@@ -28,7 +28,24 @@ internal sealed class Win32TaskbarDockEnvironment(TimeProvider? clock = null) : 
         };
         if (!Native.EnumDisplayMonitors(0, 0, callback, 0))
             throw new InvalidOperationException("无法枚举显示器。");
-        return displays.AsReadOnly();
+        return displays.Select(display =>
+        {
+            var taskbar = FindTaskbar(display);
+            bool exposed = Win32TaskbarVisibility.ReadTaskbarExposure(taskbar, display, out _) == true;
+            return taskbar != 0 && Native.GetWindowRect(taskbar, out var bar)
+                ? display with { WorkArea = FlyoutWorkArea(display, bar.ToPixelRect(), exposed) } : display;
+        }).ToArray();
+    }
+
+    internal static PixelRect FlyoutWorkArea(TaskbarDockDisplay display, PixelRect taskbar, bool exposed)
+    {
+        // Auto-hide leaves rcWork almost fullscreen even while the bar is exposed.
+        // Only reserve its currently observed bottom strip; independent hint position is unchanged.
+        if (!exposed || !taskbar.IsValid || taskbar.Width <= taskbar.Height ||
+            taskbar.X > display.Bounds.X || taskbar.Right < display.Bounds.Right ||
+            taskbar.Bottom != display.Bounds.Bottom || taskbar.Y <= display.WorkArea.Y) return display.WorkArea;
+        int bottom = (int)Math.Min(display.WorkArea.Bottom, taskbar.Y);
+        return display.WorkArea with { Height = bottom - display.WorkArea.Y };
     }
 
     public CoreResult<TaskbarDockEnvironmentSnapshot> Capture(string? displayId)

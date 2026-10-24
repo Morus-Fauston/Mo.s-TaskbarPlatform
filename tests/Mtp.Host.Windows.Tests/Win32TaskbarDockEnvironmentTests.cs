@@ -1,4 +1,4 @@
-using Mtp.Host;
+﻿using Mtp.Host;
 using Mtp.Platform.Core;
 
 namespace Mtp.Platform.Core.Tests;
@@ -16,6 +16,14 @@ public sealed class Win32TaskbarDockEnvironmentTests
         Assert.Equal("dock_probe_timeout", result.Value.Error?.Code);
         Assert.Equal(TaskbarVisibility.Unknown, result.Value.Visibility);
         Assert.True(result.Value.DisplayBounds.Contains(result.Value.WorkArea));
+    }
+
+    [Fact]
+    public void ExposedAutoHideTaskbarReducesFlyoutWorkAreaButHiddenBarDoesNot()
+    {
+        var screen = new TaskbarDockDisplay("test", true, new(3840, 563, 2560, 1600), new(3840, 563, 2560, 1598), 144);
+        Assert.Equal(new PixelRect(3840, 563, 2560, 1528), Win32TaskbarDockEnvironment.FlyoutWorkArea(screen, new(3840, 2091, 2560, 72), true));
+        Assert.Equal(screen.WorkArea, Win32TaskbarDockEnvironment.FlyoutWorkArea(screen, new(3840, 2161, 2560, 72), false));
     }
 
     private sealed class ExpiredClock : TimeProvider

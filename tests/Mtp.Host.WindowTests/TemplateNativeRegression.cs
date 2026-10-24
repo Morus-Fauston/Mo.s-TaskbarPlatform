@@ -16,6 +16,7 @@ internal static class TemplateNativeRegression
 {
     public static async Task RunAsync(Action<string> log)
     {
+        await Ticket16SliderPendingNativeTests.RunAsync(log);
         await RegisteredImageCacheRegression.RunAsync(log);
         string root = Path.Combine(AppContext.BaseDirectory, "template-native-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);

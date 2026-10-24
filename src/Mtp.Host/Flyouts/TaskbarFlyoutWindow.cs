@@ -1,4 +1,4 @@
-using Microsoft.UI.Windowing;
+﻿using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
@@ -84,7 +84,7 @@ internal sealed class TaskbarFlyoutWindow
         FlyoutNative.NoActivate(Handle, true);
         ApplyTheme();
     }
-    private void ThemeChanged(FrameworkElement sender, object args) => ApplyTheme();
+    private void ThemeChanged(FrameworkElement sender, object args) { appliedMaterial = null; ApplyTheme(); }
     private void HighContrastChanged(Windows.UI.ViewManagement.AccessibilitySettings sender, object args)
     {
         if (Interlocked.Exchange(ref appearanceQueued, 1) != 0) return;
@@ -121,12 +121,14 @@ internal sealed class TaskbarFlyoutWindow
             root.Background = highContrast
                 ? new SolidColorBrush(new Windows.UI.ViewManagement.UISettings().GetColorValue(Windows.UI.ViewManagement.UIColorType.Background))
                 : new SolidColorBrush(Windows.UI.Color.FromArgb(effective.Kind == MaterialKind.None ? (byte)255 :
-                    effective.Kind == MaterialKind.Solid ? (byte)(255 * effective.Opacity) : (byte)0, shade, shade, shade));
+                    (byte)0, shade, shade, shade));
             // Theme updates flow through SystemBackdrop's configuration callback; only material/opacity changes replace its controller.
             if (appliedMaterial != effective)
             {
-                window.SystemBackdrop = effective.Kind is MaterialKind.Acrylic or MaterialKind.Mica
-                    ? new Islands.ConfiguredMaterialBackdrop(effective.Kind, effective.Opacity, record) : null;
+                window.SystemBackdrop = effective.Kind == MaterialKind.Solid
+                    ? new Islands.SolidTintBackdrop(window, Windows.UI.Color.FromArgb((byte)Math.Round(255 * effective.Opacity), shade, shade, shade), record)
+                    : effective.Kind is MaterialKind.Acrylic or MaterialKind.Mica
+                        ? new Islands.ConfiguredMaterialBackdrop(effective.Kind, effective.Opacity, record) : null;
                 appliedMaterial = effective;
                 record("flyout-material-applied", new { requested = appearance.Material.ToString(), effective = effective.Kind.ToString(), effective.Opacity, highContrast });
             }

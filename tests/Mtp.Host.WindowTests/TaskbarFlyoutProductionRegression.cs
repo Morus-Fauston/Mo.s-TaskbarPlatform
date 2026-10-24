@@ -111,8 +111,12 @@ internal static class TaskbarFlyoutProductionRegression
                 "Open flyout did not follow a global Dark appearance change.");
             var darkBackground = ((Grid)main.Root).Background as SolidColorBrush;
             bool highContrast = new Windows.UI.ViewManagement.AccessibilitySettings().HighContrast;
-            Check(darkBackground is not null && (highContrast || darkBackground.Color.A == 63),
-                "Open flyout did not apply Solid opacity or high-contrast override.");
+            var nativeBackdrop = Field<Window>(main, "window").SystemBackdrop;
+            var tintBrush = nativeBackdrop is SolidTintBackdrop solid
+                ? Field<Windows.UI.Composition.CompositionColorBrush>(solid, "brush") : null;
+            Check(darkBackground is not null && (highContrast ? darkBackground.Color.A == 255 :
+                darkBackground.Color.A == 0 && tintBrush?.Color.A == 64),
+                "Open flyout did not connect the requested Solid tint through its native composition surface or high-contrast override.");
             Check(settings.SetAppearance(new(HostTheme.Light, MaterialKind.None, 1)).IsSuccess,
                 "Could not restore global fixture appearance.");
             await Until(() => main.Root.ActualTheme == ElementTheme.Light && ((Grid)main.Root).Background is SolidColorBrush { Color.A: 255 },
@@ -131,10 +135,28 @@ internal static class TaskbarFlyoutProductionRegression
             Invoke(PanelButton("back"));
             await Until(() => PanelReady("panel", "child"), "Production Back did not load the main panel controls.");
             Check(Main()!.Handle == componentPanel, "Back did not preserve the native owner.");
+
+            var componentFailure = await Field<TemplateInteractionController>(PanelRenderer(), "controller")
+                .ActivateAsync("fail").WaitAsync(TimeSpan.FromSeconds(8));
+            Check(!componentFailure.Accepted && componentFailure.Code == "DemoFailure",
+                "Component-origin panel did not return the real SDK rejection");
+            await Until(() => coordinator.Hints.Inspect().Count == 1, "Component-origin panel failure did not display its associated hint");
+            var componentError = coordinator.Hints.Inspect().Single();
+            windows.Add(componentError.Handle);
+            Check(componentError.Request.Owner is { Entry.Entry.Kind: TemplateEntryKind.Component } componentOwner &&
+                componentOwner.Entry == first.Entry && componentOwner.Generation == first.Generation &&
+                componentError.Text == componentFailure.Message && Group().Generation == first.Generation,
+                "Component-origin rejection lost its exact current group or reason");
+            await Until(() => FlyoutNative.ReadOpacity(componentError.Handle) == 255,
+                "Component-origin associated error did not become natively visible");
+            CheckAssociatedBounds(componentError);
             Invoke(ControlButton("open"));
             await Until(() => manager.Inspect().Count == 0, "Repeated component entrance did not close group.");
+            await Until(() => coordinator.Hints.Inspect().Count == 0 && !FlyoutNative.IsWindow(componentError.Handle),
+                "Component-origin group close retained its associated hint");
             Check(!FlyoutNative.IsWindow(componentPanel), "Closed component panel HWND survived.");
-            Mark("component-native-navigation", new { sameHwnd = componentPanel.ToInt64(), confirmed.Code, session = originalSession });
+            Mark("component-native-navigation", new { sameHwnd = componentPanel.ToInt64(), confirmed.Code, session = originalSession,
+                failed = componentFailure.Code, associatedHint = componentError.Handle.ToInt64(), componentOrigin = true });
 
             var itemKey = adapter.GroupSnapshot!.ItemsByKey.Keys.Single();
             var itemHandle = adapter.GroupSnapshot.ItemsByKey[itemKey].Handle;
@@ -165,16 +187,23 @@ internal static class TaskbarFlyoutProductionRegression
 
             // Provider's request action awaits RequestFlyoutAsync and returns the SDK's queue receipt to Host.
             await ActivateBaseline();
+            var historyBeforeRequest = communication.Actions.GetLastErrorHint("counter");
+            Check(historyBeforeRequest is { SessionId: var historySession, Slot.EntryKind: ActionEntryKind.Component,
+                Slot.EntryId: "controls", Slot.ActionSlotId: "fail", Result.Code: "DemoFailure" } && historySession == originalSession,
+                "Component rejection history was lost before the successful SDK request");
             Invoke(ControlButton("request"));
             await Until(() => receipts.Any(x => x.Code == "Queued") && manager.Inspect().Count == 1 &&
                 communication.States.FlyoutRequests.GetLastResult("counter")?.Result.Code == "Displayed" && ControlButton("request").IsEnabled,
                 "Native request control did not reach SDK queue, actual presentation and final receipt.");
-            Check(communication.Actions.GetLastErrorHint("counter") is null, "Native SDK request action returned a business error.");
+            Check(ReferenceEquals(communication.Actions.GetLastErrorHint("counter"), historyBeforeRequest),
+                "Native SDK request created another business error or erased existing rejection history.");
             CaptureWindows();
             Check(manager.CloseScreen(Group().ScreenId, Group().Generation).IsSuccess, "SDK group cleanup failed.");
             var sdkReceipt = await communication.SendActionAsync(new("counter", "main", ActionEntryKind.Component, "controls", "request"),
                 new(), expectedSessionId: originalSession).WaitAsync(TimeSpan.FromSeconds(8));
             Check(sdkReceipt.Accepted && sdkReceipt.Code == "Queued", "Actual SDK acknowledgement was not Queued.");
+            Check(ReferenceEquals(communication.Actions.GetLastErrorHint("counter"), historyBeforeRequest),
+                "Successful SDK acknowledgement replaced the last rejection history");
             await Until(() => manager.Inspect().Count == 1 && communication.States.FlyoutRequests.GetLastResult("counter")?.Result.Code == "Displayed",
                 "SDK acknowledged request did not finish as actual display.");
             CaptureWindows();
@@ -182,7 +211,8 @@ internal static class TaskbarFlyoutProductionRegression
             Check(receipts.Any(x => x.SessionId == originalSession && x.Sequence == last.RequestSequence && x.Code == "Queued"),
                 "Queued and displayed receipts lost session/sequence correlation.");
             var displayed = Group();
-            Mark("sdk-queued-to-displayed", new { sdkReceipt.Code, final = last, queue = receipts.ToArray(), actual = new
+            Mark("sdk-queued-to-displayed", new { sdkReceipt.Code, final = last, queue = receipts.ToArray(),
+                historicalFailure = historyBeforeRequest!.RequestId, historyRetained = true, actual = new
                 { displayed.Entry, displayed.SessionId, displayed.Generation, displayed.Mode,
                     windows = displayed.Windows.Select(x => new { handle = x.Handle.ToInt64(), x.TemplateId, x.Bounds }) } });
 
@@ -290,6 +320,11 @@ internal static class TaskbarFlyoutProductionRegression
                 manager.Inspect().Single().Generation == errorGroup.Generation,
                 "Associated error lost its message/owner or closed the taskbar group.");
             CheckAssociatedBounds(associated);
+            var detailsFailureHistory = communication.Actions.GetLastErrorHint("counter");
+            Check(detailsFailureHistory is { Slot.EntryKind: ActionEntryKind.TaskbarFlyout, Slot.EntryId: "details",
+                Slot.ActionSlotId: "fail", Result.Code: "DemoFailure" } && detailsFailureHistory.SessionId == originalSession &&
+                detailsFailureHistory.RequestId != historyBeforeRequest!.RequestId,
+                "TaskbarFlyout rejection did not record its own current request identity");
             Check(host.CurrentError is { } readable && readable.Contains(failedAction.Message, StringComparison.Ordinal),
                 "Failed action reason is not readable through Host.CurrentError.");
             await Task.Delay(2_100);

@@ -1,5 +1,5 @@
 ﻿param(
-    [ValidateSet('all', 'event', 'event-production', 'event-settings', 'broker', 'template', 'settings', 'dynamic', 'timer', 'hint', 'hint-window', 'interactive-hint', 'interactive-hint-motion', 'interactive-hint-production', 'flyout', 'flyout-production', 'flyout-create', 'flyout-scheduling', 'preset', 'organization', 'visual-environment', 'environment-recovery', 'combination-stability')][string]$Scenario = 'all',
+    [ValidateSet('all', 'event', 'event-production', 'event-settings', 'broker', 'template', 'ticket16-material', 'settings', 'dynamic', 'timer', 'hint', 'hint-window', 'interactive-hint', 'interactive-hint-motion', 'interactive-hint-production', 'flyout', 'flyout-production', 'flyout-create', 'flyout-scheduling', 'preset', 'organization', 'visual-environment', 'environment-recovery', 'combination-stability')][string]$Scenario = 'all',
     # Tiered entry for the combination fixture. 'smoke' is the daily automated tier (a few rounds);
     # 'soak' is the 50-round long run kept for a major version. Both drive the same fixture.
     [ValidateSet('smoke', 'soak')][string]$CombinationProfile = 'smoke',
@@ -77,6 +77,7 @@ if ($Scenario -eq 'environment-recovery') { $run.StartInfo.Arguments = '--enviro
 if ($Scenario -eq 'combination-stability') { $run.StartInfo.Arguments = "--combination-stability-only --combination-profile $CombinationProfile" }
 if ($Scenario -eq 'preset') { $run.StartInfo.Arguments = '--preset-only' }
 if ($Scenario -eq 'dynamic') { $run.StartInfo.Arguments = '--dynamic-only' }
+if ($Scenario -eq 'ticket16-material') { $run.StartInfo.Arguments = '--ticket16-material-only' }
 if ($Scenario -eq 'settings') { $run.StartInfo.Arguments = '--settings-only' }
 try {
     if (-not $run.Start()) { throw 'Could not start the WinUI regression process.' }

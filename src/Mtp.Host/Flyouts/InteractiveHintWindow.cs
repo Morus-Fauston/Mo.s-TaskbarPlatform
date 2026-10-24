@@ -1,4 +1,4 @@
-using System.Runtime.InteropServices;
+﻿using System.Runtime.InteropServices;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -66,6 +66,7 @@ internal sealed class InteractiveHintWindow
             FlyoutNative.NoActivate(Handle, true);
             FlyoutNative.Opacity(Handle, 0);
             SetRegion([]); // No full-window hit surface, including before the first layout.
+            root.KeyDown += KeyDown;
             root.LayoutUpdated += LayoutUpdated;
             root.ActualThemeChanged += ThemeChanged;
             foreground.PresentationChanged += PresentationChanged;
@@ -134,6 +135,13 @@ internal sealed class InteractiveHintWindow
         });
         if (after != Handle) FlyoutNative.NoActivate(Handle, true);
         return focused && after == Handle;
+    }
+
+    private void KeyDown(object sender, KeyRoutedEventArgs args)
+    {
+        // Native child flyouts consume their own Escape before it bubbles here.
+        if (args.Handled || stopped || closeRequested) return;
+        if (args.Key == Windows.System.VirtualKey.Escape) { args.Handled = true; PartClosed(); }
     }
 
     private void PresentationChanged()
@@ -387,6 +395,7 @@ internal sealed class InteractiveHintWindow
         released = true;
         foreground.PresentationChanged -= PresentationChanged;
         foreground.InteractiveGeometryChanged -= UpdateRegions;
+        root.KeyDown -= KeyDown;
         root.LayoutUpdated -= LayoutUpdated; root.ActualThemeChanged -= ThemeChanged;
         if (window is not null) { window.Closed -= OnClosed; window.Activated -= OnActivated; }
         if (subscribed)
@@ -413,7 +422,7 @@ internal sealed class InteractiveHintWindow
         try { if (accessibility.HighContrast != highContrast) ApplyTheme(); } catch (COMException) { }
         UpdateRegions();
     }
-    private void ThemeChanged(FrameworkElement sender, object args) => ApplyTheme();
+    private void ThemeChanged(FrameworkElement sender, object args) { material = null; ApplyTheme(); }
     private void HighContrastChanged(Windows.UI.ViewManagement.AccessibilitySettings sender, object args)
     {
         if (Interlocked.Exchange(ref appearanceQueued, 1) != 0) return;
@@ -433,11 +442,13 @@ internal sealed class InteractiveHintWindow
             byte shade = root.ActualTheme == ElementTheme.Dark ? (byte)32 : (byte)243;
             root.Background = highContrast ? new SolidColorBrush(new Windows.UI.ViewManagement.UISettings().GetColorValue(Windows.UI.ViewManagement.UIColorType.Background))
                 : new SolidColorBrush(Windows.UI.Color.FromArgb(effective.Kind == MaterialKind.None ? (byte)255 :
-                    effective.Kind == MaterialKind.Solid ? (byte)(255 * effective.Opacity) : (byte)0, shade, shade, shade));
+                    (byte)0, shade, shade, shade));
             if (material != effective)
             {
-                window.SystemBackdrop = effective.Kind is MaterialKind.Acrylic or MaterialKind.Mica
-                    ? new Islands.ConfiguredMaterialBackdrop(effective.Kind, effective.Opacity, Record) : null;
+                window.SystemBackdrop = effective.Kind == MaterialKind.Solid
+                    ? new Islands.SolidTintBackdrop(window, Windows.UI.Color.FromArgb((byte)Math.Round(255 * effective.Opacity), shade, shade, shade), Record)
+                    : effective.Kind is MaterialKind.Acrylic or MaterialKind.Mica
+                        ? new Islands.ConfiguredMaterialBackdrop(effective.Kind, effective.Opacity, Record) : null;
                 material = effective;
             }
         }

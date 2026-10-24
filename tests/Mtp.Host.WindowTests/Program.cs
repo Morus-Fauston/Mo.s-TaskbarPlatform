@@ -1,4 +1,4 @@
-using System.Reflection;
+﻿using System.Reflection;
 using System.Runtime.InteropServices;
 using Microsoft.UI.Xaml;
 using Mtp.Platform.Core;
@@ -58,6 +58,18 @@ public sealed partial class WindowTestApplication : Application
             File.WriteAllText(LogPath, "Starting real WinUI dock frame regression.\n");
             UnhandledException += (_, e) => AppendLog(e.Exception + "\n");
         }
+        else
+        {
+            var arguments = Environment.GetCommandLineArgs();
+            var targetDirectory = arguments[Array.IndexOf(arguments, "--hint-input-target") + 1];
+            UnhandledException += (_, e) =>
+            {
+                // Preserve the child failure without changing WinUI's unhandled verdict
+                // or corrupting the parent's shared window-tests.log.
+                try { File.WriteAllText(Path.Combine(targetDirectory, "target-error.txt"), e.Exception.ToString()); }
+                catch (Exception) { }
+            };
+        }
     }
 
     protected override async void OnLaunched(LaunchActivatedEventArgs args)
@@ -107,8 +119,8 @@ public sealed partial class WindowTestApplication : Application
             }
             if (launchArguments.Contains("--interactive-hint-only", StringComparer.Ordinal))
             {
-                await InteractiveHintWindowNativeTests.RunAsync(message => AppendLog(message + "\n"));
                 await InteractiveHintManagerNativeTests.RunAsync(message => AppendLog(message + "\n"));
+                await InteractiveHintWindowNativeTests.RunAsync(message => AppendLog(message + "\n"));
                 await InteractiveHintMotionNativeTests.RunAsync(message => AppendLog(message + "\n"));
                 Finish(null);
                 return;
@@ -177,9 +189,16 @@ public sealed partial class WindowTestApplication : Application
                 Finish(null);
                 return;
             }
+            if (Environment.GetCommandLineArgs().Contains("--ticket16-material-only", StringComparer.Ordinal))
+            {
+                await Ticket16MaterialNativeTests.RunAsync(message => AppendLog(message + "\n"));
+                Finish(null);
+                return;
+            }
             if (Environment.GetCommandLineArgs().Contains("--settings-only", StringComparer.Ordinal))
             {
                 await SettingsNativeRegression.RunAsync(message => AppendLog(message + "\n"));
+                await Ticket16MaterialNativeTests.RunAsync(message => AppendLog(message + "\n"));
                 Finish(null);
                 return;
             }

@@ -32,6 +32,8 @@ internal static class InteractiveHintProductionRegression
         using var settings = new HostSettingsController(display, new LocalHostSettingsPreferenceStore(Path.Combine(evidence, "settings.json")),
             () => host.Applications, host.RetryAsync, () => host.MaterialStatus, host.ApplyAppearance, host.RequestRefresh);
         host.AttachSettings(settings);
+        var settingsWindow = new SettingsWindow(settings, host, () => [new("owned-primary", true,
+            new(-30000, -30000, 1000, 800), new(-30000, -30000, 1000, 720), 96)]);
         var adapter = Field<IslandDisplayAdapter>(host, "adapter")!;
         adapter.GetType().GetProperty("ReducedMotionOverride", Members)!.SetValue(adapter, true);
         var processes = new List<Process>();
@@ -40,6 +42,8 @@ internal static class InteractiveHintProductionRegression
         int checkpoints = 0;
         try
         {
+            settingsWindow.AppWindow.Move(new(-30000, -30000));
+            settingsWindow.AppWindow.Show(false);
             await host.StartCounterAsync(Path.Combine(AppContext.BaseDirectory, "Broker/Mtp.Broker.dll"),
                 Path.Combine(AppContext.BaseDirectory, "CounterService/Mtp.CounterService.dll"), interactiveHints: true).WaitAsync(TimeSpan.FromSeconds(8));
             session = Field<HostBrokerSession>(host, "communication")!;
@@ -99,6 +103,21 @@ internal static class InteractiveHintProductionRegression
             Check(coordinator.Manager.Inspect().Single().Generation == group.Generation, "expansion replaced group identity");
             Mark("owned-expansion", new { group.Generation, owner = observation.Request.Owner, windows = coordinator.Manager.Inspect().Single().Windows.Select(x => x.TemplateId) });
 
+            int appearanceTransitions = 0;
+            for (int round = 0; round < 2; round++)
+            foreach (var material in MaterialResolver.SelectionOrder)
+            foreach (var theme in new[] { HostTheme.Light, HostTheme.Dark })
+            {
+                Check(settings.SetAppearance(new(theme, material, material == MaterialKind.None ? 1 : .6)).IsSuccess, "Live appearance save failed");
+                await Task.Delay(90);
+                Check(settingsWindow.SystemBackdrop is null && ((Grid)settingsWindow.Content).Background is SolidColorBrush { Color.A: 255 }, "Active global material changed settings shell");
+                Check(window.RootForTesting.ActualTheme == (theme == HostTheme.Dark ? ElementTheme.Dark : ElementTheme.Light), "Live hint theme did not follow preference");
+                Check(FlyoutNative.IsWindow(window.Handle) && coordinator.Manager.Inspect().Single().Generation == group.Generation, "Appearance change lost live hint/group");
+                appearanceTransitions++;
+            }
+            Check(settings.SetAppearance(new(HostTheme.Dark, MaterialKind.Solid, .6)).IsSuccess, "Appearance restore failed");
+            Mark("live-appearance", new { appearanceTransitions, settingsOpaque = true, nativeHintAlive = true, island.IsAlive });
+
             Invoke(Find<Button>(window.RootForTesting, "fail")!);
             await Until(() => coordinator.Hints.Inspect().Any(x => x.Request.Owner?.Generation == group.Generation && x.Text?.Contains("演示") == true), "associated action failure did not display hint");
             Check(coordinator.Manager.Inspect().Single().Generation == group.Generation, "action failure closed owner group");
@@ -117,6 +136,7 @@ internal static class InteractiveHintProductionRegression
         }
         finally
         {
+            settingsWindow.Close();
             if (session is not null) Capture();
             Check(host.Shutdown(), "production host cleanup retained owner");
             using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
@@ -124,7 +144,7 @@ internal static class InteractiveHintProductionRegression
             foreach (var process in processes) { log($"interactiveHintOwnedPid={process.Id}; exited={process.HasExited}"); process.Dispose(); }
             Check(handles.All(x => !FlyoutNative.IsWindow(x)), "production native handle survived cleanup");
         }
-        Check(checkpoints == 6 && watch.Elapsed < TimeSpan.FromSeconds(45), "missing checkpoints or exceeded scenario budget");
+        Check(checkpoints == 7 && watch.Elapsed < TimeSpan.FromSeconds(45), "missing checkpoints or exceeded scenario budget");
         log($"interactive-hint-production-pass: checkpoints={checkpoints}; elapsedMs={watch.ElapsedMilliseconds}; SDK=true; cleanup=true; evidence={evidence}");
 
         BrokerApplicationSnapshot State() => session!.States.GetSnapshot("counter")!;

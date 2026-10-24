@@ -6,6 +6,25 @@ namespace Mtp.Platform.Core.Tests;
 public sealed class TemplateInteractionTests
 {
     [Fact]
+    public async Task PendingSliderKeepsContinuousInputWhileOtherControlsKeepBusyGating()
+    {
+        var fixture = new Fixture();
+        var response = new TaskCompletionSource<ProtocolResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var controller = fixture.Controller((_, _, _, _) => response.Task);
+        var slider = controller.ActivateAsync("slider", new(TemplateValueKind.Number, Number: 35));
+        var toggle = controller.ActivateAsync("toggle", new(TemplateValueKind.Boolean, Boolean: false));
+        var snapshot = controller.GetSnapshot()!;
+        Assert.True(Node(snapshot, "slider").Busy);
+        Assert.True(Node(snapshot, "slider").Enabled);
+        Assert.True(Node(snapshot, "toggle").Busy);
+        Assert.False(Node(snapshot, "toggle").Enabled);
+        Assert.Equal(20, Node(snapshot, "slider").Confirmed!.Number);
+        response.SetResult(ProtocolResult.Reject("Denied", "denied"));
+        await Task.WhenAll(slider, toggle);
+        Assert.Equal(20, Node(controller.GetSnapshot()!, "slider").Confirmed!.Number);
+    }
+
+    [Fact]
     public void ConfirmedFieldsRefreshWithoutChangingTheViewAndPreviewNeverWritesBusinessState()
     {
         var fixture = new Fixture();
@@ -35,7 +54,7 @@ public sealed class TemplateInteractionTests
         var pending = controller.ActivateAsync("slider", new(TemplateValueKind.Number, Number: 37), expectedGeneration: initial.Generation);
         Assert.Equal(35, sent!.Number); Assert.Equal(fixture.Session, session);
         var busy = Node(controller.GetSnapshot()!, "slider");
-        Assert.True(busy.Busy); Assert.False(busy.Enabled); Assert.Equal(35, busy.Preview!.Number); Assert.Equal(20, busy.Confirmed!.Number);
+        Assert.True(busy.Busy); Assert.True(busy.Enabled); Assert.Equal(35, busy.Preview!.Number); Assert.Equal(20, busy.Confirmed!.Number);
         fixture.Publish(1, 25);
         response.SetResult(ProtocolResult.Reject("Denied", "denied"));
         Assert.False((await pending).Accepted);

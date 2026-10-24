@@ -1,4 +1,4 @@
-using Microsoft.UI.Xaml;
+﻿using Microsoft.UI.Xaml;
 using Mtp.Contracts;
 using Mtp.Host.Islands;
 using Mtp.Host.Flyouts;
@@ -109,6 +109,8 @@ internal sealed class HostConsoleController
     public IslandPreviewWindow Preview { get; } = new();
     public bool SimulateUnavailable { get; private set; }
     public IReadOnlyList<string> Errors => errors;
+    public StructuredError? PlatformError => Session.Error ?? monitor?.Error ??
+        (communication?.LastError is { } code ? new(code, "平台通信不可用，已保留最后确认读数。") : null);
     public string? CurrentError => PreferenceError?.Message ?? Session.Error?.Message ?? communication?.LastError ??
         communication?.States.Snapshots.Select(x => communication.Actions.GetLastErrorHint(x.ApplicationId)?.Result)
             .FirstOrDefault(x => x is not null)?.Message;
@@ -280,6 +282,13 @@ internal sealed class HostConsoleController
         { if (IsCurrent()) AddError(new("ActionNotAvailable", "项动作通道不可用，保留最后确认值。")); }
         finally { if (IsCurrent()) Refresh(); }
     }
+    public bool FocusInteractiveHint()
+    {
+        if (closing || flyouts is null) return false;
+        var hint = flyouts.InteractiveHints.Inspect().Where(x => !x.Closing).OrderByDescending(x => x.Generation).FirstOrDefault();
+        return hint is not null && flyouts.InteractiveHints.Focus(hint.Generation);
+    }
+
     public void Refresh()
     {
         if (closing || refreshing) return;

@@ -13,6 +13,7 @@ internal static class ShortHintManagerNativeTests
     private const string ApplicationId = "hint-native-test";
     private static readonly TemplateEntryReference HintEntry = new("group", TemplateEntryKind.Hint, "hint");
     private static readonly TemplateEntryReference GroupEntry = new("group", TemplateEntryKind.TaskbarFlyout, "panel");
+    private static readonly TemplateEntryReference ComponentEntry = new("group", TemplateEntryKind.Component, "component");
 
     internal static async Task RunAsync(Action<string> log)
     {
@@ -66,6 +67,8 @@ internal static class ShortHintManagerNativeTests
             await Until(() => hints.Inspect().Count == 0, "Refreshed error did not expire at three seconds.");
             log("PASS: new failure reuses HWND, replaces reason and restarts exactly three seconds.");
 
+            await CheckComponentOwnedFailure(groups, hints, request, work, handles, log);
+
             // Full screen permits both sides; the synthetic narrow work area forces the owned group reservation.
             await CheckAssociatedPlacement(groups, hints, clock, request, work,
                 new(work.X + work.Width - 80, (int)work.Bottom - 8, 48, 8), HintPlacementMode.Above, handles, log);
@@ -113,6 +116,7 @@ internal static class ShortHintManagerNativeTests
             Check(handles.All(handle => !FlyoutNative.IsWindow(handle)), "An owned HWND survived final cleanup.");
             log("PASS: reconnect destroys old session window; old request rejected; current session accepted; final resources=0.");
             await CheckCleanupIsolation(store, groups, images, request with { SessionId = "session-two" }, log);
+            await CheckDisconnectedComponentOwner(images, declaration, work, log);
         }
         finally
         {
@@ -209,6 +213,79 @@ internal static class ShortHintManagerNativeTests
         log($"PASS: associated {expected}; equal actual width; inside work area; timeout preserves group and releases reservation; group end destroys hint; stale generation rejected.");
     }
 
+    private static async Task CheckComponentOwnedFailure(TaskbarFlyoutManager groups, ShortHintManager hints,
+        ShortHintRequest independent, PixelRect work, List<nint> handles, Action<string> log)
+    {
+        // The manual demo's "打开面板" navigates a Component template. It is a
+        // taskbar group too, but its stable origin must remain Component.
+        var anchor = new PixelRect((int)work.Right - 80, (int)work.Bottom - 8, 48, 8);
+        var open = new FlyoutOpenRequest(new(ApplicationId, ComponentEntry), independent.SessionId,
+            independent.ScreenId, anchor, work, 96);
+        Check(groups.Toggle(open).IsSuccess, "Component-origin panel did not open");
+        var group = groups.Inspect().Single();
+        handles.Add(group.Windows.Single().Handle);
+        var owner = new HintOwner(group.ScreenId, group.Generation, group.Entry, group.SessionId);
+        var errorRequest = independent with { Entry = group.Entry, Owner = owner };
+        Check(hints.Show(errorRequest with { Owner = owner with { Generation = owner.Generation + 1 } }, "错误组代次").Code == "StaleHint" &&
+            !hints.HasResources, "Unknown Component owner generation was admitted");
+        var result = hints.Show(errorRequest, "组件面板中的关联失败");
+        log("component-associated-show: " + System.Text.Json.JsonSerializer.Serialize(new { group.Entry, result.Code, result.Accepted }));
+        Check(result.Accepted, "Component-origin associated failure was rejected: " + result.Code);
+        var first = hints.Inspect().Single();
+        handles.Add(first.Handle);
+        Check(first.Request.Owner == owner && first.Request.Owner is { Entry.Entry.Kind: TemplateEntryKind.Component },
+            "Component panel error lost its actual owner");
+        var originalHint = first.Bounds;
+
+        // Toggle the exposed taskbar portion in the owned work-area fixture. No
+        // explicit hints.Refresh call: the owner's presented frame must synchronize it.
+        var exposedWork = work with { Height = work.Height - 48 };
+        Check(groups.UpdateEnvironment(group.ScreenId, anchor with { Y = anchor.Y - 48 }, exposedWork, 96).IsSuccess,
+            "Component group work-area change failed");
+        var moved = hints.Inspect().Single();
+        var panel = groups.Inspect().Single().Windows.Single().Bounds;
+        Check(moved.Handle == first.Handle && moved.Bounds.Y < originalHint.Y && exposedWork.Contains(moved.Bounds) &&
+            moved.Bounds.X == panel.X && moved.Bounds.Width == panel.Width && moved.Bounds.Bottom + 8 <= panel.Y,
+            "Component-origin hint did not follow the actual group frame/work area");
+        Check(groups.UpdateEnvironment(group.ScreenId, anchor, work, 96).IsSuccess,
+            "Component group restored work area failed");
+        Check(hints.Inspect().Single().Handle == first.Handle && hints.Inspect().Single().Bounds == originalHint,
+            "Component-origin hint did not restore its owned placement");
+        Check(groups.CloseScreen(group.ScreenId, group.Generation).IsSuccess, "Component error group did not close");
+        await Until(() => !hints.HasResources, "Component group left an orphan error hint");
+        Check(!FlyoutNative.IsWindow(first.Handle) && hints.Show(errorRequest, "迟到组件面板错误").Code == "StaleHint",
+            "Retired Component owner admitted a late error");
+        log("PASS: Component-origin panel errors display, follow actual work-area frames with same HWND, close with owner, and reject stale generation.");
+    }
+
+    private static async Task CheckDisconnectedComponentOwner(RegisteredImageCache images,
+        ApplicationDeclaration declaration, PixelRect work, Action<string> log)
+    {
+        var states = new BrokerStateStore([ApplicationId]);
+        const string session = "component-disconnect";
+        Connect(states, declaration, session);
+        using var groups = new TaskbarFlyoutManager(states, (key, template, navigate) => new TemplateRenderer(
+            new TemplateInteractionController(states, key.ApplicationId, key.Entry,
+                (_, _, _, _) => Task.FromResult(ProtocolResult.Success()), template, navigate), images), (_, _) => { });
+        using var hints = new ShortHintManager(states, groups, images, (_, _) => { });
+        groups.ReducedMotionOverride = true; hints.ReducedMotionOverride = true;
+        const string screen = "component-disconnect-screen";
+        Check(groups.Toggle(new(new(ApplicationId, ComponentEntry), session, screen,
+            new((int)work.Right - 80, (int)work.Bottom - 8, 48, 8), work, 96)).IsSuccess,
+            "Disconnected Component fixture did not open");
+        var group = groups.Inspect().Single();
+        var request = new ShortHintRequest(group.Entry, session, screen, work, 96,
+            Owner: new(screen, group.Generation, group.Entry, session));
+        Check(hints.Show(request, "断联前可显示").Accepted, "Connected Component owner did not admit its failure");
+        nint handle = hints.Inspect().Single().Handle;
+        states.Handle(new() { Kind = MessageKind.Disconnected, ApplicationId = ApplicationId, SessionId = session });
+        hints.Refresh(); groups.Refresh();
+        await Until(() => !hints.HasResources && !groups.HasResources, "Disconnected Component owner kept native resources");
+        Check(!FlyoutNative.IsWindow(handle) && hints.Show(request, "断联后迟到错误").Code == "StaleHint",
+            "Disconnected Component owner accepted a late failure");
+        log("PASS: Component-owner disconnect closes native group/hint and rejects late failures.");
+    }
+
     private static ApplicationDeclaration CreateDeclaration()
     {
         var rows = Enumerable.Range(0, 12).Select(i => new TemplateNode("line" + i, TemplateNodeKind.Text,
@@ -216,7 +293,7 @@ internal static class ShortHintManagerNativeTests
         var panel = new EntryTemplateDeclaration("main", [new("main", new("body", TemplateNodeKind.Vertical, Children: rows))], []);
         var hint = new EntryTemplateDeclaration("main", [new("main", new("message", TemplateNodeKind.Text,
             Value: new(new(TemplateValueKind.Text, Text: "普通提示"))))], []);
-        return new(ApplicationId, [new("group", [new("component", [new("primary")])],
+        return new(ApplicationId, [new("group", [new("component", [new("primary")], Template: panel)],
             [new("panel", [new("commit")], Template: panel)],
             Hints: [new("hint", FlyoutKind.ShortHint, hint)])]);
     }
@@ -227,7 +304,7 @@ internal static class ShortHintManagerNativeTests
             "Hint fixture Welcome rejected.");
         var result = states.Handle(new() { Kind = MessageKind.Declare, ApplicationId = ApplicationId, SessionId = session,
             Declaration = declaration, State = new(0, [new("group", "component", "提示回归夹具", 0)],
-                TemplateEntries: [new(HintEntry, []), new(GroupEntry, [])]) }).Result!;
+                TemplateEntries: [new(HintEntry, []), new(GroupEntry, []), new(ComponentEntry, [])]) }).Result!;
         Check(result.Accepted, "Hint fixture declaration rejected: " + result.Message);
         Check(states.GetSnapshot(ApplicationId) is { IsConnected: true, IsInteractive: false },
             "Incomplete session was prematurely interactive.");

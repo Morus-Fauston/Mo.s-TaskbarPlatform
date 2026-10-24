@@ -55,9 +55,10 @@ internal sealed class TaskbarGroupSurface : UserControl, IDisposable
         generation = frame.Generation;
         revision = frame.Revision;
         bool updateFields = !ReferenceEquals(previousSnapshot, snapshot);
-        Width = canvas.Width = frame.WidthDip;
+        double viewportWidth = TaskbarFrameProjection.ViewportWidth(frame.WidthDip, XamlRoot?.RasterizationScale ?? 1);
+        Width = canvas.Width = viewportWidth;
         Height = canvas.Height = frame.HeightDip;
-        clip.Rect = new Rect(0, 0, frame.WidthDip, frame.HeightDip);
+        clip.Rect = new Rect(0, 0, viewportWidth, frame.HeightDip);
 
         var dynamicComponents = snapshot.ItemsByKey.Keys.Select(key => key.Component).ToHashSet();
         var componentKeys = new HashSet<TaskbarComponentKey>();
@@ -75,7 +76,7 @@ internal sealed class TaskbarGroupSurface : UserControl, IDisposable
                 visual.Update(model);
             }
             else if (updateFields) visual.Update(model);
-            SetBounds(visual.Root, visual.Clip, placement.Bounds, frame.WidthDip, 1);
+            SetBounds(visual.Root, visual.Clip, placement.Bounds, viewportWidth, 1);
             visual.Root.IsHitTestVisible = placement.Bounds.Width > 0 && placement.Bounds.Height > 0;
             visual.Root.Visibility = visual.Root.IsHitTestVisible ? Visibility.Visible : Visibility.Collapsed;
         }
@@ -102,7 +103,7 @@ internal sealed class TaskbarGroupSurface : UserControl, IDisposable
                 visual.Update(model!, snapshot.Environment);
             }
             else if (current && updateFields) visual.Update(model!, snapshot.Environment);
-            SetBounds(visual.Root, visual.Clip, placement.Bounds, frame.WidthDip, placement.Opacity);
+            SetBounds(visual.Root, visual.Clip, placement.Bounds, viewportWidth, placement.Opacity);
             visual.SetInteractive(current && model!.IsInteractive && placement.IsInteractive && !placement.IsExiting &&
                 placement.Bounds.Width > 0 && placement.Bounds.Height > 0 && placement.Opacity > 0);
         }

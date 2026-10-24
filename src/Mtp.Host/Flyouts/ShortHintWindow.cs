@@ -1,4 +1,4 @@
-using System.Runtime.InteropServices;
+﻿using System.Runtime.InteropServices;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
@@ -139,7 +139,7 @@ internal sealed class ShortHintWindow
         catch (COMException) { }
     }
 
-    private void ThemeChanged(FrameworkElement sender, object args) => ApplyTheme();
+    private void ThemeChanged(FrameworkElement sender, object args) { appliedMaterial = null; ApplyTheme(); }
     private void HighContrastChanged(Windows.UI.ViewManagement.AccessibilitySettings sender, object args)
     {
         if (Interlocked.Exchange(ref appearanceQueued, 1) != 0) return;
@@ -161,11 +161,13 @@ internal sealed class ShortHintWindow
             root.Background = highContrast
                 ? new SolidColorBrush(new Windows.UI.ViewManagement.UISettings().GetColorValue(Windows.UI.ViewManagement.UIColorType.Background))
                 : new SolidColorBrush(Windows.UI.Color.FromArgb(effective.Kind == MaterialKind.None ? (byte)255 :
-                    effective.Kind == MaterialKind.Solid ? (byte)(255 * effective.Opacity) : (byte)0, shade, shade, shade));
+                    (byte)0, shade, shade, shade));
             if (appliedMaterial != effective)
             {
-                window.SystemBackdrop = effective.Kind is MaterialKind.Acrylic or MaterialKind.Mica
-                    ? new Islands.ConfiguredMaterialBackdrop(effective.Kind, effective.Opacity, Record) : null;
+                window.SystemBackdrop = effective.Kind == MaterialKind.Solid
+                    ? new Islands.SolidTintBackdrop(window, Windows.UI.Color.FromArgb((byte)Math.Round(255 * effective.Opacity), shade, shade, shade), Record)
+                    : effective.Kind is MaterialKind.Acrylic or MaterialKind.Mica
+                        ? new Islands.ConfiguredMaterialBackdrop(effective.Kind, effective.Opacity, Record) : null;
                 appliedMaterial = effective;
                 Record("hint-material-applied", new { requested = appearance.Material.ToString(), effective = effective.Kind.ToString(), effective.Opacity, highContrast });
             }

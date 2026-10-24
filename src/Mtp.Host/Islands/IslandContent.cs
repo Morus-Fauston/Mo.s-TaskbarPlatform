@@ -1,4 +1,4 @@
-using Microsoft.UI.Xaml;
+﻿using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
@@ -13,7 +13,7 @@ internal sealed class IslandContent : UserControl
     private readonly Grid surface = new();
     private HostTestConfiguration appearance = new();
     private readonly Windows.UI.ViewManagement.AccessibilitySettings accessibility = new();
-    private bool highContrast;
+    private bool highContrast, compositionSurface;
     internal bool HighContrast
     {
         get
@@ -117,10 +117,13 @@ internal sealed class IslandContent : UserControl
             return;
         }
         var shade = ActualTheme == ElementTheme.Dark ? (byte)32 : (byte)243;
-        surface.Background = new SolidColorBrush(Color.FromArgb(config.Material == "none" ? (byte)(255 * config.Alpha) : (byte)0, shade, shade, shade));
+        surface.Background = new SolidColorBrush(Color.FromArgb(!compositionSurface && config.Material == "none" ? (byte)(255 * config.Alpha) : (byte)0, shade, shade, shade));
     }
+    internal void UseCompositionSurface() { compositionSurface = true; ApplySurface(appearance); }
+
     public void ApplyAppearance(HostTestConfiguration config)
     {
+        compositionSurface = false;
         appearance = config;
         RequestedTheme = config.Theme switch { "light" => ElementTheme.Light, "dark" => ElementTheme.Dark, _ => ElementTheme.Default };
         ApplySurface(config);

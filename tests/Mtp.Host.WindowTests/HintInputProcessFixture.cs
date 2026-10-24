@@ -18,10 +18,30 @@ internal static class HintInputProcessFixture
     // Called by the child application's OnLaunched branch, before any ordinary regression starts.
     internal static void RunTarget(string directory) => target = new Target(Path.GetFullPath(directory));
 
+    internal static async Task EstablishNormalForegroundAsync(nint handle, uint ownedProcessId)
+    {
+        FlyoutNative.GetWindowThreadProcessId(handle, out uint actualProcess);
+        Check(actualProcess == ownedProcessId && FlyoutNative.IsWindow(handle), "Foreground baseline must be explicitly owned");
+        Check(FlyoutNative.SetWindowPos(handle, new(-1), 0, 0, 0, 0, 0x13), "Cannot expose owned foreground baseline");
+        try
+        {
+            var bounds = FlyoutNative.Bounds(handle);
+            double scale = Mtp.Host.Islands.NativeWindows.GetDpiForWindow(handle) / 96d;
+            Check(bounds.Width >= 240 * scale, "Owned title baseline is too narrow for safe native title input");
+            var point = new FlyoutNative.Point { X = bounds.X + (int)(40 * scale), Y = bounds.Y + (int)(16 * scale) };
+            Check(FlyoutNative.Root(FlyoutNative.WindowFromPoint(point)) == handle, "Owned foreground title is occluded");
+            Check(SetCursorPos(point.X, point.Y), "Cannot position owned foreground title input");
+            Check(SendInput(2, [new Input { Flags = 2 }, new Input { Flags = 4 }], Marshal.SizeOf<Input>()) == 2, "Cannot click owned foreground title");
+            await Until(() => FlyoutNative.GetForegroundWindow() == handle, TimeSpan.FromSeconds(4), "Real owned title input did not establish foreground");
+        }
+        finally { Check(FlyoutNative.SetWindowPos(handle, new(-2), 0, 0, 0, 0, 0x13), "Cannot restore normal baseline z-order"); }
+    }
+
     internal static async Task RunAsync(Action<string> log)
     {
         string directory = Path.Combine(AppContext.BaseDirectory, "hint-input-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
+        VerifySnapshotPublication(directory, log);
         nint savedForeground = FlyoutNative.GetForegroundWindow();
         Check(FlyoutNative.GetCursorPos(out var savedCursor), "Could not preserve cursor position.");
         var start = new ProcessStartInfo(Environment.ProcessPath ?? throw new InvalidOperationException("Current test executable is unavailable."))
@@ -48,10 +68,32 @@ internal static class HintInputProcessFixture
             FlyoutNative.GetWindowThreadProcessId(hwnd, out uint actualProcess);
             Check(actualProcess == child.Id && FlyoutNative.Root(hwnd) == hwnd && info.Bounds.IsValid,
                 "Cross-process target HWND ownership or Button bounds are invalid.");
+            // Window.Activate may be refused by the foreground lock. Establish the
+            // ordinary target with real owned title-bar input, then drop topmost
+            // before the no-activate hint exists (same baseline as interactive input).
+            Check(FlyoutNative.SetWindowPos(hwnd, new(-1), 0, 0, 0, 0, 0x13), "Cannot expose owned input target title");
+            try
+            {
+                var titleBounds = FlyoutNative.Bounds(hwnd);
+                var title = new FlyoutNative.Point { X = titleBounds.X + titleBounds.Width / 2, Y = titleBounds.Y + 12 };
+                Check(FlyoutNative.Root(FlyoutNative.WindowFromPoint(title)) == hwnd, "Owned target title is occluded");
+                Check(SetCursorPos(title.X, title.Y), "Cannot position over owned title");
+                Check(SendInput(2, [new Input { Flags = 2 }, new Input { Flags = 4 }], Marshal.SizeOf<Input>()) == 2, "Cannot establish owned target foreground");
+                await Task.Delay(80);
+                Check(FlyoutNative.GetForegroundWindow() == hwnd, "Owned title input did not establish target foreground");
+            }
+            finally { Check(FlyoutNative.SetWindowPos(hwnd, new(-2), 0, 0, 0, 0, 0x13), "Cannot restore ordinary target z-order"); }
             var point = new FlyoutNative.Point { X = info.Bounds.X + info.Bounds.Width / 2, Y = info.Bounds.Y + info.Bounds.Height / 2 };
-            var before = Read<Counts>(Path.Combine(directory, "counts.json")) ?? throw new InvalidOperationException("Target input counters are unavailable.");
+            var before = ReadCounts(directory) ?? throw new InvalidOperationException("Target input counters are unavailable.");
             Check(before == new Counts(0, 0, 0), "The target received input before this fixture's single click.");
-            Check(FlyoutNative.Root(FlyoutNative.WindowFromPoint(point)) == hwnd,
+            // A consumer may keep a published snapshot open without delete sharing.
+            // New event evidence must not replace that file or retry around its lock.
+            using var heldSnapshot = new FileStream(Directory.GetFiles(directory, "counts-*.json").Order(StringComparer.Ordinal).Last(),
+                FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            var hitRoot = FlyoutNative.Root(FlyoutNative.WindowFromPoint(point));
+            FlyoutNative.GetWindowThreadProcessId(hitRoot, out uint hitProcess);
+            log("hint-input-precondition: " + JsonSerializer.Serialize(new { targetPid = child.Id, target = hwnd.ToInt64(), hit = hitRoot.ToInt64(), hitProcess, foreground = FlyoutNative.GetForegroundWindow().ToInt64(), point }));
+            Check(hitRoot == hwnd,
                 "Owned Button is occluded; refusing to send input to another window.");
             await ShortHintNativeTests.VerifyCrossProcessPassThroughAsync(hwnd, info.Bounds, async () =>
             {
@@ -69,12 +111,12 @@ internal static class HintInputProcessFixture
                 await Until(() =>
                 {
                     CheckTargetRunning();
-                    var counts = Read<Counts>(Path.Combine(directory, "counts.json"));
+                    var counts = ReadCounts(directory);
                     return counts is not null && counts.Presses >= 1 && counts.Releases >= 1 && counts.Clicks >= 1;
                 }, TimeSpan.FromSeconds(3), "Actual pointer press/release/Click did not reach the separate Button process.");
                 // One short observation window catches duplicate delivery after the initial Click.
                 await Task.Delay(250);
-                var after = Read<Counts>(Path.Combine(directory, "counts.json"));
+                var after = ReadCounts(directory);
                 Check(after == new Counts(1, 1, 1), "Cross-process pointer delivery was not exactly one press, release and Click.");
                 Check(ReadText(Path.Combine(directory, "clicks.txt")) == "1", "Independent Click readback differs from the routed-event counts.");
                 log("hint-cross-process-input: " + JsonSerializer.Serialize(new
@@ -133,6 +175,7 @@ internal static class HintInputProcessFixture
         private readonly PointerEventHandler pressed, released;
         private readonly RoutedEventHandler clicked;
         private Counts counts = new(0, 0, 0);
+        private int snapshotSequence;
         private bool published, stopping;
 
         internal Target(string directory)
@@ -160,7 +203,10 @@ internal static class HintInputProcessFixture
             window.Closed += Closed;
             var work = Microsoft.UI.Windowing.DisplayArea.Primary.WorkArea;
             window.AppWindow.MoveAndResize(new(work.X + 64, work.Y + 64, 480, 240));
-            window.AppWindow.Show(false);
+            // Establish the normal target application's foreground before showing
+            // the no-activate overlay. A background Show(false) can remain behind
+            // another app, making this an occlusion test instead of input delivery.
+            window.Activate();
             // The input target is a normal application, not a competing topmost overlay.
             // Activating a topmost target would intentionally raise it over the hints.
             if (!SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0013)) throw FlyoutNative.Error("PositionInputTarget");
@@ -174,7 +220,7 @@ internal static class HintInputProcessFixture
             if (stopping) return;
             counts = value;
             AtomicWrite(Path.Combine(directory, "clicks.txt"), counts.Clicks.ToString(CultureInfo.InvariantCulture));
-            AtomicWrite(Path.Combine(directory, "counts.json"), JsonSerializer.Serialize(counts));
+            AtomicWrite(Path.Combine(directory, $"counts-{++snapshotSequence:D4}.json"), JsonSerializer.Serialize(counts));
         }
 
         private void Tick(object? sender, object args)
@@ -224,6 +270,27 @@ internal static class HintInputProcessFixture
     private sealed record TargetReady(int ProcessId, long Handle, PixelRect Bounds);
     private sealed record Counts(int Presses, int Releases, int Clicks);
     private sealed record TargetExit(int ProcessId, bool WindowClosed, Counts Counts);
+    private static Counts? ReadCounts(string directory) => ReadInputCounts<Counts>(directory);
+
+    internal static T? ReadInputCounts<T>(string directory) where T : class
+    {
+        var path = Directory.EnumerateFiles(directory, "counts-*.json").Order(StringComparer.Ordinal).LastOrDefault();
+        return path is null ? null : Read<T>(path);
+    }
+    private static void VerifySnapshotPublication(string directory, Action<string> log)
+    {
+        string previous = Path.Combine(directory, "publication-old.json");
+        AtomicWrite(previous, "old");
+        using var reader = new FileStream(previous, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        Exception? denied = null;
+        try { AtomicWrite(previous, "new"); }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { denied = error; }
+        Check(denied is not null, "Old overwrite counterexample did not encounter the held reader");
+        string next = Path.Combine(directory, "publication-next.json");
+        AtomicWrite(next, "new");
+        Check(File.ReadAllText(next) == "new", "Immutable snapshot publication failed while previous snapshot was observed");
+        log("hint-snapshot-publication: oldOverwrite=" + denied!.GetType().Name + "; immutableNext=passed; heldReader=true; retries=0");
+    }
     private static T? Read<T>(string path) where T : class => File.Exists(path) ? JsonSerializer.Deserialize<T>(ReadText(path)) : null;
     private static string ReadText(string path)
     {

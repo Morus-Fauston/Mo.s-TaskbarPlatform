@@ -1,4 +1,4 @@
-using Microsoft.UI.Xaml;
+﻿using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Automation.Peers;
 using Microsoft.UI.Xaml.Controls;
@@ -84,7 +84,12 @@ internal sealed class TemplateRenderer : UserControl, IDisposable
                 {
                     case TextBlock text: text.Text = value?.Text ?? ""; AutomationProperties.SetName(text, view.Node.AccessibleName ?? text.Text); break;
                     case ToggleSwitch toggle: toggle.IsOn = value?.Boolean ?? false; break;
-                    case Slider slider: slider.Value = value?.Number ?? slider.Minimum; break;
+                    case Slider slider:
+                        // An earlier request can finish during a subsequent drag.
+                        // Keep the native pointer preview until this drag releases;
+                        // real unavailability still cancels input and restores state.
+                        if (!enabled || !HasPointerCapture(slider)) slider.Value = value?.Number ?? slider.Minimum;
+                        break;
                     case Button button when view.Node.Kind == TemplateNodeKind.Button && value?.Kind != TemplateValueKind.Resource:
                         button.Content = value?.Text ?? view.Node.AccessibleName ?? ""; break;
                 }
@@ -222,13 +227,22 @@ internal sealed class TemplateRenderer : UserControl, IDisposable
             PointerEventHandler pressed = (_, _) => dragging = true;
             PointerEventHandler released = (_, _) =>
             {
-                if (!dragging) return;
-                dragging = false;
-                Activate(node.NodeId, new(TemplateValueKind.Number, Number: slider.Value), inputGeneration, inputEpoch);
+                if (dragging)
+                {
+                    dragging = false;
+                    Activate(node.NodeId, new(TemplateValueKind.Number, Number: slider.Value), inputGeneration, inputEpoch);
+                }
+                // A synchronous result can arrive inside PointerReleased while the
+                // native Thumb still owns capture. Reconcile once capture is gone,
+                // including the later CaptureLost notification; never submit twice.
+                if (!refreshing && !HasPointerCapture(slider)) Refresh();
             };
             RangeBaseValueChangedEventHandler changed = (_, args) =>
             {
                 if (refreshing || disposed || inputEpoch != epoch) return;
+                // Slider's template children can change Value before PointerPressed bubbles.
+                // Their actual capture establishes that this is a pointer preview, not keyboard/UIA input.
+                dragging |= HasPointerCapture(slider);
                 var value = new TemplateValue(TemplateValueKind.Number, Number: args.NewValue);
                 var preview = controller.Preview(node.NodeId, value, inputGeneration);
                 if (preview.Accepted && !dragging) Activate(node.NodeId, value, inputGeneration, inputEpoch);
@@ -419,6 +433,13 @@ internal sealed class TemplateRenderer : UserControl, IDisposable
         protected override AutomationPeer OnCreateAutomationPeer() => null!;
         protected override Size MeasureOverride(Size availableSize) => new(
             double.IsNaN(Width) ? 0 : Width, double.IsNaN(Height) ? MinHeight : Height);
+    }
+    private static bool HasPointerCapture(DependencyObject owner)
+    {
+        if (owner is UIElement element && element.PointerCaptures?.Count > 0) return true;
+        for (int i = 0; i < VisualTreeHelper.GetChildrenCount(owner); i++)
+            if (HasPointerCapture(VisualTreeHelper.GetChild(owner, i))) return true;
+        return false;
     }
     private sealed class PassiveSlider : Slider { protected override AutomationPeer OnCreateAutomationPeer() => null!; }
 

@@ -55,7 +55,8 @@ internal sealed class ShortHintManager : IDisposable
     private void GroupFrameApplied(string screenId, long ownerGeneration)
     {
         foreach (var owner in hints.Values.Select(x => x.Request.Owner).OfType<HintOwner>().Where(owner =>
-            owner.Entry.Entry.Kind == TemplateEntryKind.TaskbarFlyout && owner.ScreenId == screenId && owner.Generation == ownerGeneration).Distinct().ToArray())
+            (owner.Entry.Entry.Kind is TemplateEntryKind.Component or TemplateEntryKind.TaskbarFlyout) &&
+            owner.ScreenId == screenId && owner.Generation == ownerGeneration).Distinct().ToArray())
             OwnerFrameApplied(owner);
     }
     private void EventFrameApplied(HintOwner owner) => OwnerFrameApplied(owner);
@@ -74,7 +75,7 @@ internal sealed class ShortHintManager : IDisposable
     private bool OwnerAvailable(HintOwner owner) => owner.Entry.Entry.Kind switch
     {
         TemplateEntryKind.EventChannel => events?.BoundsForHint(owner) is not null,
-        TemplateEntryKind.TaskbarFlyout => groups.Inspect().Any(x => x.ScreenId == owner.ScreenId && x.Generation == owner.Generation &&
+        TemplateEntryKind.Component or TemplateEntryKind.TaskbarFlyout => groups.Inspect().Any(x => x.ScreenId == owner.ScreenId && x.Generation == owner.Generation &&
             x.Entry == owner.Entry && x.SessionId == owner.SessionId && !x.Closing),
         _ => false
     };
@@ -105,7 +106,7 @@ internal sealed class ShortHintManager : IDisposable
     }
     private bool Enabled(ShortHintRequest request)
     {
-        // Host action failures have no app-declared hint switch. Their reason also remains in settings.
+        // Host action failures have no app-declared hint switch; their lifetime is independent.
         if (request.Entry.Entry.Kind != TemplateEntryKind.Hint) return true;
         var id = new StableIdentity(new StableId(request.Entry.ApplicationId)).CreateChild(new(request.Entry.Entry.FeatureGroupId)).CreateChild(new(request.Entry.Entry.EntryId));
         return preferences.HintVisibility?.GetValueOrDefault(HostSettingsController.IdentityKey(id), true) != false &&

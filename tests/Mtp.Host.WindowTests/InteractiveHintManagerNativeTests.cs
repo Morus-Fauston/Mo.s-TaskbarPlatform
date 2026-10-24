@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Text.Json;
 using Microsoft.UI.Windowing;
 using Mtp.Contracts;
@@ -10,6 +10,19 @@ namespace Mtp.Host.WindowTests;
 
 internal static class InteractiveHintManagerNativeTests
 {
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Explicit, Size = 40)]
+    private struct KeyboardInput
+    {
+        [System.Runtime.InteropServices.FieldOffset(0)] public uint Type;
+        [System.Runtime.InteropServices.FieldOffset(8)] public ushort Key;
+        [System.Runtime.InteropServices.FieldOffset(12)] public uint Flags;
+        [System.Runtime.InteropServices.FieldOffset(20)] public uint MouseFlags;
+    }
+    [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
+    private static extern uint SendInput(uint count, KeyboardInput[] input, int size);
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+    private static extern bool SetCursorPos(int x, int y);
     private static readonly TemplateEntryReference Hint = new("group", TemplateEntryKind.Hint, "adjust");
     private static readonly TemplateEntryReference Panel = new("group", TemplateEntryKind.TaskbarFlyout, "details");
     internal static async Task RunAsync(Action<string> log)
@@ -52,6 +65,52 @@ internal static class InteractiveHintManagerNativeTests
             await Until(() => !hints.HasResources, "five-second expiry did not close both windows");
             Check(handles.All(x => !FlyoutNative.IsWindow(x)), "expired interactive hint leaked native resource");
             log("interactive-manager-pass: visible 4999ms retained; ordinary refresh did not extend; 5000ms closed both HWNDs");
+
+            Check(hints.Show(request).Accepted, "keyboard fixture did not open");
+            var keyboard = hints.Inspect().Single();
+            await Pump();
+            // Match the production explicit-entry button: real input gives the caller foreground permission.
+            var entryButton = new Microsoft.UI.Xaml.Controls.Button { Content = "进入当前交互提示" };
+            var entryRoot = new Microsoft.UI.Xaml.Controls.Grid();
+            entryRoot.Children.Add(entryButton);
+            var entryWindow = new Microsoft.UI.Xaml.Window { Content = entryRoot };
+            bool focused = false;
+            entryButton.Click += (_, _) => { focused = hints.Focus(keyboard.Generation); log("entry-input: clicked; focused=" + focused); };
+            try
+            {
+                entryWindow.AppWindow.MoveAndResize(new(work.X + 80, work.Y + 80, 480, 180));
+                entryWindow.Activate();
+                var entryNative = WinRT.Interop.WindowNative.GetWindowHandle(entryWindow);
+                Check(FlyoutNative.SetWindowPos(entryNative, new nint(-1), 0, 0, 0, 0, 0x0013), "Cannot position owned entry fixture");
+                await Until(() => entryButton.IsLoaded, "Explicit-entry button did not load");
+                var nativeBounds = FlyoutNative.Bounds(entryNative);
+                var titlePoint = new FlyoutNative.Point { X = nativeBounds.X + nativeBounds.Width / 2, Y = nativeBounds.Y + 24 };
+                Check(FlyoutNative.Root(FlyoutNative.WindowFromPoint(titlePoint)) == entryNative, "Explicit-entry title is occluded");
+                Check(SetCursorPos(titlePoint.X, titlePoint.Y), "Cannot reach owned entry title");
+                Check(SendInput(2, [new KeyboardInput { MouseFlags = 2 }, new KeyboardInput { MouseFlags = 4 }],
+                    System.Runtime.InteropServices.Marshal.SizeOf<KeyboardInput>()) == 2, "Cannot establish entry foreground with real title input");
+                await Until(() => FlyoutNative.GetForegroundWindow() == entryNative, "Explicit-entry caller did not obtain native foreground");
+                var entryBounds = TaskbarFlyoutNativeRegression.ElementScreenBounds(entryButton, entryWindow);
+                var point = new FlyoutNative.Point { X = entryBounds.X + entryBounds.Width / 2, Y = entryBounds.Y + entryBounds.Height / 2 };
+                var entryHandle = WinRT.Interop.WindowNative.GetWindowHandle(entryWindow);
+                var hit = FlyoutNative.Root(FlyoutNative.WindowFromPoint(point));
+                FlyoutNative.GetWindowThreadProcessId(hit, out uint hitPid);
+                log("ticket16-entry-baseline: " + JsonSerializer.Serialize(new { entryBounds, actualOffset = entryButton.ActualOffset.ToString(), entryButton.ActualWidth, entryButton.ActualHeight, expected = entryHandle.ToInt64(), hit = hit.ToInt64(), hitPid, foreground = FlyoutNative.GetForegroundWindow().ToInt64() }));
+                Check(hit == entryHandle, "Explicit-entry button is occluded");
+                Check(SetCursorPos(point.X, point.Y), "Cannot reach explicit-entry button");
+                Check(SendInput(1, [new KeyboardInput { Type = 0, MouseFlags = 1 }], System.Runtime.InteropServices.Marshal.SizeOf<KeyboardInput>()) == 1,
+                    "Cannot send owned entry pointer movement");
+                FlyoutNative.GetCursorPos(out var cursor);
+                log("entry-input: cursor=" + cursor.X + "," + cursor.Y);
+                var click = new[] { new KeyboardInput { Type = 0, MouseFlags = 2 }, new KeyboardInput { Type = 0, MouseFlags = 4 } };
+                Check(SendInput(2, click, System.Runtime.InteropServices.Marshal.SizeOf<KeyboardInput>()) == 2, "Explicit-entry click failed");
+                await Until(() => focused, "Explicit keyboard hint focus failed after real entry click");
+            }
+            finally { entryWindow.Close(); }
+            var escape = new[] { new KeyboardInput { Type = 1, Key = 0x1B }, new KeyboardInput { Type = 1, Key = 0x1B, Flags = 2 } };
+            Check(SendInput(2, escape, System.Runtime.InteropServices.Marshal.SizeOf<KeyboardInput>()) == 2, "Escape injection failed");
+            await Until(() => !hints.HasResources, "Unhandled Escape did not close independent interactive hint");
+            log("ticket16-keyboard-pass: explicit focus and real Escape close paired hint windows");
 
             var groupRequest = new FlyoutOpenRequest(new("interactive-test", Panel), "first", "screen",
                 new((int)area.Right - 120, (int)area.Bottom - 8, 60, 8), area, dpi);
@@ -133,7 +192,7 @@ internal static class InteractiveHintManagerNativeTests
         }
     }
 
-    internal static ApplicationDeclaration Declaration() => new("interactive-test", [new("group",
+    internal static ApplicationDeclaration Declaration(double step = 1) => new("interactive-test", [new("group",
         [new("component", [new("noop")])],
         [new("details", [new("noop")], Template: new("main", [
             new("main", new("title", TemplateNodeKind.Text, Value: new(new(TemplateValueKind.Text, Text: "所属主面板")))),
@@ -142,16 +201,16 @@ internal static class InteractiveHintManagerNativeTests
         Hints: [new("adjust", FlyoutKind.InteractiveHint, new("compact", [new("compact",
             new("row", TemplateNodeKind.Horizontal, Children: [
                 new("label", TemplateNodeKind.Text, Value: new(new(TemplateValueKind.Text, Text: "模拟调节"))),
-                new("value", TemplateNodeKind.Slider, Value: new(StateFieldId: "level"), AccessibleName: "模拟值", Action: new(TemplateActionKind.Business, "set"), Minimum: 0, Maximum: 100, Step: 1),
+                new("value", TemplateNodeKind.Slider, Value: new(StateFieldId: "level"), AccessibleName: "模拟值", Action: new(TemplateActionKind.Business, "set"), Minimum: 0, Maximum: 100, Step: step),
                 new("expand", TemplateNodeKind.IconButton, AccessibleName: "展开", Icon: HostIcon.ChevronRight, Action: new(TemplateActionKind.ExpandHint))]))],
             [new("level", TemplateValueKind.Number)]), [new("set", ActionParameterKind.Number)], new("details", "expanded"))])]);
 
-    internal static void Connect(BrokerStateStore states, string session)
+    internal static void Connect(BrokerStateStore states, string session, double step = 1)
     {
         Check(states.RequireSessionReady("interactive-test").Accepted, "fixture SessionReady requirement failed");
         Check(states.Handle(new() { Kind = MessageKind.Welcome, ApplicationId = "interactive-test", SessionId = session }).Result!.Accepted, "fixture welcome failed");
         var declared = states.Handle(new() { Kind = MessageKind.Declare, ApplicationId = "interactive-test", SessionId = session,
-            Declaration = Declaration(), State = new(0, [new("group", "component", "模拟值")],
+            Declaration = Declaration(step), State = new(0, [new("group", "component", "模拟值")],
                 TemplateEntries: [new(Hint, [new("level", new(TemplateValueKind.Number, Number: 40))]), new(Panel, [])]) }).Result!;
         Check(declared.Accepted, "fixture declare failed: " + declared.Code + " " + declared.Message);
         Check(states.Handle(new() { Kind = MessageKind.SessionReady, ApplicationId = "interactive-test", SessionId = session }).Result!.Accepted, "fixture ready failed");

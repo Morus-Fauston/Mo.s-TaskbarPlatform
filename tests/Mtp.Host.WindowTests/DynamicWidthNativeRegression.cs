@@ -232,6 +232,10 @@ internal static class DynamicWidthNativeRegression
                 Check(Math.Abs(frame.Components.Single(component => component.Key == Right).Bounds.X - fixedRightX) < 0.001,
                     "Right-neighbor frame position drifted.");
                 double actualRightX = NativeX(rightControl, island, handle);
+                double viewportWidth = TaskbarFrameProjection.ViewportWidth(frame.WidthDip,
+                    island.ContentRoot!.XamlRoot!.RasterizationScale);
+                Check(Math.Abs(Canvas.GetLeft(rightControl) - (fixedRightX + viewportWidth)) < .001,
+                    "Canvas uses an unrounded origin different from the integer native viewport.");
                 if (Math.Abs(actualRightX - fixedNativeRightX) > 2)
                 {
                     var transform = rightControl.TransformToVisual(island.ContentRoot!).TransformPoint(new Point(0, 0));

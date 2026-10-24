@@ -308,8 +308,11 @@ public sealed class TemplateInteractionController : IDisposable
         controls.TryGetValue(node.NodeId, out var control);
         bool available = enabled && visible && current?.IsInteractive == true && current.IsConnected;
         bool busy = control?.Current is not null;
+        // Continuous sliders can replace the one pending target while a request is
+        // in flight. Busy is not a loss of availability or a native Disabled state.
+        bool inputEnabled = available && (!busy || node.Kind == TemplateNodeKind.Slider);
         yield return new(node, new(node.NodeId, Resolve(node.Value), control?.Preview,
-            available && !busy, visible, busy, control?.Error), available);
+            inputEnabled, visible, busy, control?.Error), available);
         foreach (var child in node.Children ?? [])
             foreach (var projected in Visit(child, enabled, visible)) yield return projected;
     }

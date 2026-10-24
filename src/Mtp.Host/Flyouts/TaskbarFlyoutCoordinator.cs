@@ -1,4 +1,4 @@
-using Microsoft.UI.Xaml;
+﻿using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Mtp.Contracts;
 using Mtp.Host.Islands;
@@ -234,12 +234,14 @@ internal sealed class TaskbarFlyoutCoordinator : IDisposable
 
     private ProtocolResult ExpandHint(ShortHintRequest source, HintExpansionTarget target)
     {
+        bool keyboard = InteractiveHints.Inspect().Any(x => x.Request == source &&
+            x.Handle == FlyoutNative.GetForegroundWindow());
         var entry = new FlyoutEntryKey(source.Entry.ApplicationId,
             new(source.Entry.Entry.FeatureGroupId, TemplateEntryKind.TaskbarFlyout, target.TaskbarFlyoutId));
         if (source.Owner is { } owner)
         {
             if (owner.Entry != entry) return ProtocolResult.Reject("InvalidHintOwner", "展开目标不属于当前组");
-            return Manager.ExpandFromHint(owner, target.PanelTemplateId);
+            return Manager.ExpandFromHint(owner, target.PanelTemplateId, keyboard);
         }
         var component = island.GetGroupFrame()?.Components.FirstOrDefault(x => x.Key.ApplicationId == source.Entry.ApplicationId &&
             x.Key.FeatureGroupId == source.Entry.Entry.FeatureGroupId)?.Key;
@@ -253,8 +255,8 @@ internal sealed class TaskbarFlyoutCoordinator : IDisposable
         if (island.Geometry?.DisplayId != source.ScreenId) return ProtocolResult.Reject("AnchorUnavailable", "提示屏幕没有可用任务栏入口");
         var existing = Manager.Inspect().FirstOrDefault(x => x.ScreenId == source.ScreenId && x.Entry == entry && x.SessionId == source.SessionId && !x.Closing);
         if (existing is not null)
-            return Manager.ExpandFromHint(new(existing.ScreenId, existing.Generation, existing.Entry, existing.SessionId), target.PanelTemplateId);
-        return Open(entry, source.SessionId, ReadAnchor, FlyoutInvocationKind.Pointer, target.PanelTemplateId);
+            return Manager.ExpandFromHint(new(existing.ScreenId, existing.Generation, existing.Entry, existing.SessionId), target.PanelTemplateId, keyboard);
+        return Open(entry, source.SessionId, ReadAnchor, keyboard ? FlyoutInvocationKind.Keyboard : FlyoutInvocationKind.Pointer, target.PanelTemplateId);
     }
 
     private ProtocolResult Open(FlyoutEntryKey entry, string sessionId, Func<PixelRect?> readAnchor,

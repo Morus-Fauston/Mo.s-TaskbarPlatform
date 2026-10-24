@@ -5,7 +5,6 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     Title="MTP 设置">
     <Grid x:Name="Root" Background="{ThemeResource ApplicationPageBackgroundThemeBrush}">
-        <Border x:Name="SurfacePalette" Visibility="Collapsed" Background="{ThemeResource ApplicationPageBackgroundThemeBrush}" />
         <NavigationView x:Name="Navigation" PaneDisplayMode="LeftCompact" IsPaneOpen="False"
                         IsBackButtonVisible="Visible" IsSettingsVisible="False" CompactPaneLength="48"
                         OpenPaneLength="240" SelectionChanged="NavigationChanged" BackRequested="BackRequested"
@@ -34,8 +33,15 @@
                 </Grid.RowDefinitions>
                 <TextBlock x:Name="PageTitle" Text="接入应用" Style="{ThemeResource TitleTextBlockStyle}"
                            AutomationProperties.AutomationId="mtp-settings-title" />
-                <InfoBar x:Name="ErrorBar" Grid.Row="1" IsOpen="False" IsClosable="False" Severity="Error"
-                         Title="设置未能生效" AutomationProperties.AutomationId="mtp-settings-error" />
+                <StackPanel Grid.Row="1" Spacing="8">
+                    <Button Content="进入当前交互提示" Click="FocusInteractiveHintClicked"
+                            AutomationProperties.AutomationId="mtp-settings-focus-interactive-hint" />
+                    <TextBlock x:Name="InteractiveHintStatus" Visibility="Collapsed" TextWrapping="Wrap" />
+                    <InfoBar x:Name="ErrorBar" IsOpen="False" IsClosable="False" Severity="Error"
+                             Title="设置未能生效" AutomationProperties.AutomationId="mtp-settings-error" />
+                    <InfoBar x:Name="PlatformNotice" IsOpen="False" IsClosable="False" Severity="Informational"
+                             Title="当前平台状态" AutomationProperties.AutomationId="mtp-settings-platform-notice" />
+                </StackPanel>
                 <ScrollViewer Grid.Row="2" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
                     <Grid>
                         <StackPanel x:Name="ApplicationsPanel" Spacing="12">
@@ -120,8 +126,8 @@
                                 <ComboBoxItem Content="浅色" Tag="Light" />
                                 <ComboBoxItem Content="深色" Tag="Dark" />
                             </ComboBox>
-                            <ComboBox x:Name="MaterialCombo" Header="默认材质" HorizontalAlignment="Stretch" SelectionChanged="AppearanceChanged"
-                                      AutomationProperties.AutomationId="mtp-settings-material" AutomationProperties.Name="默认材质" />
+                            <ComboBox x:Name="MaterialCombo" Header="任务栏与浮窗材质" HorizontalAlignment="Stretch" SelectionChanged="AppearanceChanged"
+                                      AutomationProperties.AutomationId="mtp-settings-material" AutomationProperties.Name="任务栏与浮窗材质" />
                             <NumberBox x:Name="OpacityInput" Header="材质强度（0–1）" Minimum="0" Maximum="1" SmallChange="0.1" LargeChange="0.1"
                                        SpinButtonPlacementMode="Compact" Width="240" HorizontalAlignment="Left" ValueChanged="OpacityChanged"
                                        AutomationProperties.AutomationId="mtp-settings-opacity" AutomationProperties.Name="材质强度" />
