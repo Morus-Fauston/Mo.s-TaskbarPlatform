@@ -23,6 +23,7 @@ internal sealed class TaskbarFlyoutManager : IDisposable
     private HostAppearancePreferences appearance = new();
     internal bool? ReducedMotionOverride { get; set; }
     internal Action? AfterNextFrameAppliedForTesting { get; set; }
+    internal Action<long, string>? ReflowForTesting { get; set; }
     internal event Action<string, long>? PresentedFrameApplied;
     internal string? Error { get; private set; }
     internal bool HasResources => groups.Count > 0 || input.HasResources;
@@ -60,7 +61,7 @@ internal sealed class TaskbarFlyoutManager : IDisposable
         if (heightDip == 0) group.HintReservations.Remove(source); else group.HintReservations[source] = heightDip;
         group.HintReservation = group.HintReservations.Values.DefaultIfEmpty().Max();
         if (group.HintReservation == previous) return true;
-        try { Reflow(group, false); return true; }
+        try { Reflow(group, false, "hint-reservation"); return true; }
         catch (Exception error)
         {
             if (previousSource == 0) group.HintReservations.Remove(source); else group.HintReservations[source] = previousSource;
@@ -121,7 +122,7 @@ internal sealed class TaskbarFlyoutManager : IDisposable
             // Parallel preference is honored at initial presentation; all declared templates remain reachable.
             foreach (var panel in group.Declaration.Panels ?? [])
                 if (panel.Presentation == PanelPresentation.Parallel && group.Path.All(x => x.Id != panel.TemplateId)) group.Parallel.Add(panel.TemplateId);
-            Reflow(group, true);
+            Reflow(group, true, "open");
             if (!Current(group) || group.Error is not null) return Failure<FlyoutToggleResult>("FlyoutCreateFailed", group.Error ?? "浮窗初始化未完成");
             record("flyout-opened", new { request.Entry, request.ScreenId, group.Generation, request.Invocation,
                 foreground = FlyoutNative.GetForegroundWindow().ToInt64(),
@@ -138,7 +139,7 @@ internal sealed class TaskbarFlyoutManager : IDisposable
             return Failure<FlyoutToggleResult>(cleanup.IsSuccess ? "FlyoutCreateFailed" : "FlyoutCleanupPending", group.Error);
         }
     }
-    internal void Refresh()
+    internal void Refresh(Func<FlyoutOpenRequest, FlyoutOpenRequest?>? updateEnvironment = null)
     {
         if (input.Error is { } observerError && groups.Count > 0)
         {
@@ -149,9 +150,15 @@ internal sealed class TaskbarFlyoutManager : IDisposable
         foreach (var group in groups.Values.ToArray())
         {
             if (group.Closing) continue;
-            var current = Resolve(group.Request);
-            if (!current.IsSuccess || !ReferenceEquals(current.Value, group.Declaration)) { CloseScreen(group.Request.ScreenId, group.Generation); continue; }
-            try { Reflow(group, false); }
+            try
+            {
+                var next = updateEnvironment is null ? group.Request : updateEnvironment(group.Request);
+                if (next is null) { CloseScreen(group.Request.ScreenId, group.Generation); continue; }
+                var current = Resolve(next);
+                if (!current.IsSuccess || !ReferenceEquals(current.Value, group.Declaration)) { CloseScreen(group.Request.ScreenId, group.Generation); continue; }
+                group.Request = next;
+                Reflow(group, false, updateEnvironment is null ? "refresh" : "environment+refresh");
+            }
             catch (Exception error) { group.Error = error.Message; record("flyout-refresh-failed", error.Message); CloseScreen(group.Request.ScreenId, group.Generation); }
         }
     }
@@ -162,7 +169,7 @@ internal sealed class TaskbarFlyoutManager : IDisposable
         var valid = Resolve(next);
         if (!valid.IsSuccess) { CloseScreen(screenId, group.Generation); return CoreResult<bool>.Failure(valid.Error!); }
         group.Request = next;
-        try { Reflow(group, false); return CoreResult<bool>.Success(true); }
+        try { Reflow(group, false, "environment"); return CoreResult<bool>.Success(true); }
         catch (Exception error) { group.Error = error.Message; CloseScreen(screenId, group.Generation); return Failure<bool>("FlyoutLayoutFailed", error.Message); }
     }
     internal CoreResult<bool> EnterKeyboard(string screenId, long expectedGeneration)
@@ -288,11 +295,12 @@ internal sealed class TaskbarFlyoutManager : IDisposable
             else return ProtocolResult.Reject("PanelDepthExceeded", "导航路径预算已满");
             group.FocusNode = null;
         }
-        try { Reflow(group, true); return ProtocolResult.Success(); }
+        try { Reflow(group, true, "navigation"); return ProtocolResult.Success(); }
         catch (Exception error) { group.Error = error.Message; CloseScreen(group.Request.ScreenId, group.Generation); return ProtocolResult.Reject("FlyoutLayoutFailed", error.Message); }
     }
-    private void Reflow(Group group, bool forceTransition)
+    private void Reflow(Group group, bool forceTransition, string reason)
     {
+        ReflowForTesting?.Invoke(group.Generation, reason);
         var requested = group.Path.Select(x => x.Id).Concat(group.Parallel).Distinct(StringComparer.Ordinal).ToArray();
         var panels = requested.Select(id => new FlyoutPanelMeasure(id, TaskbarFlyoutWindow.Measure(Renderer(group, id), 320),
             group.Declaration.Panels?.FirstOrDefault(x => x.TemplateId == id)?.Presentation == PanelPresentation.Parallel)).ToArray();

@@ -34,9 +34,10 @@ internal static class TaskbarFlyoutProductionRegression
         using var display = new HostDisplayController(new LocalJsonDeclarationSource(Path.Combine(AppContext.BaseDirectory, "declaration.json")),
             new LocalComponentDisplayPreferenceStore(Path.Combine(evidence, "display.json")));
         using var target = new OwnedIslandTarget();
+        var flyoutWorkArea = new PixelRect(-30000, -30000, 1000, 720);
         var host = new HostConsoleController(display, display.Load(), new LocalTaskbarDockPreferenceStore(Path.Combine(evidence, "dock.json")),
             target.Capture, evidence, displayProvider: () => [new("owned-primary", true,
-                new(-30000, -30000, 1000, 800), new(-30000, -30000, 1000, 720), NativeWindows.GetDpiForWindow(target.Parent))]);
+                new(-30000, -30000, 1000, 800), flyoutWorkArea, NativeWindows.GetDpiForWindow(target.Parent))]);
         host.FlyoutDiagnostics = (kind, value) => log(kind + ": " + JsonSerializer.Serialize(value));
         using var settings = new HostSettingsController(display, new LocalHostSettingsPreferenceStore(Path.Combine(evidence, "settings.json")),
             () => host.Applications, host.RetryAsync, () => host.MaterialStatus, host.ApplyAppearance, host.RequestRefresh);
@@ -50,6 +51,7 @@ internal static class TaskbarFlyoutProductionRegression
         var baselineButton = new Button { Content = "MTP owned SDK focus baseline", HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Stretch };
         var baseline = new Window { Title = "MTP SDK flyout test", Content = baselineButton };
+        baseline.Activated += (_, args) => log("flyout-production-baseline-activation: " + args.WindowActivationState);
         nint baselineHandle = WinRT.Interop.WindowNative.GetWindowHandle(baseline);
         var work = DisplayArea.GetFromWindowId(baseline.AppWindow.Id, DisplayAreaFallback.Primary).WorkArea;
         baseline.AppWindow.MoveAndResize(new(work.X + 40, work.Y + 40, 400, 220));
@@ -101,6 +103,9 @@ internal static class TaskbarFlyoutProductionRegression
             var first = Group();
             var main = Main()!;
             nint componentPanel = main.Handle; windows.Add(componentPanel);
+            TaskbarFlyoutRefreshRegression.CountStableRefreshes(coordinator, evidence, log);
+            using var refreshTrace = TaskbarFlyoutRefreshRegression.TraceAdditionalWork(manager, evidence);
+            TaskbarFlyoutRefreshRegression.CheckCoordinatorEnvironment(coordinator, flyoutWorkArea, next => flyoutWorkArea = next, log);
             Check(first.Entry.Entry.Kind == TemplateEntryKind.Component && first.Entry.Entry.EntryId == "controls",
                 "Component panel lost its declared origin.");
             Check(FlyoutNative.GetForegroundWindow() == baselineHandle, "Pointer component navigation stole foreground.");
@@ -519,15 +524,32 @@ internal static class TaskbarFlyoutProductionRegression
             var bounds = FlyoutNative.Bounds(baselineHandle);
             FlyoutNative.Position(baselineHandle, bounds);
             var buttonBounds = TaskbarFlyoutNativeRegression.ElementScreenBounds(baselineButton, baseline);
-            var point = new FlyoutNative.Point { X = buttonBounds.X + buttonBounds.Width / 2, Y = buttonBounds.Y + buttonBounds.Height / 2 };
+            // Native title input establishes activation before testing client-area no-activation behavior.
+            // Keep clear of DWM caption buttons on a narrow window at high DPI.
+            var point = new FlyoutNative.Point { X = bounds.X + 60, Y = bounds.Y + 12 };
             nint targetRoot = FlyoutNative.Root(FlyoutNative.WindowFromPoint(point));
             try
             {
+                nint captionHit = SendMessage(baselineHandle, 0x0084, 0, new((point.Y << 16) | (point.X & 0xffff)));
+                log("flyout-production-baseline-caption-hit: " + captionHit);
+                Check(captionHit == 2, "Owned baseline input is not on its native caption.");
                 Check(targetRoot == baselineHandle, "Refusing to click an occluded owned baseline Button.");
                 Check(SetCursorPos(point.X, point.Y), "Could not position pointer over the baseline Button.");
+                FlyoutNative.GetCursorPos(out var actualCursor);
+                log("flyout-production-baseline-input: " + JsonSerializer.Serialize(new { phase = "before",
+                    point = new { point.X, point.Y }, actualCursor = new { actualCursor.X, actualCursor.Y },
+                    foreground = FlyoutNative.GetForegroundWindow().ToInt64(), target = baselineHandle.ToInt64(),
+                    hit = FlyoutNative.WindowFromPoint(point).ToInt64(), baselineButton.IsLoaded }));
                 Input[] click = [new() { Flags = 2 }, new() { Flags = 4 }];
                 Check(SendInput(2, click, Marshal.SizeOf<Input>()) == 2, "Owned baseline click failed.");
+                await Task.Delay(80);
+                FlyoutNative.GetCursorPos(out var cursorAfterInput);
+                log("flyout-production-baseline-input: " + JsonSerializer.Serialize(new { phase = "after",
+                    foreground = FlyoutNative.GetForegroundWindow().ToInt64(), target = baselineHandle.ToInt64(),
+                    hit = FlyoutNative.WindowFromPoint(point).ToInt64(), minimized = IsIconic(baselineHandle),
+                    cursor = new { cursorAfterInput.X, cursorAfterInput.Y } }));
                 await Until(() => FlyoutNative.GetForegroundWindow() == baselineHandle, "Owned baseline did not become foreground.");
+                Check(!IsIconic(baselineHandle), "Owned baseline was minimized by its preparation input.");
             }
             catch
             {
@@ -604,4 +626,6 @@ internal static class TaskbarFlyoutProductionRegression
     [DllImport("user32.dll", SetLastError = true)] private static extern uint SendInput(uint count, Input[] inputs, int size);
     [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool SetForegroundWindow(nint window);
+    [DllImport("user32.dll")] private static extern nint SendMessage(nint window, uint message, nuint wparam, nint lparam);
+    [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool IsIconic(nint window);
 }

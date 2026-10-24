@@ -285,18 +285,7 @@ internal sealed class TaskbarFlyoutCoordinator : IDisposable
 
     internal void Refresh()
     {
-        foreach (var group in Manager.Inspect())
-        {
-            if (group.Closing) continue;
-            if (!anchors.TryGetValue(group.ScreenId, out var owner) || owner.Entry != group.Entry || owner.SessionId != group.SessionId) continue;
-            var geometry = island.Geometry;
-            PixelRect? anchor = null;
-            try { if (island.IsAlive) anchor = owner.Read(); } catch (Exception) { }
-            if (geometry is null || geometry.DisplayId != group.ScreenId || anchor is null)
-                Manager.CloseScreen(group.ScreenId, group.Generation);
-            else Manager.UpdateEnvironment(group.ScreenId, anchor.Value, WorkArea(geometry), geometry.Dpi);
-        }
-        Manager.Refresh();
+        Manager.Refresh(RefreshEnvironment);
         Events.Refresh(id => displays().FirstOrDefault(x => x.Id == id));
         Hints.Refresh(id => displays().FirstOrDefault(x => x.Id == id));
         InteractiveHints.Refresh(id => displays().FirstOrDefault(x => x.Id == id));
@@ -316,6 +305,17 @@ internal sealed class TaskbarFlyoutCoordinator : IDisposable
         var live = observed.Select(x => x.ScreenId).ToHashSet(StringComparer.Ordinal);
         foreach (var key in anchors.Keys.Where(x => !live.Contains(x)).ToArray()) anchors.Remove(key);
         EnforceStack();
+    }
+
+    private FlyoutOpenRequest? RefreshEnvironment(FlyoutOpenRequest request)
+    {
+        if (!anchors.TryGetValue(request.ScreenId, out var owner) || owner.Entry != request.Entry || owner.SessionId != request.SessionId)
+            return request;
+        var geometry = island.Geometry;
+        PixelRect? anchor = null;
+        try { if (island.IsAlive) anchor = owner.Read(); } catch (Exception) { }
+        return geometry is null || geometry.DisplayId != request.ScreenId || anchor is null ? null :
+            request with { Anchor = anchor.Value, WorkArea = WorkArea(geometry), Dpi = geometry.Dpi };
     }
 
     private PixelRect WorkArea(TaskbarDockGeometry geometry) => displays().FirstOrDefault(x => x.Id == geometry.DisplayId)?.WorkArea ??

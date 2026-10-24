@@ -301,9 +301,11 @@ internal sealed class TaskbarFlyoutWindow
         if (args.Handled || closeObserved) return;
         if (args.Key == VirtualKey.Escape) { args.Handled = true; close(); }
     }
+    internal static Action<TemplateRenderer>? MeasuredForTesting { get; set; }
     internal static double Measure(TemplateRenderer view, double width)
     {
         view.Refresh(); view.Measure(new Size(Math.Max(1, width - 16), double.PositiveInfinity));
+        MeasuredForTesting?.Invoke(view);
         return Math.Max(FlyoutGroupLayout.MinimumHeightDip, Math.Min(1e9, view.DesiredSize.Height + FlyoutGroupLayout.HeaderHeightDip + 8));
     }
     private sealed record Transition(ScrollViewer View, double Opacity, double X, bool Current);

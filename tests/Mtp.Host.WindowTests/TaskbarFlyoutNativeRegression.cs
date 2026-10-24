@@ -11,6 +11,7 @@ using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Mtp.Contracts;
 using Mtp.Host.Flyouts;
+using Mtp.Host.Islands;
 using Mtp.Host.Templates;
 using Mtp.Platform.Core;
 using Windows.Graphics.Imaging;
@@ -71,9 +72,14 @@ internal static class TaskbarFlyoutNativeRegression
             var isolatedWindow = isolated.WindowForTesting(request.ScreenId)!;
             nint isolatedHandle = isolatedWindow.Handle;
             bool highContrast = new Windows.UI.ViewManagement.AccessibilitySettings().HighContrast;
-            var background = ((Grid)isolatedWindow.Root).Background as SolidColorBrush;
-            Check(background is not null && background.Color.A == (highContrast ? 255 : 63),
-                "A diagnostic sink failure changed the selected Solid material into opaque fallback.");
+            var members = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            var native = (Window)typeof(TaskbarFlyoutWindow).GetField("window", members)!.GetValue(isolatedWindow)!;
+            byte? NativeAlpha() => native.SystemBackdrop is SolidTintBackdrop solid
+                ? ((Windows.UI.Composition.CompositionColorBrush?)typeof(SolidTintBackdrop).GetField("brush", members)!.GetValue(solid))?.Color.A : null;
+            await Until(() => ((Grid)isolatedWindow.Root).Background is SolidColorBrush background &&
+                (highContrast ? background.Color.A == 255 : background.Color.A == 0 && NativeAlpha() == 64),
+                "A diagnostic sink failure changed the selected native Solid tint or high-contrast override.");
+            log($"flyout-scheduling-solid: rootAlpha={((SolidColorBrush)((Grid)isolatedWindow.Root).Background).Color.A}; nativeTintAlpha={NativeAlpha()}; highContrast={highContrast}");
             Check(isolated.Toggle(request).Value == FlyoutToggleResult.Closed && !isolated.HasResources &&
                 !FlyoutNative.IsWindow(isolatedHandle) && diagnosticAttempts >= 2,
                 "A diagnostic sink failure interrupted owned window or observer cleanup.");
@@ -212,6 +218,7 @@ internal static class TaskbarFlyoutNativeRegression
 
     internal static async Task RunAsync(Action<string> log)
     {
+        TaskbarFlyoutRefreshRegression.CheckRefreshBehavior(log);
         var priorForeground = FlyoutNative.GetForegroundWindow();
         FlyoutNative.GetCursorPos(out var priorCursor);
         var outside = new Window { Title = "MTP owned outside-click test" };
@@ -253,17 +260,21 @@ internal static class TaskbarFlyoutNativeRegression
         try
         {
             await Until(() => outsideButton.IsLoaded, "Owned outside target did not load.");
-            // Foreground-lock policy can reject Activate/SetForegroundWindow. Use an actual click only on our own window.
-            var outsideBounds = FlyoutNative.Bounds(outsideHandle);
-            FlyoutNative.Position(outsideHandle, outsideBounds);
-            var baselinePoint = new FlyoutNative.Point
-                { X = outsideBounds.X + outsideBounds.Width / 2, Y = outsideBounds.Y + outsideBounds.Height / 2 };
-            Check(FlyoutNative.Root(FlyoutNative.WindowFromPoint(baselinePoint)) == outsideHandle,
-                "Owned baseline activation target is occluded; refusing to click another window.");
-            SetCursorPos(baselinePoint.X, baselinePoint.Y);
-            var baselineClick = new[] { MouseInput(0x0002), MouseInput(0x0004) };
-            Check(SendInput((uint)baselineClick.Length, baselineClick, Marshal.SizeOf<Input>()) == baselineClick.Length,
-                "Owned baseline activation click failed.");
+            // Activate can succeed before the dispatcher yields. Do not queue an unnecessary
+            // preparation click that could arrive after the no-activation group has opened.
+            if (FlyoutNative.GetForegroundWindow() != outsideHandle)
+            {
+                var outsideBounds = FlyoutNative.Bounds(outsideHandle);
+                FlyoutNative.Position(outsideHandle, outsideBounds);
+                var baselinePoint = new FlyoutNative.Point { X = outsideBounds.X + 60, Y = outsideBounds.Y + 12 };
+                Check(FlyoutNative.Root(FlyoutNative.WindowFromPoint(baselinePoint)) == outsideHandle,
+                    "Owned baseline activation target is occluded; refusing to click another window.");
+                Check(SetCursorPos(baselinePoint.X, baselinePoint.Y), "Could not position over owned caption.");
+                var baselineClick = new[] { MouseInput(0x0002), MouseInput(0x0004) };
+                Check(SendInput((uint)baselineClick.Length, baselineClick, Marshal.SizeOf<Input>()) == baselineClick.Length,
+                    "Owned baseline activation click failed.");
+                await Until(() => FlyoutNative.GetForegroundWindow() == outsideHandle, "Owned baseline could not become foreground.");
+            }
             await Until(() => FlyoutNative.GetForegroundWindow() == outsideHandle, "Owned baseline could not become foreground.");
             log($"flyout-baseline-ready: foregroundOwned=true; activationClickCount={originalClicks}; buttonWidth={outsideButton.ActualWidth}; buttonHeight={outsideButton.ActualHeight}");
             originalClicks = pointerPressed = pointerReleased = 0;
@@ -299,7 +310,7 @@ internal static class TaskbarFlyoutNativeRegression
             await SampleFrames(main, "shrink", 7, frames, frameClock);
             var beforeInterrupt = Capture(main, "before-retarget", frames, frameClock);
             Check(beforeInterrupt.Bounds.Width < detailBounds.Width, "Resize was not in progress before interruption.");
-            Check(manager.UpdateEnvironment(request.ScreenId, request.Anchor, request.WorkArea, request.Dpi).IsSuccess, "Interrupted resize failed.");
+            manager.Refresh(current => current with { Anchor = request.Anchor, WorkArea = request.WorkArea, Dpi = request.Dpi });
             var afterInterrupt = Capture(main, "after-retarget", frames, frameClock);
             Check(Math.Abs(beforeInterrupt.Bounds.Width - afterInterrupt.Bounds.Width) <= Math.Ceiling(16 * request.Dpi / 96d) &&
                 afterInterrupt.Bounds.Width < detailBounds.Width, "Retarget jumped to the new endpoint instead of continuing the current native frame.");
